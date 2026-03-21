@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+workspace/
+tool1_dashboard/alignment_tool/logs/
+tool1_dashboard/alignment_tool/output/
+tool1_dashboard/alignment_tool/temp/
+UI for Open AI Whisper/
