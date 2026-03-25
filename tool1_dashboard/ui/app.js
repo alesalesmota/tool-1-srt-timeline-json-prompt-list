@@ -1262,16 +1262,6 @@ function renderEpisodeDetail() {
 
     ${reviewSection}
 
-    ${filesSection}tion-header">
-        <div class="eyebrow">Per-language status</div>
-        <div class="badge-row">
-          <span class="badge" data-tone="${workerTone}">${esc(workerLabel)}</span>
-          ${!workerRunning ? '<button type="button" class="button button-ghost button-small" data-worker-action="start">Start Worker</button>' : ''}
-        </div>
-      </div>
-      ${langTable}
-    </div>
-
     ${filesSection}
 
     <div class="detail-section">
