@@ -430,6 +430,10 @@ function syncAllProviderModelSelects() {
   syncProviderModelSelect("settings-bible", "settings-bible-model");
   syncProviderModelSelect("settings-video", "settings-video-model");
   syncProviderModelSelect("settings-image", "settings-image-model");
+  syncProviderModelSelect("niche-scene_planning-provider", "niche-scene_planning-model");
+  syncProviderModelSelect("niche-visual_bible-provider", "niche-visual_bible-model");
+  syncProviderModelSelect("niche-video_prompt-provider", "niche-video_prompt-model");
+  syncProviderModelSelect("niche-image_prompt-provider", "niche-image_prompt-model");
 }
 
 function renderSetupCard({ icon, title, copy, fields, tone = "neutral", compact = false }) {
@@ -904,6 +908,133 @@ function renderSubmitEpisodeModal() {
 
 // ── Niche project detail ──────────────────────────────────────────
 
+function overallLangTone(ls) {
+  const statuses = [ls.translation_status, ls.tts_status, ls.srt_status, ls.timeline_status];
+  if (statuses.some((s) => s === "failed")) return "error";
+  if (statuses.some((s) => s === "running")) return "info";
+  if (statuses.every((s) => s === "done")) return "success";
+  if (statuses.some((s) => s === "done")) return "warn";
+  return "neutral";
+}
+
+function langMiniDots(episode, configuredLangs) {
+  const statuses = episode.language_statuses || [];
+  const statusMap = Object.fromEntries(statuses.map((s) => [s.language_code, s]));
+  return configuredLangs.map((lang) => {
+    const ls = statusMap[lang];
+    const tone = ls ? overallLangTone(ls) : "neutral";
+    return '<span class="lang-dot" data-tone="' + tone + '" title="' + esc(lang) + '"></span>';
+  }).join("");
+}
+
+function renderProjectStats(detail) {
+  const stats = detail.statistics || {};
+  const byStatus = stats.by_status || {};
+  const items = [
+    { label: "Total", value: stats.total_episodes || 0, tone: "" },
+    { label: "Draft", value: byStatus.idle || 0, tone: "" },
+    { label: "Queued", value: byStatus.queued || 0, tone: "warn" },
+    { label: "Running", value: byStatus.running || 0, tone: "info" },
+    { label: "Done", value: byStatus.done || 0, tone: "success" },
+    { label: "Failed", value: byStatus.failed || 0, tone: "error" },
+    { label: "Languages", value: stats.languages_configured || 0, tone: "" },
+    { label: "Complete", value: (stats.completion_rate || 0) + "%", tone: "success" },
+  ];
+  return '<div class="stats-bar">' + items.map((it) =>
+    '<div class="stat-card"' + (it.tone ? ' data-tone="' + it.tone + '"' : '') + '>' +
+      '<div class="stat-card-value">' + esc(it.value) + '</div>' +
+      '<div class="stat-card-label">' + esc(it.label) + '</div>' +
+    '</div>'
+  ).join("") + '</div>';
+}
+
+function renderLanguageConfigSection(project, voiceProfiles, translationProfiles) {
+  const langs = project.configured_languages || [];
+  const vps = project.language_voice_profiles || {};
+  const tps = project.language_translation_profiles || {};
+  const allLangs = state.targetLanguages || [];
+  const usedSet = new Set(langs);
+
+  const rows = langs.map((langCode) => {
+    const langObj = allLangs.find((l) => l.code === langCode);
+    const langLabel = langObj ? langObj.label : langCode;
+
+    const vpOptions = (voiceProfiles || [])
+      .filter((vp) => !vp.language_code || vp.language_code === langCode || vp.language_code === langCode.split("-")[0])
+      .map((vp) =>
+        '<option value="' + esc(vp.id) + '"' + (vps[langCode] === vp.id ? " selected" : "") + '>' + esc(vp.name) + '</option>'
+      ).join("");
+
+    const tpOptions = (translationProfiles || [])
+      .map((tp) =>
+        '<option value="' + esc(tp.id) + '"' + (tps[langCode] === tp.id ? " selected" : "") + '>' + esc(tp.name) + '</option>'
+      ).join("");
+
+    return '<tr>' +
+      '<td><strong>' + esc(langLabel) + '</strong> <span class="helper">(' + esc(langCode) + ')</span></td>' +
+      '<td><select class="lang-voice-select" data-lang="' + esc(langCode) + '"><option value="">— none —</option>' + vpOptions + '</select></td>' +
+      '<td><select class="lang-trans-select" data-lang="' + esc(langCode) + '"><option value="">— none —</option>' + tpOptions + '</select></td>' +
+      '<td><button type="button" class="button button-danger button-small icon-only" data-remove-language="' + esc(langCode) + '" aria-label="Remove">' + iconContent("delete", "Remove", { iconOnly: true }) + '</button></td>' +
+    '</tr>';
+  }).join("");
+
+  const unusedLangs = allLangs.filter((l) => !usedSet.has(l.code));
+  const addOptions = unusedLangs.map((l) =>
+    '<option value="' + esc(l.code) + '">' + esc(l.label) + '</option>'
+  ).join("");
+
+  return `
+    <div class="detail-section">
+      <div class="section-header">
+        <div class="eyebrow">Language Configuration</div>
+        <button type="button" class="button button-primary button-small has-icon" data-save-lang-config="${esc(project.id)}">${iconContent("save", "Save")}</button>
+      </div>
+      <table class="lang-config-table">
+        <thead><tr><th>Language</th><th>Voice Profile</th><th>Translation Profile</th><th></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="4" class="helper" style="text-align:center;">No languages configured.</td></tr>'}</tbody>
+      </table>
+      ${unusedLangs.length ? '<div class="add-lang-row"><select id="add-lang-select"><option value="">Add language...</option>' + addOptions + '</select><button type="button" class="button button-ghost button-small has-icon" data-add-language="true">' + iconContent("add", "Add") + '</button></div>' : ''}
+    </div>
+  `;
+}
+
+function renderProviderConfigSection(project) {
+  const stages = [
+    { key: "scene_planning", icon: "scene", title: "Scene Planning", copy: "LLM plans scene structure" },
+    { key: "visual_bible", icon: "bible", title: "Visual Bible", copy: "Consistency guide generation" },
+    { key: "video_prompt", icon: "prompts", title: "Video Prompts", copy: "Leading scene video prompts" },
+    { key: "image_prompt", icon: "prompts", title: "Image Prompts", copy: "Remaining scene image prompts" },
+  ];
+
+  const cards = stages.map((s) =>
+    renderStageSetupCard({
+      icon: s.icon,
+      title: s.title,
+      copy: s.copy,
+      providerId: "niche-" + s.key + "-provider",
+      providerValue: project[s.key + "_provider"] || "claude",
+      modelId: "niche-" + s.key + "-model",
+      modelValue: project[s.key + "_model"] || "",
+    })
+  ).join("");
+
+  return `
+    <div class="detail-section">
+      <div class="section-header">
+        <div class="eyebrow">AI Provider Configuration</div>
+        <button type="button" class="button button-primary button-small has-icon" data-save-provider-config="${esc(project.id)}">${iconContent("save", "Save")}</button>
+      </div>
+      <div class="provider-config-grid">${cards}</div>
+      <div style="margin-top:10px;">
+        <label class="field" style="max-width:200px;">
+          <span class="field-label">Leading video scenes</span>
+          <input id="niche-leading-video" type="number" min="1" value="${project.leading_video_scene_count || 20}" />
+        </label>
+      </div>
+    </div>
+  `;
+}
+
 function renderNicheProjectDetail() {
   const detail = state.nicheProjectDetail;
   if (!detail) {
@@ -912,20 +1043,30 @@ function renderNicheProjectDetail() {
   }
   const project = detail.project;
   const episodes = detail.episodes || [];
-  const langs = (project.configured_languages || []);
+  const stats = detail.statistics || {};
+  const byStatus = stats.by_status || {};
+  const langs = project.configured_languages || [];
+
+  const draftCount = byStatus.idle || 0;
+  const failedCount = byStatus.failed || 0;
 
   const episodeCards = episodes.length
     ? episodes.map((ep) => {
         const stage = ep.current_stage || "draft";
         const tone = pipelineTone(ep.pipeline_status);
-        return '<div class="build-card" data-open-episode="' + esc(ep.id) + '">' +
-          '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+        const canQueue = ["idle", "failed", "done"].includes(ep.pipeline_status || "idle");
+        return '<div class="episode-card-enhanced" data-open-episode="' + esc(ep.id) + '">' +
+          '<div class="episode-card-top">' +
             '<strong>' + esc(ep.title || ep.id) + '</strong>' +
-            '<button type="button" class="button button-danger button-small icon-only" data-delete-episode="' + esc(ep.id) + '" aria-label="Delete">' + iconContent("delete", "Delete", { iconOnly: true }) + '</button>' +
+            '<div style="display:flex;gap:4px;">' +
+              (canQueue ? '<button type="button" class="button button-ghost button-small icon-only" data-queue-episode="' + esc(ep.id) + '" title="Queue">' + iconContent("play", "Queue", { iconOnly: true }) + '</button>' : '') +
+              '<button type="button" class="button button-danger button-small icon-only" data-delete-episode="' + esc(ep.id) + '" aria-label="Delete">' + iconContent("delete", "Delete", { iconOnly: true }) + '</button>' +
+            '</div>' +
           '</div>' +
           '<div class="badge-row" style="margin-top:6px;">' +
-            '<span class="badge badge-' + tone + '">' + esc(EPISODE_STAGE_LABELS[stage] || titleCase(stage)) + '</span>' +
+            '<span class="badge" data-tone="' + tone + '">' + esc(EPISODE_STAGE_LABELS[stage] || titleCase(stage)) + '</span>' +
             '<span class="badge">' + esc(titleCase(ep.pipeline_status || "idle")) + '</span>' +
+            '<span class="lang-dots">' + langMiniDots(ep, langs) + '</span>' +
           '</div>' +
         '</div>';
       }).join("")
@@ -937,14 +1078,23 @@ function renderNicheProjectDetail() {
       <h2 style="margin:4px 0 0;">${esc(project.title || project.id)}</h2>
       <div class="badge-row" style="margin-top:8px;">
         <span class="badge">Master: ${esc(project.master_language || "en")}</span>
-        ${langs.map((l) => '<span class="badge badge-small">' + esc(l) + '</span>').join("")}
       </div>
     </div>
 
+    ${renderProjectStats(detail)}
+
+    ${renderLanguageConfigSection(project, detail.voice_profiles || [], detail.translation_profiles || [])}
+
+    ${renderProviderConfigSection(project)}
+
     <div class="detail-section">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div class="section-header">
         <div class="eyebrow">Episodes (${episodes.length})</div>
-        <button type="button" class="button button-primary button-small has-icon" data-open-submit-episode="${esc(project.id)}">${iconContent("add", "Submit script")}</button>
+        <div class="button-row">
+          ${draftCount > 0 ? '<button type="button" class="button button-ghost button-small has-icon" data-batch-queue-drafts="' + esc(project.id) + '">' + iconContent("play", "Queue all drafts (" + draftCount + ")") + '</button>' : ''}
+          ${failedCount > 0 ? '<button type="button" class="button button-ghost button-small has-icon" data-batch-queue-failed="' + esc(project.id) + '">' + iconContent("rerun", "Re-run failed (" + failedCount + ")") + '</button>' : ''}
+          <button type="button" class="button button-primary button-small has-icon" data-open-submit-episode="${esc(project.id)}">${iconContent("add", "Submit script")}</button>
+        </div>
       </div>
       <div class="loc-list" style="margin-top:12px;">${episodeCards}</div>
     </div>
@@ -955,6 +1105,12 @@ function renderNicheProjectDetail() {
 
     ${state.modal.kind === "submit-episode" ? renderSubmitEpisodeModal() : ""}
   `;
+
+  // Sync provider/model selects after render
+  syncProviderModelSelect("niche-scene_planning-provider", "niche-scene_planning-model");
+  syncProviderModelSelect("niche-visual_bible-provider", "niche-visual_bible-model");
+  syncProviderModelSelect("niche-video_prompt-provider", "niche-video_prompt-model");
+  syncProviderModelSelect("niche-image_prompt-provider", "niche-image_prompt-model");
 }
 
 // ── Episode detail view ───────────────────────────────────────────
@@ -1621,7 +1777,7 @@ document.addEventListener("click", async (event) => {
     resetAutoRefresh();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode]");
+  const target = event.target.closest("[data-nav], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-batch-queue-drafts], [data-batch-queue-failed]");
   if (!target) return;
   event.preventDefault();
   try {
@@ -1742,6 +1898,109 @@ document.addEventListener("click", async (event) => {
       setNotice("Episode deleted.", "success");
       return;
     }
+    if (target.dataset.saveLangConfig) {
+      const projectId = target.dataset.saveLangConfig;
+      const langVoice = {};
+      const langTrans = {};
+      document.querySelectorAll(".lang-voice-select").forEach((sel) => {
+        if (sel.value) langVoice[sel.dataset.lang] = sel.value;
+      });
+      document.querySelectorAll(".lang-trans-select").forEach((sel) => {
+        if (sel.value) langTrans[sel.dataset.lang] = sel.value;
+      });
+      await api('/api/niche-projects/' + encodeURIComponent(projectId), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ language_voice_profiles: langVoice, language_translation_profiles: langTrans }),
+      });
+      await refreshData();
+      renderApp();
+      setNotice("Language configuration saved.", "success");
+      return;
+    }
+    if (target.dataset.saveProviderConfig) {
+      const projectId = target.dataset.saveProviderConfig;
+      const payload = {
+        scene_planning_provider: $("niche-scene_planning-provider")?.value,
+        visual_bible_provider: $("niche-visual_bible-provider")?.value,
+        video_prompt_provider: $("niche-video_prompt-provider")?.value,
+        image_prompt_provider: $("niche-image_prompt-provider")?.value,
+        scene_planning_model: $("niche-scene_planning-model")?.value,
+        visual_bible_model: $("niche-visual_bible-model")?.value,
+        video_prompt_model: $("niche-video_prompt-model")?.value,
+        image_prompt_model: $("niche-image_prompt-model")?.value,
+        leading_video_scene_count: Number($("niche-leading-video")?.value || 20),
+      };
+      await api('/api/niche-projects/' + encodeURIComponent(projectId), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      await refreshData();
+      renderApp();
+      setNotice("Provider configuration saved.", "success");
+      return;
+    }
+    if (target.dataset.addLanguage) {
+      const sel = $("add-lang-select");
+      if (!sel || !sel.value) return;
+      const langCode = sel.value;
+      const detail = state.nicheProjectDetail;
+      if (!detail) return;
+      const current = detail.project.configured_languages || [];
+      if (!current.includes(langCode)) {
+        current.push(langCode);
+        await api('/api/niche-projects/' + encodeURIComponent(detail.project.id), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ configured_languages: current }),
+        });
+        await refreshData();
+        renderApp();
+        setNotice("Language added.", "success");
+      }
+      return;
+    }
+    if (target.dataset.removeLanguage) {
+      const langCode = target.dataset.removeLanguage;
+      const detail = state.nicheProjectDetail;
+      if (!detail) return;
+      if (!confirm('Remove language "' + langCode + '" from this project?')) return;
+      const current = (detail.project.configured_languages || []).filter((l) => l !== langCode);
+      await api('/api/niche-projects/' + encodeURIComponent(detail.project.id), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ configured_languages: current }),
+      });
+      await refreshData();
+      renderApp();
+      setNotice("Language removed.", "success");
+      return;
+    }
+    if (target.dataset.batchQueueDrafts) {
+      const projectId = target.dataset.batchQueueDrafts;
+      const result = await api('/api/niche-projects/' + encodeURIComponent(projectId) + '/batch-queue', {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filter_status: "draft" }),
+      });
+      await refreshData();
+      renderApp();
+      setNotice("Queued " + (result.queued_count || 0) + " draft episode(s).", "success");
+      return;
+    }
+    if (target.dataset.batchQueueFailed) {
+      const projectId = target.dataset.batchQueueFailed;
+      const result = await api('/api/niche-projects/' + encodeURIComponent(projectId) + '/batch-queue', {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filter_status: "failed" }),
+      });
+      await refreshData();
+      renderApp();
+      setNotice("Re-queued " + (result.queued_count || 0) + " failed episode(s).", "success");
+      return;
+    }
   } catch (error) {
     setNotice(error.message, "error");
   }
@@ -1778,6 +2037,10 @@ document.addEventListener("change", (event) => {
     "settings-bible": "settings-bible-model",
     "settings-video": "settings-video-model",
     "settings-image": "settings-image-model",
+    "niche-scene_planning-provider": "niche-scene_planning-model",
+    "niche-visual_bible-provider": "niche-visual_bible-model",
+    "niche-video_prompt-provider": "niche-video_prompt-model",
+    "niche-image_prompt-provider": "niche-image_prompt-model",
   };
   const modelSelectId = providerModelPairs[event.target.id];
   if (modelSelectId) {

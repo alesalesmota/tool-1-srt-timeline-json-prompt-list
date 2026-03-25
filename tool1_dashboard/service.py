@@ -780,11 +780,41 @@ class Tool1Service:
         project = self.db.get_niche_project(project_id)
         if project is None:
             raise FileNotFoundError("Niche project not found.")
-        project["configured_languages"] = json.loads(project.get("configured_languages") or "[]")
+        configured_langs = json.loads(project.get("configured_languages") or "[]")
+        project["configured_languages"] = configured_langs
         project["language_voice_profiles"] = json.loads(project.get("language_voice_profiles") or "{}")
         project["language_translation_profiles"] = json.loads(project.get("language_translation_profiles") or "{}")
         episodes = self.db.list_episodes(project_id)
-        return {"project": project, "episodes": episodes}
+
+        # Attach per-episode language statuses
+        for ep in episodes:
+            ep["language_statuses"] = self.db.get_episode_language_statuses(ep["id"])
+
+        # Compute statistics
+        by_status: dict[str, int] = {}
+        for ep in episodes:
+            ps = ep.get("pipeline_status") or "idle"
+            by_status[ps] = by_status.get(ps, 0) + 1
+        done_count = by_status.get("done", 0)
+        total = len(episodes)
+        statistics = {
+            "total_episodes": total,
+            "by_status": by_status,
+            "languages_configured": len(configured_langs),
+            "completion_rate": round((done_count / total) * 100) if total > 0 else 0,
+        }
+
+        # Include profiles for dropdowns
+        voice_profiles = self.list_voice_profiles()
+        translation_profiles = self.list_translation_profiles()
+
+        return {
+            "project": project,
+            "episodes": episodes,
+            "statistics": statistics,
+            "voice_profiles": voice_profiles,
+            "translation_profiles": translation_profiles,
+        }
 
     def update_niche_project(
         self,
@@ -812,6 +842,23 @@ class Tool1Service:
             import shutil
             shutil.rmtree(workspace, ignore_errors=True)
         return {"deleted": True}
+
+    def batch_queue_episodes(self, project_id: str, filter_status: str = "draft") -> dict[str, Any]:
+        project = self.db.get_niche_project(project_id)
+        if project is None:
+            raise FileNotFoundError("Niche project not found.")
+        episodes = self.db.list_episodes(project_id)
+        queued_ids: list[str] = []
+        for ep in episodes:
+            ps = ep.get("pipeline_status") or "idle"
+            bs = ep.get("board_status") or "Draft"
+            if filter_status == "draft" and ps == "idle" and bs == "Draft":
+                self.queue_episode(ep["id"])
+                queued_ids.append(ep["id"])
+            elif filter_status == "failed" and ps == "failed":
+                self.queue_episode(ep["id"])
+                queued_ids.append(ep["id"])
+        return {"queued_count": len(queued_ids), "episode_ids": queued_ids}
 
     def submit_episode(
         self,

@@ -1831,3 +1831,137 @@ details.editor-card summary::-webkit-details-marker {
   background: var(--panel-strong);
   min-height: unset;
 }
+
+/* ── Phase 7: Niche Project Detail Enhancement ── */
+
+.stats-bar {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.stat-card {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 14px);
+  padding: 10px 16px;
+  min-width: 90px;
+  text-align: center;
+}
+
+.stat-card-value {
+  font-size: 1.4rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.stat-card-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.stat-card[data-tone="success"] .stat-card-value { color: var(--success); }
+.stat-card[data-tone="error"] .stat-card-value { color: var(--error); }
+.stat-card[data-tone="info"] .stat-card-value { color: var(--brand); }
+.stat-card[data-tone="warn"] .stat-card-value { color: var(--warn, #e0a800); }
+
+.lang-config-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+}
+
+.lang-config-table th,
+.lang-config-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-size: 0.85rem;
+}
+
+.lang-config-table th {
+  font-weight: 600;
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.lang-config-table select {
+  width: 100%;
+  min-width: 120px;
+}
+
+.lang-dots {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.lang-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  display: inline-block;
+}
+
+.lang-dot[data-tone="success"] { background: var(--success); }
+.lang-dot[data-tone="error"] { background: var(--error); }
+.lang-dot[data-tone="info"] { background: var(--brand); }
+.lang-dot[data-tone="warn"] { background: var(--warn, #e0a800); }
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.section-header .eyebrow {
+  margin: 0;
+}
+
+.section-header .button-row {
+  display: flex;
+  gap: 6px;
+}
+
+.provider-config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.episode-card-enhanced {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 14px);
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.episode-card-enhanced:hover {
+  border-color: var(--line-strong, var(--brand));
+}
+
+.episode-card-enhanced .episode-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.episode-card-enhanced .badge-row {
+  margin-top: 6px;
+}
+
+.add-lang-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}

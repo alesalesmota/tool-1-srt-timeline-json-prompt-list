@@ -85,6 +85,19 @@ class NicheProjectUpdateRequest(BaseModel):
     configured_languages: list[str] | None = None
     language_voice_profiles: dict[str, str] | None = None
     language_translation_profiles: dict[str, str] | None = None
+    scene_planning_provider: str | None = None
+    visual_bible_provider: str | None = None
+    video_prompt_provider: str | None = None
+    image_prompt_provider: str | None = None
+    scene_planning_model: str | None = None
+    visual_bible_model: str | None = None
+    video_prompt_model: str | None = None
+    image_prompt_model: str | None = None
+    leading_video_scene_count: int | None = None
+
+
+class BatchQueueRequest(BaseModel):
+    filter_status: str = "draft"
 
 
 class EpisodeSubmitRequest(BaseModel):
@@ -170,6 +183,11 @@ async def prepare_language(language_code: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/api/target-languages")
+async def target_languages() -> dict[str, Any]:
+    return {"languages": service.get_target_languages()}
+
+
 @app.get("/api/settings")
 async def settings() -> dict[str, Any]:
     return service.get_settings_payload()
@@ -252,6 +270,16 @@ async def delete_niche_project(project_id: str) -> dict[str, Any]:
         return service.delete_niche_project(project_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/niche-projects/{project_id}/batch-queue")
+async def batch_queue_episodes(project_id: str, payload: BatchQueueRequest) -> dict[str, Any]:
+    try:
+        return service.batch_queue_episodes(project_id, payload.filter_status)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ── Episode routes ──────────────────────────────────────────────────
