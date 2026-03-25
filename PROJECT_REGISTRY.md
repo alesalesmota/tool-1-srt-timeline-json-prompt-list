@@ -31,7 +31,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - Unified backend with service layer + SQLite
   - Dark/light theme, responsive layout
   - Views: Pipeline Board, Niche Projects, Episodes, Voice Profiles, Translation Profiles, Settings, Templates
-  - Legacy views also present (Jobs, Projects/Builds) — **being removed in Phase 2-5**
+  - All legacy views and logic (Jobs, Projects/Builds) have been fully removed.
 - **Translation module** (`tool1_dashboard/translation/`) — adapter, chunker, prompts, service
 - **TTS module** (`tool1_dashboard/tts/`) — audio, chunker, constants, manager, worker (XTTS-v2)
 - **Alignment tool** (`tool1_dashboard/alignment_tool/`)
@@ -43,7 +43,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 ### What's Being Worked On
 See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase plan.
 
-**Currently:** Phases 1-5 complete. Phase 6 next (Episode Pipeline Board Enhancement).
+**Currently:** Phases 1-10 complete. The Tool 1 pipeline consolidation is finished.
 
 ### Git State
 - Branch: `feat/cleanup-and-consolidation` (active)
@@ -85,13 +85,15 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 | Phase 6 | Episode Pipeline Board Enhancement | DONE |
 | Phase 7 | Niche Project Detail Enhancement | DONE |
 | Phase 8 | TTS & Translation Polish | DONE |
-| Phase 9 | Review & Export Phase | TODO |
-| Phase 10 | Final Cleanup & Documentation | TODO |
+| Phase 9 | Review & Export Phase | DONE |
+| Phase 10 | Final Cleanup & Documentation | DONE |
 
 ## Change Log
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-25 | Phase 10 complete: Final Cleanup & Documentation — verified agent configs and dependencies, removed all remaining references to legacy architecture, all tests pass. Tool 1 is fully transitioned to the episode-first pipeline. |
+| 2026-03-25 | Phase 9 complete: Review & Export Phase — timeline editor, consistency guide editor, prompt list editor, per-language timeline read-only view, and fully wired UI handlers for saving review data and finalizing/downloading export zip. |
 | 2026-03-25 | Phase 8 complete: TTS & translation polish — per-language retry (translation/TTS), translation preview (side-by-side), TTS worker health indicator, TTS job progress in episode detail, retry buttons on failed languages. 87 tests passing. |
 | 2026-03-25 | Phase 7 complete: niche project detail enhancement — stats bar, inline language config with voice/translation profile dropdowns, AI provider/model config, enhanced episode cards with per-language mini-dots, batch operations (queue drafts, re-run failed), added missing `/api/target-languages` endpoint. 87 tests passing. |
 | 2026-03-25 | Phase 6 complete: enhanced Episode Pipeline Board with elapsed timers, progress bars, quick actions (Queue, Delete), output file previews, and expandable stage run details with stdout/error logs. Added `/api/episodes/{id}/files` endpoint. |

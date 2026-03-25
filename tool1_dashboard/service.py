@@ -1151,6 +1151,155 @@ class Tool1Service:
             "pid": health.pid,
         }
 
+    def get_review_data(self, episode_id: str) -> dict[str, Any]:
+        """Fetch all reviewable data for an episode: timeline, guide, prompts, per-lang timelines."""
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        workspace = self._episode_workspace(episode)
+
+        # Consistency guide
+        guide_path = episode.get("consistency_guide_path")
+        consistency_guide = read_json(Path(guide_path), default={}) if guide_path and Path(guide_path).exists() else {}
+
+        # Master timeline
+        timeline_path = episode.get("timeline_draft_path")
+        timeline_draft = read_json(Path(timeline_path), default=[]) if timeline_path and Path(timeline_path).exists() else []
+
+        # Timeline validation
+        validation_path = episode.get("timeline_validation_path")
+        timeline_validation = read_json(Path(validation_path), default={}) if validation_path and Path(validation_path).exists() else {}
+
+        # Prompts
+        prompt_path = episode.get("prompt_list_draft_path")
+        prompt_list = read_text(Path(prompt_path)) if prompt_path and Path(prompt_path).exists() else ""
+        blueprint_path = episode.get("prompt_blueprint_path")
+        prompt_blueprints = read_jsonl(Path(blueprint_path)) if blueprint_path and Path(blueprint_path).exists() else []
+
+        # Per-language timelines
+        lang_statuses = self.db.get_episode_language_statuses(episode_id)
+        per_lang_timelines: dict[str, list] = {}
+        for ls in lang_statuses:
+            tl_path = ls.get("timeline_path")
+            if tl_path and Path(tl_path).exists():
+                per_lang_timelines[ls["language_code"]] = read_json(Path(tl_path), default=[])
+
+        return {
+            "episode_id": episode_id,
+            "pipeline_status": episode.get("pipeline_status"),
+            "consistency_guide": consistency_guide,
+            "timeline_draft": timeline_draft,
+            "timeline_validation": timeline_validation,
+            "prompt_list": prompt_list,
+            "prompt_blueprints": prompt_blueprints,
+            "per_language_timelines": per_lang_timelines,
+        }
+
+    def update_review_data(
+        self,
+        episode_id: str,
+        *,
+        consistency_guide: dict | None = None,
+        timeline_draft: list | None = None,
+        prompt_list: str | None = None,
+    ) -> dict[str, Any]:
+        """Update reviewable artifacts: consistency guide, timeline, or prompt list."""
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        workspace = self._episode_workspace(episode)
+
+        updated = []
+        if consistency_guide is not None:
+            path = workspace / "consistency_guide.json"
+            write_json(path, consistency_guide)
+            self.db.update_episode(episode_id, consistency_guide_path=str(path))
+            updated.append("consistency_guide")
+
+        if timeline_draft is not None:
+            path = workspace / "timeline_draft.json"
+            write_json(path, timeline_draft)
+            self.db.update_episode(episode_id, timeline_draft_path=str(path))
+            updated.append("timeline_draft")
+
+        if prompt_list is not None:
+            path = workspace / "prompt_list_draft.txt"
+            write_text(path, prompt_list)
+            self.db.update_episode(episode_id, prompt_list_draft_path=str(path))
+            updated.append("prompt_list")
+
+        self.db.update_episode(episode_id, updated_at=utc_now())
+        return {"updated": updated}
+
+    def finalize_export(self, episode_id: str) -> dict[str, Any]:
+        """Package all episode outputs into a zip for Tool 2 handoff."""
+        import zipfile
+
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        workspace = self._episode_workspace(episode)
+        lang_statuses = self.db.get_episode_language_statuses(episode_id)
+
+        zip_name = f"export_{episode_id}.zip"
+        zip_path = workspace / zip_name
+
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Shared assets
+            shared_files = [
+                ("consistency_guide.json", episode.get("consistency_guide_path")),
+                ("timeline_draft.json", episode.get("timeline_draft_path")),
+                ("master_scenes.json", episode.get("master_scenes_path")),
+                ("prompt_list_draft.txt", episode.get("prompt_list_draft_path")),
+                ("prompt_blueprint.jsonl", episode.get("prompt_blueprint_path")),
+            ]
+            # Also include video/image prompt files
+            for name in ("video_prompt_list_draft.txt", "image_prompt_list_draft.txt",
+                         "video_prompt_blueprints.json", "image_prompt_blueprints.json"):
+                fpath = workspace / name
+                if fpath.exists():
+                    shared_files.append((name, str(fpath)))
+
+            for arc_name, fpath in shared_files:
+                if fpath and Path(fpath).exists():
+                    zf.write(fpath, f"shared/{arc_name}")
+
+            # Per-language assets
+            for ls in lang_statuses:
+                lang = ls["language_code"]
+                lang_dir = f"languages/{lang}"
+
+                # Script
+                if ls.get("script_path") and Path(ls["script_path"]).exists():
+                    zf.write(ls["script_path"], f"{lang_dir}/script_{lang}.txt")
+
+                # SRT
+                if ls.get("srt_path") and Path(ls["srt_path"]).exists():
+                    zf.write(ls["srt_path"], f"{lang_dir}/subtitles_{lang}.srt")
+
+                # Audio
+                if ls.get("tts_audio_path") and Path(ls["tts_audio_path"]).exists():
+                    zf.write(ls["tts_audio_path"], f"{lang_dir}/narration_{lang}.wav")
+
+                # Timeline
+                if ls.get("timeline_path") and Path(ls["timeline_path"]).exists():
+                    zf.write(ls["timeline_path"], f"{lang_dir}/timeline_{lang}.json")
+
+        # Update episode status
+        self.db.update_episode(
+            episode_id,
+            board_status="Done",
+            pipeline_status="done",
+            current_stage="export",
+            updated_at=utc_now(),
+        )
+
+        return {
+            "exported": True,
+            "zip_path": str(zip_path),
+            "zip_size": zip_path.stat().st_size,
+        }
+
     def delete_episode(self, episode_id: str) -> dict[str, Any]:
         episode = self.db.get_episode(episode_id)
         if episode is None:

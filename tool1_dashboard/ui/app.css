@@ -716,6 +716,7 @@ body[data-theme="light"] .kanban-card {
   word-break: break-word;
   display: -webkit-box;
   -webkit-line-clamp: 3;
+  line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -1988,4 +1989,42 @@ details.editor-card summary::-webkit-details-marker {
   border-radius: 8px;
   background: var(--panel-strong);
   border: 1px solid var(--line);
+}
+
+.review-editors-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+.editor-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.review-textarea {
+  flex: 1;
+  min-height: 400px;
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  color: var(--ink);
+  resize: vertical;
+}
+
+.review-textarea:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+
+.review-textarea[readonly] {
+  opacity: 0.8;
+  background: transparent;
+  cursor: default;
 }

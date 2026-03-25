@@ -114,6 +114,12 @@ class LanguageRetryRequest(BaseModel):
     stage: str
 
 
+class ReviewDataUpdateRequest(BaseModel):
+    consistency_guide: dict | None = None
+    timeline_draft: list | None = None
+    prompt_list: str | None = None
+
+
 service = Tool1Service()
 app = FastAPI(title="Creator Studio")
 app.add_middleware(
@@ -400,6 +406,60 @@ async def translation_preview(episode_id: str, language_code: str) -> dict[str, 
         return service.get_translation_preview(episode_id, language_code)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ── Review & Export routes ─────────────────────────────────────────
+
+
+@app.get("/api/episodes/{episode_id}/review-data")
+async def review_data(episode_id: str) -> dict[str, Any]:
+    try:
+        return service.get_review_data(episode_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/episodes/{episode_id}/review-data")
+async def update_review_data(episode_id: str, payload: ReviewDataUpdateRequest) -> dict[str, Any]:
+    try:
+        return service.update_review_data(
+            episode_id,
+            consistency_guide=payload.consistency_guide,
+            timeline_draft=payload.timeline_draft,
+            prompt_list=payload.prompt_list,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/episodes/{episode_id}/finalize-export")
+async def finalize_export(episode_id: str) -> dict[str, Any]:
+    try:
+        return service.finalize_export(episode_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/episodes/{episode_id}/export/download")
+async def download_export(episode_id: str) -> FileResponse:
+    try:
+        detail = service.get_episode_detail(episode_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    episode = detail["episode"]
+    workspace = Path(episode.get("workspace_dir", ""))
+    zip_path = workspace / f"export_{episode_id}.zip"
+    if not zip_path.exists():
+        raise HTTPException(status_code=404, detail="Export zip not found. Run finalize first.")
+    return FileResponse(
+        path=str(zip_path),
+        media_type="application/zip",
+        filename=f"{episode.get('title', episode_id)}_export.zip",
+    )
 
 
 # ── Voice & Translation profile routes ─────────────────────────────

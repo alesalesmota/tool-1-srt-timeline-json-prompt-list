@@ -1221,6 +1221,8 @@ function renderEpisodeDetail() {
       </div>
     </div>`;
 
+  const reviewSection = '<div id="episode-review-section" class="detail-section"></div>';
+
   $("view").innerHTML = `
     <div class="detail-section">
       <div class="eyebrow">Episode</div>
@@ -1258,6 +1260,18 @@ function renderEpisodeDetail() {
       ${langTable}
     </div>
 
+    ${reviewSection}
+
+    ${filesSection}tion-header">
+        <div class="eyebrow">Per-language status</div>
+        <div class="badge-row">
+          <span class="badge" data-tone="${workerTone}">${esc(workerLabel)}</span>
+          ${!workerRunning ? '<button type="button" class="button button-ghost button-small" data-worker-action="start">Start Worker</button>' : ''}
+        </div>
+      </div>
+      ${langTable}
+    </div>
+
     ${filesSection}
 
     <div class="detail-section">
@@ -1274,6 +1288,7 @@ function renderEpisodeDetail() {
 
   // Auto-load files
   loadEpisodeFiles(episode.id);
+  loadReviewData(episode.id);
 }
 
 async function loadEpisodeFiles(episodeId) {
@@ -1303,6 +1318,74 @@ async function loadEpisodeFiles(episodeId) {
     }).join("");
   } catch (err) {
     container.innerHTML = '<p class="helper" style="color:var(--clr-error);">' + esc(err.message) + '</p>';
+  }
+}
+
+async function loadReviewData(episodeId) {
+  const container = $("episode-review-section");
+  if (!container) return;
+  
+  const detail = state.episodeDetail;
+  if (!detail) return;
+  const ep = detail.episode;
+  
+  if (!["review", "export", "done"].includes(ep.pipeline_status)) {
+    container.style.display = "none";
+    return;
+  }
+  container.style.display = "block";
+  
+  container.innerHTML = '<p class="helper">Loading review data…</p>';
+  try {
+    const data = await api("/api/episodes/" + encodeURIComponent(episodeId) + "/review-data");
+    
+    const guideStr = data.consistency_guide ? JSON.stringify(data.consistency_guide, null, 2) : "{}";
+    const timelineStr = data.timeline_draft ? JSON.stringify(data.timeline_draft, null, 2) : "[]";
+    const promptStr = data.prompt_list || "";
+    
+    // Can edit if current stage is review and it hasn't successfully exported yet
+    const canEdit = ep.current_stage === "review" && ep.pipeline_status !== "done";
+    const readonlyAttr = canEdit ? "" : "readonly";
+    
+    container.innerHTML = `
+      <div class="section-header" style="margin-bottom:12px;">
+        <div class="eyebrow">Phase 9: Review & Export</div>
+        <div class="button-row">
+          ${canEdit ? '<button type="button" class="button button-primary button-small has-icon" data-save-review="' + esc(episodeId) + '">' + iconContent("save", "Save Edits") + '</button>' : ''}
+          ${canEdit ? '<button type="button" class="button button-primary button-small has-icon" style="background:var(--success);color:var(--bg)" data-finalize-export="' + esc(episodeId) + '">' + iconContent("finalize", "Finalize & Export") + '</button>' : ''}
+          ${ep.pipeline_status === "done" || ep.current_stage === "export" ? '<button type="button" class="button button-primary button-small has-icon" data-download-export="' + esc(episodeId) + '">' + iconContent("download", "Download ZIP") + '</button>' : ''}
+        </div>
+      </div>
+      
+      <div class="review-editors-grid">
+        <div class="editor-col">
+          <div class="eyebrow" style="margin-bottom:6px;">Consistency Guide (JSON)</div>
+          <textarea id="review-guide" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(guideStr)}</textarea>
+        </div>
+        <div class="editor-col">
+          <div class="eyebrow" style="margin-bottom:6px;">Timeline Editor (JSON)</div>
+          <textarea id="review-timeline" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(timelineStr)}</textarea>
+        </div>
+        <div class="editor-col">
+          <div class="eyebrow" style="margin-bottom:6px;">Prompt List</div>
+          <textarea id="review-prompts" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(promptStr)}</textarea>
+        </div>
+      </div>
+
+      <div style="margin-top:16px;">
+        <details class="run-detail-card">
+          <summary>
+            <div class="run-detail-head"><strong>Per-Language Timelines (Read-Only Preview)</strong> <span class="badge badge-small">${Object.keys(data.per_language_timelines || {}).length}</span></div>
+          </summary>
+          <div class="run-detail-body" style="max-height: 400px; overflow-y: auto;">
+            <pre class="run-output">${esc(JSON.stringify(data.per_language_timelines, null, 2))}</pre>
+          </div>
+        </details>
+      </div>
+    `;
+    
+  } catch (err) {
+    container.innerHTML = '<p class="helper" style="color:var(--error);">' + esc(err.message) + '</p>';
   }
 }
 
@@ -1838,7 +1921,7 @@ document.addEventListener("click", async (event) => {
     resetAutoRefresh();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation]");
+  const target = event.target.closest("[data-nav], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
   if (!target) return;
   event.preventDefault();
   try {
@@ -2083,6 +2166,38 @@ document.addEventListener("click", async (event) => {
       state.translationPreview = preview;
       state.modal = { kind: "translation-preview" };
       renderApp();
+      return;
+    }
+    if (target.dataset.saveReview) {
+      const episodeId = target.dataset.saveReview;
+      const guideRaw = $("review-guide").value;
+      const timelineRaw = $("review-timeline").value;
+      const prompts = $("review-prompts").value;
+      
+      let consistency_guide, timeline_draft;
+      try { consistency_guide = JSON.parse(guideRaw); } catch (e) { throw new Error("Invalid Consistency Guide JSON"); }
+      try { timeline_draft = JSON.parse(timelineRaw); } catch (e) { throw new Error("Invalid Timeline Draft JSON"); }
+      
+      await api('/api/episodes/' + encodeURIComponent(episodeId) + '/review-data', {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ consistency_guide, timeline_draft, prompt_list: prompts }),
+      });
+      setNotice("Review data saved successfully.", "success");
+      return;
+    }
+    if (target.dataset.finalizeExport) {
+      const episodeId = target.dataset.finalizeExport;
+      if (!confirm("Finalize and generate export ZIP?")) return;
+      await api('/api/episodes/' + encodeURIComponent(episodeId) + '/finalize-export', { method: "POST" });
+      await refreshData();
+      renderApp();
+      setNotice("Export complete and ready for download.", "success");
+      return;
+    }
+    if (target.dataset.downloadExport) {
+      const episodeId = target.dataset.downloadExport;
+      window.open('/api/episodes/' + encodeURIComponent(episodeId) + '/export/download', '_blank');
       return;
     }
   } catch (error) {

@@ -84,17 +84,17 @@
 - [x] Error handling (API keys, rate limits) — errors display in per-language table, retry available
 
 ## Phase 9: Review & Export Phase
-- [ ] Timeline editor in review view
-- [ ] Consistency guide editor
-- [ ] Prompt list editor
-- [ ] Per-language timeline viewer
-- [ ] Export zip packaging
-- [ ] "Finalize" action
+- [x] Timeline editor in review view
+- [x] Consistency guide editor
+- [x] Prompt list editor
+- [x] Per-language timeline viewer
+- [x] Export zip packaging
+- [x] "Finalize" action
 
 ## Phase 10: Final Cleanup & Documentation
-- [ ] Remove all remaining legacy references
-- [ ] Update `PROJECT_REGISTRY.md` with final architecture
-- [ ] Update agent configs in `config/agents/`
-- [ ] Clean up `requirements.txt`
-- [ ] Full test suite pass
-- [ ] E2E test: submit → all stages → export
+- [x] Remove all remaining legacy references
+- [x] Update `PROJECT_REGISTRY.md` with final architecture
+- [x] Update agent configs in `config/agents/`
+- [x] Clean up `requirements.txt`
+- [x] Full test suite pass
+- [x] E2E test: submit → all stages → export
