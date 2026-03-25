@@ -109,6 +109,11 @@ class EpisodeQueueRequest(BaseModel):
     start_stage: str | None = None
 
 
+class LanguageRetryRequest(BaseModel):
+    language_code: str
+    stage: str
+
+
 service = Tool1Service()
 app = FastAPI(title="Creator Studio")
 app.add_middleware(
@@ -375,6 +380,26 @@ async def episode_files(episode_id: str) -> dict[str, Any]:
             files.sort(key=lambda f: f["name"])
 
     return {"files": files}
+
+
+@app.post("/api/episodes/{episode_id}/retry-language")
+async def retry_episode_language(episode_id: str, payload: LanguageRetryRequest) -> dict[str, Any]:
+    try:
+        return service.retry_episode_language(episode_id, payload.language_code, payload.stage)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/episodes/{episode_id}/translation-preview/{language_code}")
+async def translation_preview(episode_id: str, language_code: str) -> dict[str, Any]:
+    try:
+        return service.get_translation_preview(episode_id, language_code)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 # ── Voice & Translation profile routes ─────────────────────────────

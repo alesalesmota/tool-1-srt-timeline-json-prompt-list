@@ -51,6 +51,7 @@ const state = {
   nicheProjectDetail: null,
   boardEpisodes: [],
   episodeDetail: null,
+  translationPreview: null,
 };
 
 let refreshTimer = null;
@@ -1147,12 +1148,29 @@ function renderEpisodeDetail() {
     return '<div class="stage-strip-item" data-state="' + st + '" title="' + esc(s.label) + '">' + esc(s.short) + '</div>';
   }).join("");
 
+  // Worker health
+  const wh = detail.worker_health || {};
+  const workerRunning = wh.running;
+  const workerTone = workerRunning ? (wh.is_stale ? "warn" : "success") : "error";
+  const workerLabel = workerRunning ? (wh.is_stale ? "TTS Worker stale" : "TTS Worker active") : "TTS Worker offline";
+
   // Per-language table
+  const isPipelineIdle = !["running", "queued"].includes(episode.pipeline_status || "idle");
   const langRows = langStatuses.map((ls) => {
+    const canRetryTranslation = isPipelineIdle && (ls.translation_status === "failed" || ls.translation_status === "skipped");
+    const canRetryTts = isPipelineIdle && (ls.tts_status === "failed" || ls.tts_status === "skipped");
+    const hasTranslation = ls.translation_status === "done" && ls.language_code !== (episode.master_language || "en");
+    const ttsProgress = ls.tts_job_progress ? ' <span class="helper" style="font-size:0.7rem;">(' + esc(ls.tts_job_progress) + ')</span>' : '';
+
     return '<tr>' +
       '<td><strong>' + esc(ls.language_code) + '</strong></td>' +
-      '<td>' + langStatusBadge(ls.translation_status) + '</td>' +
-      '<td>' + langStatusBadge(ls.tts_status) + '</td>' +
+      '<td>' + langStatusBadge(ls.translation_status) +
+        (hasTranslation ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-preview-translation="' + esc(episode.id) + '" data-preview-lang="' + esc(ls.language_code) + '">Preview</button>' : '') +
+        (canRetryTranslation ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="translation">Retry</button>' : '') +
+      '</td>' +
+      '<td>' + langStatusBadge(ls.tts_status) + ttsProgress +
+        (canRetryTts ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="tts">Retry</button>' : '') +
+      '</td>' +
       '<td>' + langStatusBadge(ls.srt_status) + '</td>' +
       '<td>' + langStatusBadge(ls.timeline_status) + '</td>' +
       '<td class="helper" style="font-size:0.75rem;">' + esc(ls.error_message || "") + '</td>' +
@@ -1230,7 +1248,13 @@ function renderEpisodeDetail() {
     </div>
 
     <div class="detail-section">
-      <div class="eyebrow">Per-language status</div>
+      <div class="section-header">
+        <div class="eyebrow">Per-language status</div>
+        <div class="badge-row">
+          <span class="badge" data-tone="${workerTone}">${esc(workerLabel)}</span>
+          ${!workerRunning ? '<button type="button" class="button button-ghost button-small" data-worker-action="start">Start Worker</button>' : ''}
+        </div>
+      </div>
       ${langTable}
     </div>
 
@@ -1244,6 +1268,8 @@ function renderEpisodeDetail() {
     <div class="detail-section">
       <button type="button" class="button button-ghost has-icon" data-nav="pipeline-board">${iconContent("back", "Back to board")}</button>
     </div>
+
+    ${state.modal.kind === "translation-preview" ? renderTranslationPreviewModal() : ""}
   `;
 
   // Auto-load files
@@ -1278,6 +1304,41 @@ async function loadEpisodeFiles(episodeId) {
   } catch (err) {
     container.innerHTML = '<p class="helper" style="color:var(--clr-error);">' + esc(err.message) + '</p>';
   }
+}
+
+function renderTranslationPreviewModal() {
+  const preview = state.translationPreview;
+  if (!preview) return '';
+  const statusBadgeHtml = langStatusBadge(preview.translation_status);
+  const logSummary = (preview.translation_log || []).map((c) =>
+    '<div class="helper" style="font-size:0.75rem;">' +
+      'Chunk ' + c.chunk_index + ': ' + c.words_in + ' → ' + c.words_out + ' words ' +
+      '<span class="badge badge-' + (c.status === "ok" ? "success" : "error") + '" style="font-size:0.65rem;">' + esc(c.status) + '</span>' +
+      (c.error ? ' <span class="helper" style="color:var(--error);">' + esc(c.error) + '</span>' : '') +
+    '</div>'
+  ).join("");
+
+  return `
+    <div class="modal-backdrop" data-modal-backdrop="true">
+      <div class="modal-panel" style="max-width:900px;width:95vw;">
+        <div class="modal-header">
+          <h2>Translation Preview — ${esc(preview.language_code)} ${statusBadgeHtml}</h2>
+          <button type="button" class="button button-ghost icon-only" data-close-modal="true">${iconContent("close", "Close", { iconOnly: true })}</button>
+        </div>
+        <div class="translation-preview-grid">
+          <div class="translation-preview-col">
+            <div class="eyebrow">Original</div>
+            <pre class="translation-preview-text">${esc(preview.original || "")}</pre>
+          </div>
+          <div class="translation-preview-col">
+            <div class="eyebrow">Translated (${esc(preview.language_code)})</div>
+            <pre class="translation-preview-text">${esc(preview.translated || "(no translation yet)")}</pre>
+          </div>
+        </div>
+        ${logSummary ? '<div style="margin-top:12px;"><div class="eyebrow">Chunk log</div>' + logSummary + '</div>' : ''}
+      </div>
+    </div>
+  `;
 }
 
 function langStatusBadge(status) {
@@ -1777,7 +1838,7 @@ document.addEventListener("click", async (event) => {
     resetAutoRefresh();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-batch-queue-drafts], [data-batch-queue-failed]");
+  const target = event.target.closest("[data-nav], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation]");
   if (!target) return;
   event.preventDefault();
   try {
@@ -1999,6 +2060,29 @@ document.addEventListener("click", async (event) => {
       await refreshData();
       renderApp();
       setNotice("Re-queued " + (result.queued_count || 0) + " failed episode(s).", "success");
+      return;
+    }
+    if (target.dataset.retryLanguage) {
+      const episodeId = target.dataset.retryLanguage;
+      const langCode = target.dataset.retryLang;
+      const stage = target.dataset.retryStage;
+      await api('/api/episodes/' + encodeURIComponent(episodeId) + '/retry-language', {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ language_code: langCode, stage }),
+      });
+      await refreshData();
+      renderApp();
+      setNotice("Retrying " + stage + " for " + langCode + ".", "success");
+      return;
+    }
+    if (target.dataset.previewTranslation) {
+      const episodeId = target.dataset.previewTranslation;
+      const langCode = target.dataset.previewLang;
+      const preview = await api('/api/episodes/' + encodeURIComponent(episodeId) + '/translation-preview/' + encodeURIComponent(langCode));
+      state.translationPreview = preview;
+      state.modal = { kind: "translation-preview" };
+      renderApp();
       return;
     }
   } catch (error) {

@@ -1965,3 +1965,27 @@ details.editor-card summary::-webkit-details-marker {
   align-items: center;
   margin-top: 10px;
 }
+
+.translation-preview-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.translation-preview-col .eyebrow {
+  margin-bottom: 6px;
+}
+
+.translation-preview-text {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  max-height: 50vh;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+}

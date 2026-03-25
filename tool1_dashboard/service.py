@@ -924,10 +924,24 @@ class Tool1Service:
             raise FileNotFoundError("Episode not found.")
         lang_statuses = self.db.get_episode_language_statuses(episode_id)
         stage_runs = self.db.list_stage_runs(episode_id)
+
+        # Attach TTS job progress for each language with an active TTS job
+        for ls in lang_statuses:
+            tts_job_id = ls.get("tts_job_id")
+            if tts_job_id and ls.get("tts_status") in ("running", "pending"):
+                job = self.db.get_tts_job(tts_job_id)
+                if job:
+                    ls["tts_job_status"] = job.get("status")
+                    ls["tts_job_progress"] = job.get("progress")
+
+        # Include worker health
+        worker_health = self.get_worker_health()
+
         return {
             "episode": episode,
             "language_statuses": lang_statuses,
             "stage_runs": stage_runs,
+            "worker_health": worker_health,
         }
 
     def queue_episode(self, episode_id: str, start_stage: str | None = None) -> dict[str, Any]:
@@ -958,6 +972,184 @@ class Tool1Service:
             lang_statuses = self.db.get_episode_language_statuses(ep["id"])
             ep["language_statuses"] = lang_statuses
         return episodes
+
+    def retry_episode_language(
+        self,
+        episode_id: str,
+        language_code: str,
+        stage: str,
+    ) -> dict[str, Any]:
+        """Retry a specific stage for a single language without re-running the whole pipeline."""
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        if episode.get("pipeline_status") == "running":
+            raise ValueError("Episode pipeline is currently running.")
+
+        lang_status = self.db.get_episode_language_status(episode_id, language_code)
+        if lang_status is None:
+            raise FileNotFoundError(f"No language status for '{language_code}'.")
+
+        if stage == "translation":
+            self.db.update_episode_language_status(
+                episode_id, language_code,
+                translation_status="pending", error_message=None,
+            )
+            self._episode_retry_single_translation(episode_id, language_code)
+        elif stage == "tts":
+            self.db.update_episode_language_status(
+                episode_id, language_code,
+                tts_status="pending", error_message=None,
+            )
+            self._episode_retry_single_tts(episode_id, language_code)
+        else:
+            raise ValueError(f"Retry not supported for stage '{stage}'.")
+
+        return {"retried": True, "language_code": language_code, "stage": stage}
+
+    def _episode_retry_single_translation(self, episode_id: str, lang: str) -> None:
+        """Retry translation for a single language."""
+        from .translation import TranslationService
+
+        episode = self.db.get_episode(episode_id)
+        project = self.db.get_niche_project(episode["niche_project_id"])
+        translation_profiles = json.loads(project.get("language_translation_profiles") or "{}")
+        settings = self._global_settings()
+        workspace = self._episode_workspace(episode)
+
+        profile_id = translation_profiles.get(lang)
+        if not profile_id:
+            self.db.update_episode_language_status(
+                episode_id, lang,
+                translation_status="skipped",
+                error_message="No translation profile configured",
+            )
+            return
+
+        profile = self.db.get_translation_profile(profile_id)
+        if profile is None:
+            self.db.update_episode_language_status(
+                episode_id, lang,
+                translation_status="skipped",
+                error_message=f"Translation profile '{profile_id}' not found",
+            )
+            return
+
+        self.db.update_episode_language_status(episode_id, lang, translation_status="running")
+        try:
+            svc = TranslationService()
+            result = asyncio.run(svc.translate_script(
+                source_script=episode["script_text"],
+                source_lang=episode["master_language"],
+                target_lang=lang,
+                provider=profile["provider"],
+                api_key=profile["api_key_ref"],
+                model=profile["model"],
+                max_words_per_chunk=settings.get("translation_chunk_max_words", 800),
+                context_tail_words=settings.get("translation_context_tail_words", 200),
+            ))
+            translated_path = workspace / f"script_{lang}.txt"
+            write_text(translated_path, result.translated_script)
+            write_json(workspace / f"translation_log_{lang}.json", [
+                {
+                    "chunk_index": cr.chunk_index,
+                    "scene_ids": cr.scene_ids,
+                    "words_in": cr.words_in,
+                    "words_out": cr.words_out,
+                    "status": cr.status,
+                    "error": cr.error,
+                }
+                for cr in result.chunk_results
+            ])
+            self.db.update_episode_language_status(
+                episode_id, lang,
+                translation_status="done",
+                script_path=str(translated_path),
+            )
+        except Exception as exc:
+            self.db.update_episode_language_status(
+                episode_id, lang,
+                translation_status="failed",
+                error_message=str(exc)[:500],
+            )
+
+    def _episode_retry_single_tts(self, episode_id: str, lang: str) -> None:
+        """Retry TTS for a single language by submitting a new TTS job."""
+        episode = self.db.get_episode(episode_id)
+        project = self.db.get_niche_project(episode["niche_project_id"])
+        voice_profiles = json.loads(project.get("language_voice_profiles") or "{}")
+
+        profile_id = voice_profiles.get(lang)
+        if not profile_id:
+            self.db.update_episode_language_status(
+                episode_id, lang, tts_status="skipped",
+                error_message="No voice profile configured",
+            )
+            return
+
+        # Get script text
+        if lang == episode["master_language"]:
+            script_text = episode["script_text"]
+        else:
+            lang_status = self.db.get_episode_language_status(episode_id, lang)
+            script_path = lang_status.get("script_path") if lang_status else None
+            if script_path and Path(script_path).exists():
+                script_text = read_text(Path(script_path))
+            else:
+                script_text = episode["script_text"]
+
+        self.db.update_episode_language_status(episode_id, lang, tts_status="running")
+        from .tts.manager import TTSManager
+        tts_mgr = TTSManager(self.db)
+        job_id = tts_mgr.submit_tts_job(
+            job_type="generate",
+            profile_id=profile_id,
+            payload={"texts": [script_text]},
+            build_id=episode_id,
+            filename=f"narration_{lang}.wav",
+        )
+        self.db.update_episode_language_status(episode_id, lang, tts_job_id=job_id)
+
+    def get_translation_preview(self, episode_id: str, language_code: str) -> dict[str, Any]:
+        """Return original and translated script side-by-side for preview."""
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        lang_status = self.db.get_episode_language_status(episode_id, language_code)
+        if lang_status is None:
+            raise FileNotFoundError(f"No language status for '{language_code}'.")
+
+        original = episode["script_text"] or ""
+        translated = ""
+        script_path = lang_status.get("script_path")
+        if script_path and Path(script_path).exists():
+            translated = read_text(Path(script_path))
+
+        # Load translation log if available
+        workspace = self._episode_workspace(episode)
+        log_path = workspace / f"translation_log_{language_code}.json"
+        translation_log = read_json(log_path, default=[]) if log_path.exists() else []
+
+        return {
+            "language_code": language_code,
+            "original": original,
+            "translated": translated,
+            "translation_log": translation_log,
+            "translation_status": lang_status.get("translation_status", "pending"),
+        }
+
+    def get_worker_health(self) -> dict[str, Any]:
+        """Return TTS worker health status."""
+        health = self.tts_manager.get_worker_health()
+        return {
+            "running": health.running,
+            "status": health.status,
+            "worker_id": health.worker_id,
+            "current_job_id": health.current_job_id,
+            "last_heartbeat": health.last_heartbeat,
+            "is_stale": health.is_stale,
+            "pid": health.pid,
+        }
 
     def delete_episode(self, episode_id: str) -> dict[str, Any]:
         episode = self.db.get_episode(episode_id)
