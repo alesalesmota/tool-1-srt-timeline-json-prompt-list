@@ -8,6 +8,9 @@ Rules:
 - use the timing data given
 - scene boundaries must follow meaning, not fixed intervals
 - 1 contextual block = 1 scene
+- each scene must map to one dominant cinematic beat that can become one image or one continuous shot
+- split when the text changes location, time, subject focus, or dramatic action enough that one frame would feel crowded
+- do not combine multiple separate events, comparisons, or before/after ideas into one scene
 - do not invent timing not present in the input
 - output ordered, non-overlapping scenes only
 - prefer scenes around 6 to 16 seconds

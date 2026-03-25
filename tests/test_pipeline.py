@@ -23,6 +23,7 @@ from tool1_dashboard.service import Tool1Service
 class FakeCliRunner:
     def __init__(self, malformed_image_prompts: bool = False) -> None:
         self.malformed_image_prompts = malformed_image_prompts
+        self.calls: list[dict[str, object]] = []
 
     def probe(self) -> dict[str, object]:
         return {
@@ -30,8 +31,19 @@ class FakeCliRunner:
             "claude": {"available": True, "logged_in": True},
         }
 
-    def run_structured(self, *, provider, system_prompt, user_prompt, schema, workdir, artifact_dir):  # type: ignore[no-untyped-def]
+    def run_structured(self, *, provider, model, system_prompt, user_prompt, schema, workdir, artifact_dir):  # type: ignore[no-untyped-def]
         artifact_dir.mkdir(parents=True, exist_ok=True)
+        self.calls.append(
+            {
+                "provider": provider,
+                "model": model,
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "schema": schema,
+                "workdir": str(workdir),
+                "artifact_dir": str(artifact_dir),
+            }
+        )
         if "world_style" in schema["properties"]:
             parsed = {
                 "world_style": {
@@ -117,7 +129,7 @@ class FakeCliRunner:
             "stdout_path": str(stdout_path),
             "stderr_path": str(stderr_path),
             "parsed_path": str(parsed_path),
-            "command_payload": {"provider": provider},
+            "command_payload": {"provider": provider, "model": model},
         }
 
 
@@ -195,6 +207,37 @@ def fake_alignment_result(output_root: Path) -> AlignmentResult:
 
 
 class PipelineTests(unittest.TestCase):
+    def test_visual_bible_uses_clean_source_script_as_primary_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            runner = FakeCliRunner()
+            with patch("tool1_dashboard.service.EPISODES_ROOT", temp_path / "videos"), \
+                 patch("tool1_dashboard.service.AGENTS_ROOT", temp_path / "config" / "agents"), \
+                 patch("tool1_dashboard.templates.AGENTS_ROOT", temp_path / "config" / "agents"), \
+                 patch("tool1_dashboard.service.run_alignment_job", side_effect=lambda **kwargs: fake_alignment_result(kwargs["output_root"])):
+                service = Tool1Service(db=Tool1Database(temp_path / "db.sqlite"), cli_runner=runner)
+                created = service.create_job(
+                    title="Bible Context Test",
+                    audio_name="voice.wav",
+                    audio_bytes=b"RIFF",
+                    script_name="script.txt",
+                    script_bytes=b"Abraham waits in the desert.\n\nIshmael watches the horizon.",
+                    language_code="en",
+                    leading_video_scene_count=1,
+                )
+                service._process_job(created["job"])
+
+                visual_bible_calls = [call for call in runner.calls if "world_style" in call["schema"]["properties"]]  # type: ignore[index]
+                self.assertEqual(len(visual_bible_calls), 1)
+                user_prompt = str(visual_bible_calls[0]["user_prompt"])
+                self.assertIn("Create a consistency guide for this video project.", user_prompt)
+                self.assertIn("Source script payload:", user_prompt)
+                self.assertNotIn("Approved timeline payload:", user_prompt)
+                self.assertIn("Abraham waits in the desert.", user_prompt)
+                self.assertIn("Ishmael watches the horizon.", user_prompt)
+                self.assertEqual(visual_bible_calls[0]["provider"], "claude")
+                self.assertEqual(visual_bible_calls[0]["model"], "haiku")
+
     def test_prompt_enrichment_normalizes_character_refs_and_infers_missing_refs(self) -> None:
         visual_bible = {
             "characters": [
@@ -247,7 +290,7 @@ class PipelineTests(unittest.TestCase):
     def test_successful_pipeline_reaches_review_with_visual_bible_and_prompts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            with patch("tool1_dashboard.service.VIDEOS_ROOT", temp_path / "videos"), \
+            with patch("tool1_dashboard.service.EPISODES_ROOT", temp_path / "videos"), \
                  patch("tool1_dashboard.service.AGENTS_ROOT", temp_path / "config" / "agents"), \
                  patch("tool1_dashboard.templates.AGENTS_ROOT", temp_path / "config" / "agents"), \
                  patch("tool1_dashboard.service.run_alignment_job", side_effect=lambda **kwargs: fake_alignment_result(kwargs["output_root"])):
@@ -265,9 +308,21 @@ class PipelineTests(unittest.TestCase):
                 detail = service.get_job_detail(created["job"]["id"])
                 self.assertEqual(detail["job"]["board_status"], "Review")
                 self.assertTrue(detail["job"]["visual_bible_path"])
+                self.assertTrue(detail["job"]["visual_bible_path"].endswith("consistency_guide.json"))
                 self.assertTrue(detail["job"]["prompt_list_draft_path"])
                 self.assertTrue(detail["job"]["prompt_blueprint_path"])
+                self.assertIsNotNone(detail["artifacts"]["consistency_guide"])
+                self.assertTrue((temp_path / "videos" / created["job"]["id"] / "review" / "video_prompt_list_draft.txt").exists())
+                self.assertTrue((temp_path / "videos" / created["job"]["id"] / "review" / "image_prompt_list_draft.txt").exists())
+                self.assertIn("elderly desert prophet", detail["artifacts"]["video_prompt_list_draft"].lower())
+                self.assertIn("elderly desert prophet", detail["artifacts"]["image_prompt_list_draft"].lower())
+                self.assertNotIn("SUBJ:", detail["artifacts"]["video_prompt_list_draft"])
+                self.assertNotIn("SUBJ:", detail["artifacts"]["image_prompt_list_draft"])
                 self.assertEqual([scene["asset_type"] for scene in detail["artifacts"]["timeline"]], ["video", "image"])
+                self.assertEqual(detail["job"]["scene_planning_model"], "haiku")
+                self.assertEqual(detail["job"]["visual_bible_model"], "haiku")
+                self.assertEqual(detail["job"]["video_prompt_model"], "gpt-5.4")
+                self.assertEqual(detail["job"]["image_prompt_model"], "gpt-5.4")
 
                 finalized = service.finalize_job(created["job"]["id"])
                 self.assertEqual(finalized["job"]["board_status"], "Done")
@@ -277,11 +332,13 @@ class PipelineTests(unittest.TestCase):
                 image_prompts = Path(finalized["job"]["export_image_prompt_list_path"]).read_text(encoding="utf-8").splitlines()
                 self.assertEqual(len(video_prompts), 1)
                 self.assertEqual(len(image_prompts), 1)
+                self.assertTrue(any(call["provider"] == "claude" and call["model"] == "haiku" for call in service.cli_runner.calls))
+                self.assertTrue(any(call["provider"] == "codex" and call["model"] == "gpt-5.4" for call in service.cli_runner.calls))
 
     def test_invalid_split_prompt_output_moves_job_to_attention(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            with patch("tool1_dashboard.service.VIDEOS_ROOT", temp_path / "videos"), \
+            with patch("tool1_dashboard.service.EPISODES_ROOT", temp_path / "videos"), \
                  patch("tool1_dashboard.service.AGENTS_ROOT", temp_path / "config" / "agents"), \
                  patch("tool1_dashboard.templates.AGENTS_ROOT", temp_path / "config" / "agents"), \
                  patch("tool1_dashboard.service.run_alignment_job", side_effect=lambda **kwargs: fake_alignment_result(kwargs["output_root"])):

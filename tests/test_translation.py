@@ -1,0 +1,352 @@
+"""Tests for the translation module (chunker, prompts, service, profile CRUD)."""
+
+from __future__ import annotations
+
+import asyncio
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock
+
+from tool1_dashboard.translation.chunker import (
+    TranslationChunk,
+    build_scene_aware_chunks,
+    build_text_chunks,
+)
+from tool1_dashboard.translation.prompts import build_translation_prompt
+from tool1_dashboard.translation.service import TranslationService
+from tool1_dashboard.translation.adapter import TranslationAdapter, TranslationError
+from tool1_dashboard.database import Tool1Database
+
+
+class SceneAwareChunkingTests(unittest.TestCase):
+
+    def _make_scenes(self, word_counts: list[int]) -> list[dict[str, Any]]:
+        scenes = []
+        for i, wc in enumerate(word_counts):
+            scenes.append({
+                "scene_id": f"scene-{i + 1}",
+                "text": " ".join(f"word{j}" for j in range(wc)),
+            })
+        return scenes
+
+    def test_single_scene_under_limit(self):
+        scenes = self._make_scenes([100])
+        chunks = build_scene_aware_chunks(scenes, max_words_per_chunk=800)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].scene_ids, ["scene-1"])
+        self.assertEqual(chunks[0].word_count, 100)
+
+    def test_multiple_scenes_grouped(self):
+        scenes = self._make_scenes([200, 200, 200])
+        chunks = build_scene_aware_chunks(scenes, max_words_per_chunk=800)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].scene_ids, ["scene-1", "scene-2", "scene-3"])
+        self.assertEqual(chunks[0].word_count, 600)
+
+    def test_scenes_split_at_boundary(self):
+        scenes = self._make_scenes([400, 400, 400])
+        chunks = build_scene_aware_chunks(scenes, max_words_per_chunk=800)
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(chunks[0].scene_ids, ["scene-1", "scene-2"])
+        self.assertEqual(chunks[0].word_count, 800)
+        self.assertEqual(chunks[1].scene_ids, ["scene-3"])
+        self.assertEqual(chunks[1].word_count, 400)
+
+    def test_large_scene_gets_own_chunk(self):
+        scenes = self._make_scenes([100, 1000, 100])
+        chunks = build_scene_aware_chunks(scenes, max_words_per_chunk=800)
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual(chunks[0].scene_ids, ["scene-1"])
+        self.assertEqual(chunks[1].scene_ids, ["scene-2"])
+        self.assertEqual(chunks[1].word_count, 1000)
+        self.assertEqual(chunks[2].scene_ids, ["scene-3"])
+
+    def test_never_splits_scene_across_chunks(self):
+        scenes = self._make_scenes([300, 300, 300])
+        chunks = build_scene_aware_chunks(scenes, max_words_per_chunk=500)
+        # scene-1 (300) fits, scene-2 (300) would make 600 > 500, so new chunk
+        self.assertEqual(len(chunks), 3)
+        for chunk in chunks:
+            self.assertEqual(len(chunk.scene_ids), 1)
+
+    def test_empty_scenes_skipped(self):
+        scenes = [
+            {"scene_id": "s1", "text": "hello world"},
+            {"scene_id": "s2", "text": ""},
+            {"scene_id": "s3", "text": "goodbye world"},
+        ]
+        chunks = build_scene_aware_chunks(scenes, max_words_per_chunk=800)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].scene_ids, ["s1", "s3"])
+
+
+class TextFallbackChunkingTests(unittest.TestCase):
+
+    def test_short_text_single_chunk(self):
+        text = "Hello world. This is a test."
+        chunks = build_text_chunks(text, max_words=800)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].text, text)
+
+    def test_paragraph_splitting(self):
+        para1 = " ".join(f"word{i}" for i in range(500))
+        para2 = " ".join(f"word{i}" for i in range(500))
+        text = f"{para1}\n\n{para2}"
+        chunks = build_text_chunks(text, max_words=600)
+        self.assertEqual(len(chunks), 2)
+        self.assertIn("word0", chunks[0].text)
+
+    def test_large_paragraph_sentence_splitting(self):
+        sentences = [f"This is sentence number {i}." for i in range(200)]
+        text = " ".join(sentences)
+        chunks = build_text_chunks(text, max_words=100)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertLessEqual(chunk.word_count, 200)  # some tolerance
+
+
+class PromptBuildingTests(unittest.TestCase):
+
+    def test_single_chunk_no_context(self):
+        prompt = build_translation_prompt(
+            chunk="Hello world",
+            context="",
+            source_lang="English",
+            target_lang="Spanish",
+            chunk_index=0,
+            total_chunks=1,
+        )
+        self.assertIn("English", prompt)
+        self.assertIn("Spanish", prompt)
+        self.assertIn("Hello world", prompt)
+        self.assertNotIn("chunk", prompt.lower().split("STRICT RULES")[0])
+        self.assertNotIn("CONTEXT from previous", prompt)
+
+    def test_multi_chunk_with_context(self):
+        prompt = build_translation_prompt(
+            chunk="Second part of text",
+            context="last words from previous chunk",
+            source_lang="English",
+            target_lang="French",
+            chunk_index=1,
+            total_chunks=3,
+        )
+        self.assertIn("chunk 2 of 3", prompt)
+        self.assertIn("CONTEXT from previous section", prompt)
+        self.assertIn("last words from previous chunk", prompt)
+        self.assertIn("Second part of text", prompt)
+
+    def test_template_variables_all_replaced(self):
+        prompt = build_translation_prompt(
+            chunk="test",
+            context="ctx",
+            source_lang="SRC",
+            target_lang="TGT",
+            chunk_index=0,
+            total_chunks=2,
+            channel_name="MyChannel",
+        )
+        # No unresolved placeholders
+        self.assertNotIn("{source_lang}", prompt)
+        self.assertNotIn("{target_lang}", prompt)
+        self.assertNotIn("{text}", prompt)
+        self.assertNotIn("{context_section}", prompt)
+        self.assertNotIn("{chunk_note}", prompt)
+
+
+class TranslationServiceTests(unittest.TestCase):
+
+    def _run_async(self, coro):
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def _make_fake_adapter(self, responses: list[str | Exception]) -> TranslationAdapter:
+        adapter = TranslationAdapter()
+        call_count = 0
+
+        async def fake_translate(provider, api_key, model, prompt):
+            nonlocal call_count
+            idx = min(call_count, len(responses) - 1)
+            call_count += 1
+            resp = responses[idx]
+            if isinstance(resp, Exception):
+                raise resp
+            return resp
+
+        adapter.translate_chunk = fake_translate  # type: ignore
+        return adapter
+
+    def test_successful_translation(self):
+        adapter = self._make_fake_adapter(["Hola mundo", "Adiós mundo"])
+        svc = TranslationService(adapter=adapter)
+        scenes = [
+            {"scene_id": "s1", "text": "Hello world"},
+            {"scene_id": "s2", "text": "Goodbye world"},
+        ]
+        result = self._run_async(svc.translate_script(
+            source_script="",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="gemini",
+            api_key="fake",
+            model="test",
+            master_scenes=scenes,
+        ))
+        self.assertEqual(result.status, "done")
+        self.assertEqual(len(result.chunk_results), 1)  # both scenes fit in 1 chunk
+        self.assertIn("Hola mundo", result.translated_script)
+
+    def test_context_passing(self):
+        """Verify that context from chunk N is passed to chunk N+1."""
+        prompts_seen: list[str] = []
+        adapter = TranslationAdapter()
+
+        async def capture_translate(provider, api_key, model, prompt):
+            prompts_seen.append(prompt)
+            return "Translated words " * 50  # 100 words
+
+        adapter.translate_chunk = capture_translate  # type: ignore
+        svc = TranslationService(adapter=adapter)
+
+        scenes = [
+            {"scene_id": "s1", "text": " ".join(["word"] * 500)},
+            {"scene_id": "s2", "text": " ".join(["word"] * 500)},
+        ]
+        result = self._run_async(svc.translate_script(
+            source_script="",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="gemini",
+            api_key="fake",
+            model="test",
+            master_scenes=scenes,
+            max_words_per_chunk=600,
+            context_tail_words=50,
+        ))
+        self.assertEqual(len(prompts_seen), 2)
+        # First prompt should have no context
+        self.assertNotIn("CONTEXT from previous", prompts_seen[0])
+        # Second prompt should contain context
+        self.assertIn("CONTEXT from previous", prompts_seen[1])
+
+    def test_chunk_error_recovery(self):
+        """One chunk failing should not abort the entire translation."""
+        adapter = self._make_fake_adapter([
+            TranslationError("Gemini", 429, "Rate limited"),
+            "Chunk 2 translated ok",
+        ])
+        svc = TranslationService(adapter=adapter)
+        scenes = [
+            {"scene_id": "s1", "text": " ".join(["word"] * 500)},
+            {"scene_id": "s2", "text": " ".join(["word"] * 500)},
+        ]
+        result = self._run_async(svc.translate_script(
+            source_script="",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="gemini",
+            api_key="fake",
+            model="test",
+            master_scenes=scenes,
+            max_words_per_chunk=600,
+        ))
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.chunk_results[0].status, "error")
+        self.assertEqual(result.chunk_results[1].status, "ok")
+
+    def test_all_chunks_fail(self):
+        adapter = self._make_fake_adapter([
+            TranslationError("OpenAI", 500, "Server error"),
+        ])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="Hello world. This is a test.",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="test",
+        ))
+        self.assertEqual(result.status, "error")
+
+    def test_empty_input(self):
+        adapter = self._make_fake_adapter([])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="gemini",
+            api_key="fake",
+            model="test",
+            master_scenes=[],
+        ))
+        self.assertEqual(result.status, "done")
+        self.assertEqual(result.translated_script, "")
+
+
+class TranslationProfileCrudTests(unittest.TestCase):
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self.db = Tool1Database(Path(self._tmpdir) / "test.db")
+        self.db.initialize()
+
+    def test_create_and_list(self):
+        from tool1_dashboard.runtime import utc_now
+        now = utc_now()
+        self.db.create_translation_profile({
+            "id": "tp1",
+            "name": "Test Profile",
+            "provider": "gemini",
+            "api_key_ref": "fake-key",
+            "model": "gemini-pro",
+            "is_default": 0,
+            "created_at": now,
+            "updated_at": now,
+        })
+        profiles = self.db.list_translation_profiles()
+        self.assertEqual(len(profiles), 1)
+        self.assertEqual(profiles[0]["name"], "Test Profile")
+        self.assertEqual(profiles[0]["provider"], "gemini")
+
+    def test_update(self):
+        from tool1_dashboard.runtime import utc_now
+        now = utc_now()
+        self.db.create_translation_profile({
+            "id": "tp2",
+            "name": "Old Name",
+            "provider": "openai",
+            "api_key_ref": "key",
+            "model": "gpt-4",
+            "is_default": 0,
+            "created_at": now,
+            "updated_at": now,
+        })
+        self.db.update_translation_profile("tp2", name="New Name", model="gpt-4o")
+        profile = self.db.get_translation_profile("tp2")
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["name"], "New Name")
+        self.assertEqual(profile["model"], "gpt-4o")
+
+    def test_delete(self):
+        from tool1_dashboard.runtime import utc_now
+        now = utc_now()
+        self.db.create_translation_profile({
+            "id": "tp3",
+            "name": "To Delete",
+            "provider": "anthropic",
+            "api_key_ref": "key",
+            "model": "claude-3",
+            "is_default": 0,
+            "created_at": now,
+            "updated_at": now,
+        })
+        self.db.delete_translation_profile("tp3")
+        self.assertIsNone(self.db.get_translation_profile("tp3"))
+        self.assertEqual(len(self.db.list_translation_profiles()), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

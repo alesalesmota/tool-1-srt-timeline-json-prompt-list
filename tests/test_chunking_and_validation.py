@@ -7,6 +7,7 @@ from tool1_dashboard.srt_chunker.models import SubtitleCue
 from tool1_dashboard.validators import (
     apply_default_asset_types,
     merge_scene_chunks,
+    normalize_scene_payload,
     normalize_visual_bible,
     validate_prompt_payloads,
     validate_timeline,
@@ -124,6 +125,26 @@ class ChunkingValidationTests(unittest.TestCase):
         assigned = apply_default_asset_types(scenes, 2)
         self.assertEqual([scene["asset_type"] for scene in assigned], ["video", "video", "image"])
 
+    def test_normalize_scene_payload_discards_zero_length_gap_marker(self) -> None:
+        scenes, warnings = normalize_scene_payload(
+            {
+                "scenes": [
+                    {"start": 0.0, "end": 7.0, "duration": 7.0, "text": "Opening line", "notes": "real scene"},
+                    {
+                        "start": 7.0,
+                        "end": 7.0,
+                        "duration": 0.0,
+                        "text": "",
+                        "notes": "SKIP - gap absorbed into adjacent scenes",
+                    },
+                    {"start": 7.0, "end": 12.0, "duration": 5.0, "text": "Next line", "notes": "real scene"},
+                ]
+            },
+            1,
+        )
+        self.assertEqual([scene["text"] for scene in scenes], ["Opening line", "Next line"])
+        self.assertTrue(any("gap marker" in warning for warning in warnings))
+
     def test_visual_bible_normalization_requires_core_sections(self) -> None:
         normalized, report = normalize_visual_bible(
             {
@@ -189,7 +210,10 @@ class ChunkingValidationTests(unittest.TestCase):
             ],
         )
         self.assertEqual(report["status"], "valid")
-        self.assertIn("LOOK: Painterly documentary-drama, detailed textiles", prompts[0])
+        self.assertIn("Painterly documentary-drama, detailed textiles", prompts[0])
+        self.assertNotIn("LOOK:", prompts[0])
+        self.assertIn("no text", prompts[0].lower())
+        self.assertIn("no split-screen", prompts[0].lower())
         self.assertNotIn("same", prompts[0].lower())
 
 

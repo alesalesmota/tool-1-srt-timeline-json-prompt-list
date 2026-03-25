@@ -10,8 +10,17 @@ ALLOWED_ASSET_TYPES = {"image", "video"}
 SCENE_SOFT_MAX_DURATION_SECONDS = 18.0
 SCENE_TARGET_DURATION_SECONDS = 14.0
 SCENE_MIN_DURATION_SECONDS = 4.0
-VIDEO_PROMPT_LABELS = ("SUBJ", "SET", "ACT", "CAM", "LOOK", "LIGHT")
-IMAGE_PROMPT_LABELS = ("SUBJ", "SET", "COMP", "LOOK", "LIGHT")
+MANDATORY_PROMPT_RULES = (
+    "no text",
+    "no subtitles",
+    "no captions",
+    "no logos",
+    "no watermark",
+    "no split-screen",
+    "no collage",
+    "no panels",
+    "no white borders or margins",
+)
 PROMPT_BANNED_PATTERNS = (
     re.compile(r"\bsame\b", re.IGNORECASE),
     re.compile(r"\bas before\b", re.IGNORECASE),
@@ -203,6 +212,27 @@ def _sanitize_prompt_value(value: Any) -> str:
     return re.sub(r"\s*,\s*", ", ", cleaned).strip(" ,;")
 
 
+def _merge_prompt_rules(value: Any) -> str:
+    fragments: list[str] = []
+    sources = value if isinstance(value, list) else [value]
+    for source in sources:
+        for part in re.split(r"[,;\n]+", str(source or "")):
+            cleaned = _sanitize_prompt_value(part)
+            if cleaned:
+                fragments.append(cleaned)
+
+    merged: list[str] = []
+    seen: set[str] = set()
+    for rule in [*fragments, *MANDATORY_PROMPT_RULES]:
+        cleaned = _sanitize_prompt_value(rule)
+        key = cleaned.lower()
+        if not cleaned or key in seen:
+            continue
+        seen.add(key)
+        merged.append(cleaned)
+    return ", ".join(merged)
+
+
 def _clean_lines(value: Any) -> list[str]:
     if isinstance(value, list):
         candidates = value
@@ -233,6 +263,22 @@ def _normalize_asset_type(value: Any) -> str:
     return normalized
 
 
+def _is_gap_placeholder(
+    *,
+    start: float,
+    end: float,
+    requested_duration: float,
+    text: str,
+    notes: str,
+) -> bool:
+    if text:
+        return False
+    if end > start and requested_duration > 0:
+        return False
+    note_lower = notes.lower()
+    return "skip" in note_lower or "gap" in note_lower or "absorbed" in note_lower
+
+
 def normalize_scene_payload(payload: dict[str, Any], source_chunk_id: int) -> tuple[list[dict[str, Any]], list[str]]:
     scenes = payload.get("scenes")
     if not isinstance(scenes, list):
@@ -244,12 +290,24 @@ def normalize_scene_payload(payload: dict[str, Any], source_chunk_id: int) -> tu
             raise ValueError(f"Scene {position} is not an object.")
         start = round(_as_float(scene.get("start"), "start"), 3)
         end = round(_as_float(scene.get("end"), "end"), 3)
+        text = _clean_text(scene.get("text"))
+        notes = _clean_text(scene.get("notes"))
+        requested_duration = round(_as_float(scene.get("duration", end - start), "duration"), 3)
+        if _is_gap_placeholder(
+            start=start,
+            end=end,
+            requested_duration=requested_duration,
+            text=text,
+            notes=notes,
+        ):
+            warnings.append(
+                f"Chunk {source_chunk_id} scene {position} was a zero-length gap marker and was discarded."
+            )
+            continue
         if end <= start:
             raise ValueError(f"Scene {position} ends before it starts.")
-        text = _clean_text(scene.get("text"))
         if not text:
             raise ValueError(f"Scene {position} has no text.")
-        requested_duration = round(_as_float(scene.get("duration", end - start), "duration"), 3)
         actual_duration = round(end - start, 3)
         if math.fabs(actual_duration - requested_duration) > 0.35:
             warnings.append(
@@ -263,7 +321,7 @@ def normalize_scene_payload(payload: dict[str, Any], source_chunk_id: int) -> tu
                 "text": text,
                 "asset_type": "image",
                 "visual_intent": _clean_text(scene.get("visual_intent")) or None,
-                "notes": _clean_text(scene.get("notes")) or None,
+                "notes": notes or None,
                 "_source_chunk_id": source_chunk_id,
             }
         )
@@ -653,39 +711,39 @@ def validate_timeline(scenes: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _label_pattern(asset_type: str) -> re.Pattern[str]:
-    labels = VIDEO_PROMPT_LABELS if asset_type == "video" else IMAGE_PROMPT_LABELS
-    pattern = "^" + "; ".join(fr"{label}:\s*[^;]+" for label in labels) + r"(?:; RULES:\s*[^;]+)?$"
-    return re.compile(pattern)
+def _sentence_fragment(value: Any) -> str:
+    cleaned = _sanitize_prompt_value(value)
+    if not cleaned:
+        return ""
+    normalized = cleaned[0].upper() + cleaned[1:] if cleaned else ""
+    return normalized.rstrip(" .,:;") + "."
 
 
 def _compose_prompt_text(asset_type: str, prompt_entry: dict[str, Any]) -> str:
-    if asset_type == "video":
-        ordered_fields = (
-            ("SUBJ", "subject"),
-            ("SET", "setting"),
-            ("ACT", "action"),
-            ("CAM", "camera"),
-            ("LOOK", "look"),
-            ("LIGHT", "lighting"),
-        )
-    else:
-        ordered_fields = (
-            ("SUBJ", "subject"),
-            ("SET", "setting"),
-            ("COMP", "composition"),
-            ("LOOK", "look"),
-            ("LIGHT", "lighting"),
-        )
+    subject = _sanitize_prompt_value(prompt_entry.get("subject"))
+    setting = _sanitize_prompt_value(prompt_entry.get("setting"))
+    action = _sanitize_prompt_value(prompt_entry.get("action"))
+    composition = _sanitize_prompt_value(prompt_entry.get("composition"))
 
-    rendered = [
-        f"{label}: {_sanitize_prompt_value(prompt_entry.get(field_name))}"
-        for label, field_name in ordered_fields
-    ]
-    rules = _sanitize_prompt_value(prompt_entry.get("rules"))
-    if rules:
-        rendered.append(f"RULES: {rules}")
-    return "; ".join(rendered).strip()
+    primary_parts = [part for part in (subject, f"in {setting}" if subject and setting else setting) if part]
+    primary = " ".join(primary_parts).strip()
+    if asset_type == "video" and action:
+        primary = f"{primary}, {action}" if primary else action
+    if asset_type == "image" and composition:
+        primary = f"{primary}, {composition}" if primary else composition
+
+    fragments = [primary]
+    if asset_type == "video":
+        fragments.append(prompt_entry.get("camera"))
+    fragments.extend(
+        [
+            prompt_entry.get("look"),
+            prompt_entry.get("lighting"),
+            _merge_prompt_rules(prompt_entry.get("rules")),
+        ]
+    )
+    rendered = [_sentence_fragment(fragment) for fragment in fragments if _sanitize_prompt_value(fragment)]
+    return " ".join(rendered).strip()
 
 
 def _has_structured_prompt_fields(asset_type: str, prompt_entry: dict[str, Any]) -> bool:
@@ -703,12 +761,11 @@ def _validate_prompt_line(prompt_text: str, asset_type: str) -> list[str]:
         return ["Prompt is empty."]
     if "\n" in prompt_text or "\r" in prompt_text:
         errors.append("Prompt must be a single line.")
+    if len(_clean_text(prompt_text).split()) < 6:
+        errors.append("Prompt is too short to be useful.")
     for pattern in PROMPT_BANNED_PATTERNS:
         if pattern.search(prompt_text):
             errors.append(f"Prompt contains banned content matching {pattern.pattern}.")
-    if not _label_pattern(asset_type).match(prompt_text):
-        labels = ", ".join(VIDEO_PROMPT_LABELS if asset_type == "video" else IMAGE_PROMPT_LABELS)
-        errors.append(f"Prompt must use labels in this order: {labels}.")
     return errors
 
 
