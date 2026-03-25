@@ -49,12 +49,12 @@
 - [x] Verify: 87 tests pass
 
 ## Phase 5: Frontend — Remove Legacy Views
-- [ ] Remove legacy sidebar items
-- [ ] Remove job/project/build render functions
-- [ ] Remove legacy constants and state fields
-- [ ] Set default route to pipeline board
-- [ ] Rename sidebar items
-- [ ] Verify: manual browser test
+- [x] Remove legacy sidebar items ("Projects (legacy)", "Board (legacy)")
+- [x] Remove job/project/build render functions (~2100 lines removed)
+- [x] Remove legacy constants, state fields, event handlers, data fetching
+- [x] Set default route to pipeline board
+- [x] Clean sidebar (removed workflow steps section)
+- [x] Verify: manual browser test (no JS errors, all nav works)
 
 ## Phase 6: Episode Pipeline Board Enhancement
 - [ ] Per-language progress indicators on episode cards

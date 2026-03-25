@@ -43,7 +43,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 ### What's Being Worked On
 See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase plan.
 
-**Currently:** Phase 1 complete (cleanup). Phase 2 next (database consolidation).
+**Currently:** Phases 1-5 complete. Phase 6 next (Episode Pipeline Board Enhancement).
 
 ### Git State
 - Branch: `feat/cleanup-and-consolidation` (active)
@@ -81,7 +81,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 | Phase 2 | Database Consolidation | DONE |
 | Phase 3 | Service Layer — Remove Legacy | DONE |
 | Phase 4 | API Layer Consolidation | DONE |
-| Phase 5 | Frontend — Remove Legacy Views | NEXT |
+| Phase 5 | Frontend — Remove Legacy Views | DONE |
 | Phase 6 | Episode Pipeline Board Enhancement | TODO |
 | Phase 7 | Niche Project Detail Enhancement | TODO |
 | Phase 8 | TTS & Translation Polish | TODO |
@@ -92,6 +92,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-25 | Phase 5 complete: removed ~2100 lines of legacy frontend code from app.js (3854→1717 lines). Removed legacy sidebar items, routing, render functions, state, event handlers. Default route changed to pipeline-board. 87 tests pass, 0 JS errors |
 | 2026-03-25 | Phases 2-4 complete: removed all legacy code (jobs/projects/builds). database.py rewritten with niche_projects table, service.py reduced from 4500→1737 lines, app.py from 849→496 lines, 87 tests passing |
 | 2026-03-25 | Phase 1 complete: deleted 4 standalone tools, archived outdated docs, committed all uncommitted code, 119 tests passing |
 | 2026-03-25 | Reconstructed 10-phase implementation plan (saved to IMPLEMENTATION_PLAN.md) |
