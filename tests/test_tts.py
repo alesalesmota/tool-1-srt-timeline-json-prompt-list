@@ -398,47 +398,48 @@ class ManagerJobSubmissionTests(unittest.TestCase):
         self.assertTrue(health.is_stale)
 
 
-class PausedTtsBuildTests(unittest.TestCase):
+class PausedTtsEpisodeTests(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()
         self.db = Tool1Database(Path(self._tmpdir) / "test.db")
         self.db.initialize()
 
-    def test_list_paused_tts_builds(self):
+    def test_list_paused_tts_episodes(self):
         from tool1_dashboard.runtime import utc_now
         now = utc_now()
 
-        # Create a project
-        self.db.create_project({
-            "id": "proj1",
+        # Create a niche project
+        self.db.create_niche_project({
+            "id": "niche-1",
             "title": "Test Project",
-            "source_language": "en",
-            "script_path": "",
-            "workspace_dir": self._tmpdir,
-            "created_at": now,
-            "updated_at": now,
-        })
-
-        # Create a localization build paused for TTS
-        self.db.create_build({
-            "id": "b1",
-            "project_id": "proj1",
-            "build_type": "localization",
-            "language_code": "pt-BR",
+            "master_language": "en",
+            "configured_languages": "[]",
+            "language_voice_profiles": "{}",
+            "language_translation_profiles": "{}",
             "board_status": "Draft",
-            "pipeline_status": "paused_for_tts",
-            "current_stage": "translation",
-            "tts_job_id": "j1",
             "workspace_dir": self._tmpdir,
             "created_at": now,
             "updated_at": now,
         })
 
-        builds = self.db.list_paused_tts_builds()
-        self.assertEqual(len(builds), 1)
-        self.assertEqual(builds[0]["id"], "b1")
-        self.assertEqual(builds[0]["tts_job_id"], "j1")
+        # Create an episode paused for TTS
+        self.db.create_episode({
+            "id": "ep-1",
+            "niche_project_id": "niche-1",
+            "title": "Episode 1",
+            "script_text": "Test script",
+            "board_status": "Running",
+            "pipeline_status": "paused_for_tts",
+            "current_stage": "tts",
+            "workspace_dir": self._tmpdir,
+            "created_at": now,
+            "updated_at": now,
+        })
+
+        episodes = self.db.list_paused_tts_episodes()
+        self.assertEqual(len(episodes), 1)
+        self.assertEqual(episodes[0]["id"], "ep-1")
 
 
 if __name__ == "__main__":

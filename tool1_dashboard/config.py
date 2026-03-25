@@ -9,7 +9,6 @@ UI_DIR = PACKAGE_ROOT / "ui"
 WORKSPACE_ROOT = PROJECT_ROOT / "workspace"
 EPISODES_ROOT = WORKSPACE_ROOT / "episodes"
 DATABASE_PATH = WORKSPACE_ROOT / "creator_studio.db"
-LEGACY_DATABASE_PATH = WORKSPACE_ROOT / "tool1_dashboard.db"
 CONFIG_ROOT = PROJECT_ROOT / "config"
 AGENTS_ROOT = CONFIG_ROOT / "agents"
 DOCS_ROOT = PROJECT_ROOT / "docs"
@@ -34,51 +33,6 @@ BOARD_STATUSES = (
     "Done",
     "Needs Attention",
 )
-
-BUILD_TYPES = ("master", "localization")
-
-# -- Master build pipeline stages --
-MASTER_PIPELINE_STAGES = (
-    "draft",
-    "alignment",
-    "planning_prep",
-    "scene_planning",
-    "visual_bible",
-    "video_prompt_generation",
-    "image_prompt_generation",
-    "review",
-    "export",
-)
-
-MASTER_RUNNABLE_STAGES = (
-    "alignment",
-    "planning_prep",
-    "scene_planning",
-    "visual_bible",
-    "video_prompt_generation",
-    "image_prompt_generation",
-)
-
-# -- Localization build pipeline stages --
-LOCALIZATION_PIPELINE_STAGES = (
-    "translation",
-    "tts",
-    "alignment",
-    "localized_timeline",
-    "export",
-)
-
-LOCALIZATION_RUNNABLE_STAGES = (
-    "translation",
-    "tts",
-    "alignment",
-    "localized_timeline",
-)
-
-# -- Combined (for backward compat) --
-PIPELINE_STAGES = MASTER_PIPELINE_STAGES
-
-RUNNABLE_STAGES = MASTER_RUNNABLE_STAGES
 
 # -- Episode pipeline (TTS-first unified pipeline) --
 EPISODE_PIPELINE_STAGES = (

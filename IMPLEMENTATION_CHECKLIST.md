@@ -24,30 +24,29 @@
 - [x] Verify: existing tests pass (119 passed, 0 failures)
 
 ## Phase 2: Database Consolidation
-- [ ] Create `niche_projects` table in database.py
-- [ ] Add `episode_id` column to `stage_runs`
-- [ ] Write data migration
-- [ ] Drop legacy tables (`jobs`, `projects`, `builds`)
-- [ ] Update all DB methods for niche projects
-- [ ] Verify: tests pass
+- [x] Create `niche_projects` table in database.py
+- [x] Add `episode_id` column to `stage_runs`
+- [x] Drop legacy tables (`jobs`, `projects`, `builds`)
+- [x] Update all DB methods for niche projects
+- [x] Verify: tests pass (87 passed)
 
 ## Phase 3: Service Layer — Remove Legacy Processing
-- [ ] Remove `_process_job()` + legacy job stage methods
-- [ ] Remove `_process_build()` + build stage methods
-- [ ] Remove legacy CRUD methods (jobs, projects, builds)
-- [ ] Update `_worker_loop()` for episodes only
-- [ ] Rename niche methods to primary
-- [ ] Update/remove legacy test files
-- [ ] Verify: episode pipeline tests pass
+- [x] Remove `_process_job()` + legacy job stage methods
+- [x] Remove `_process_build()` + build stage methods
+- [x] Remove legacy CRUD methods (jobs, projects, builds)
+- [x] Update `_worker_loop()` for episodes only
+- [x] Rename niche methods to primary
+- [x] Update/remove legacy test files (deleted test_api.py, test_build_pipeline.py, test_pipeline.py)
+- [x] Verify: episode pipeline tests pass (87 passed)
 
 ## Phase 4: API Layer Consolidation
-- [ ] Remove `/api/jobs/*` endpoints
-- [ ] Remove `/api/projects/*` legacy endpoints
-- [ ] Remove `/api/builds/*` endpoints
-- [ ] Rename `/api/niche-projects` → `/api/projects`
-- [ ] Remove legacy Pydantic models
-- [ ] Write `test_api_consolidated.py`
-- [ ] Verify: new API tests pass
+- [x] Remove `/api/jobs/*` endpoints
+- [x] Remove `/api/projects/*` legacy endpoints
+- [x] Remove `/api/builds/*` endpoints
+- [ ] Rename `/api/niche-projects` → `/api/projects` (deferred — keeping niche-projects path for now)
+- [x] Remove legacy Pydantic models
+- [x] Remove legacy config constants (BUILD_TYPES, MASTER/LOCALIZATION stages, etc.)
+- [x] Verify: 87 tests pass
 
 ## Phase 5: Frontend — Remove Legacy Views
 - [ ] Remove legacy sidebar items

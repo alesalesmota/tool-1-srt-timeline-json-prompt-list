@@ -11,8 +11,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .config import (
-    DEFAULT_HOST,
-    DEFAULT_PORT,
     IMAGE_PROMPT_STAGE,
     SCENE_STAGE,
     UI_DIR,
@@ -20,26 +18,6 @@ from .config import (
     VISUAL_BIBLE_STAGE,
 )
 from .service import Tool1Service
-
-
-class MoveRequest(BaseModel):
-    board_status: str
-
-
-class QueueRequest(BaseModel):
-    start_stage: str = "alignment"
-
-
-class JobConfigRequest(BaseModel):
-    scene_planning_provider: str
-    visual_bible_provider: str
-    video_prompt_provider: str
-    image_prompt_provider: str
-    scene_planning_model: str
-    visual_bible_model: str
-    video_prompt_model: str
-    image_prompt_model: str
-    leading_video_scene_count: int
 
 
 class SettingsRequest(BaseModel):
@@ -61,30 +39,6 @@ class TemplateRequest(BaseModel):
     body: str
 
 
-class TimelineRequest(BaseModel):
-    scenes: list[dict[str, Any]]
-
-
-class VisualBibleRequest(BaseModel):
-    visual_bible: dict[str, Any]
-
-
-class PromptsRequest(BaseModel):
-    prompts: list[str] | None = None
-    video_prompts: list[str] | None = None
-    image_prompts: list[str] | None = None
-
-
-class BuildQueueRequest(BaseModel):
-    start_stage: str | None = None
-
-
-class LocalizationRequest(BaseModel):
-    target_language: str
-    voice_profile_id: str | None = None
-    translation_profile_id: str | None = None
-
-
 class TranslationProfileRequest(BaseModel):
     name: str
     provider: str
@@ -97,14 +51,6 @@ class TranslationProfileUpdateRequest(BaseModel):
     provider: str | None = None
     api_key: str | None = None
     model: str | None = None
-
-
-class TranslateRequest(BaseModel):
-    translation_profile_id: str
-
-
-class TTSTriggerRequest(BaseModel):
-    voice_profile_id: str
 
 
 class VoiceTestRequest(BaseModel):
@@ -224,11 +170,6 @@ async def prepare_language(language_code: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/api/board")
-async def board() -> dict[str, Any]:
-    return {"jobs": service.list_jobs()}
-
-
 @app.get("/api/settings")
 async def settings() -> dict[str, Any]:
     return service.get_settings_payload()
@@ -238,137 +179,6 @@ async def settings() -> dict[str, Any]:
 async def save_settings(payload: SettingsRequest) -> dict[str, Any]:
     try:
         return service.save_settings(payload.model_dump())
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/jobs")
-async def create_job(
-    title: str = Form(...),
-    language_code: str = Form("en"),
-    scene_planning_provider: str = Form("claude"),
-    visual_bible_provider: str = Form("claude"),
-    video_prompt_provider: str = Form("codex"),
-    image_prompt_provider: str = Form("codex"),
-    scene_planning_model: str = Form("haiku"),
-    visual_bible_model: str = Form("haiku"),
-    video_prompt_model: str = Form("gpt-5.4"),
-    image_prompt_model: str = Form("gpt-5.4"),
-    leading_video_scene_count: int = Form(20),
-    audio_file: UploadFile = File(...),
-    script_file: UploadFile = File(...),
-) -> dict[str, Any]:
-    try:
-        return service.create_job(
-            title=title,
-            audio_name=audio_file.filename or "audio.wav",
-            audio_bytes=await audio_file.read(),
-            script_name=script_file.filename or "script.txt",
-            script_bytes=await script_file.read(),
-            language_code=language_code,
-            scene_planning_provider=scene_planning_provider,
-            visual_bible_provider=visual_bible_provider,
-            video_prompt_provider=video_prompt_provider,
-            image_prompt_provider=image_prompt_provider,
-            scene_planning_model=scene_planning_model,
-            visual_bible_model=visual_bible_model,
-            video_prompt_model=video_prompt_model,
-            image_prompt_model=image_prompt_model,
-            leading_video_scene_count=leading_video_scene_count,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get("/api/jobs/{job_id}")
-async def job_detail(job_id: str) -> dict[str, Any]:
-    try:
-        return service.get_job_detail(job_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.delete("/api/jobs/{job_id}")
-async def delete_job(job_id: str) -> dict[str, Any]:
-    try:
-        return service.delete_job(job_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/jobs/{job_id}/move")
-async def move_job(job_id: str, payload: MoveRequest) -> dict[str, Any]:
-    try:
-        return service.move_job(job_id, payload.board_status)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/jobs/{job_id}/queue")
-async def queue_job(job_id: str, payload: QueueRequest) -> dict[str, Any]:
-    try:
-        return service.queue_job(job_id, payload.start_stage)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/jobs/{job_id}/config")
-async def save_job_config(job_id: str, payload: JobConfigRequest) -> dict[str, Any]:
-    try:
-        return service.update_job_config(job_id, **payload.model_dump())
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/jobs/{job_id}/review/timeline")
-async def save_timeline(job_id: str, payload: TimelineRequest) -> dict[str, Any]:
-    try:
-        return service.save_review_timeline(job_id, payload.scenes)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/jobs/{job_id}/review/visual-bible")
-async def save_visual_bible(job_id: str, payload: VisualBibleRequest) -> dict[str, Any]:
-    try:
-        return service.save_review_visual_bible(job_id, payload.visual_bible)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/jobs/{job_id}/review/prompts")
-async def save_prompts(job_id: str, payload: PromptsRequest) -> dict[str, Any]:
-    try:
-        return service.save_review_prompts(
-            job_id,
-            payload.prompts,
-            video_prompts=payload.video_prompts,
-            image_prompts=payload.image_prompts,
-        )
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/jobs/{job_id}/finalize")
-async def finalize_job(job_id: str) -> dict[str, Any]:
-    try:
-        return service.finalize_job(job_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -386,145 +196,6 @@ async def save_template(stage: str, provider: str, payload: TemplateRequest) -> 
         return service.save_template(stage, provider, payload.body)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get("/api/jobs/{job_id}/live-log")
-async def live_log(job_id: str) -> dict[str, Any]:
-    try:
-        return service.get_live_log(job_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.get("/api/jobs/{job_id}/artifacts/{artifact_key}")
-async def artifact(job_id: str, artifact_key: str) -> FileResponse:
-    try:
-        path = service.get_artifact_path(job_id, artifact_key)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return FileResponse(str(path), filename=Path(path).name)
-
-
-# ── Creator Studio: Project & Build routes ─────────────────────────
-
-
-@app.get("/api/projects")
-async def list_projects() -> dict[str, Any]:
-    return {"projects": service.list_projects()}
-
-
-@app.post("/api/projects")
-async def create_project(
-    title: str = Form(...),
-    source_language: str = Form("en"),
-    scene_planning_provider: str = Form("claude"),
-    visual_bible_provider: str = Form("claude"),
-    video_prompt_provider: str = Form("codex"),
-    image_prompt_provider: str = Form("codex"),
-    scene_planning_model: str = Form("haiku"),
-    visual_bible_model: str = Form("haiku"),
-    video_prompt_model: str = Form("gpt-5.4"),
-    image_prompt_model: str = Form("gpt-5.4"),
-    leading_video_scene_count: int = Form(20),
-    audio_file: UploadFile = File(...),
-    script_file: UploadFile = File(...),
-) -> dict[str, Any]:
-    try:
-        return service.create_project(
-            title=title,
-            source_language=source_language,
-            audio_name=audio_file.filename or "audio.wav",
-            audio_bytes=await audio_file.read(),
-            script_name=script_file.filename or "script.txt",
-            script_bytes=await script_file.read(),
-            scene_planning_provider=scene_planning_provider,
-            visual_bible_provider=visual_bible_provider,
-            video_prompt_provider=video_prompt_provider,
-            image_prompt_provider=image_prompt_provider,
-            scene_planning_model=scene_planning_model,
-            visual_bible_model=visual_bible_model,
-            video_prompt_model=video_prompt_model,
-            image_prompt_model=image_prompt_model,
-            leading_video_scene_count=leading_video_scene_count,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get("/api/projects/{project_id}")
-async def project_detail(project_id: str) -> dict[str, Any]:
-    try:
-        return service.get_project_detail(project_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.delete("/api/projects/{project_id}")
-async def delete_project(project_id: str) -> dict[str, Any]:
-    try:
-        return service.delete_project(project_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/api/projects/{project_id}/localize")
-async def create_localization(project_id: str, payload: LocalizationRequest) -> dict[str, Any]:
-    try:
-        return service.create_localization_build(
-            project_id,
-            target_language=payload.target_language,
-            voice_profile_id=payload.voice_profile_id,
-            translation_profile_id=payload.translation_profile_id,
-        )
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get("/api/projects/{project_id}/builds")
-async def list_builds(project_id: str) -> dict[str, Any]:
-    try:
-        project = service.get_project_detail(project_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {
-        "master_build": project["master_build"],
-        "localizations": project["localizations"],
-    }
-
-
-@app.get("/api/builds/{build_id}")
-async def build_detail(build_id: str) -> dict[str, Any]:
-    try:
-        return service.get_build_detail(build_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.delete("/api/builds/{build_id}")
-async def delete_build(build_id: str) -> dict[str, Any]:
-    try:
-        return service.delete_build_record(build_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.post("/api/builds/{build_id}/queue")
-async def queue_build(build_id: str, payload: BuildQueueRequest) -> dict[str, Any]:
-    try:
-        return service.queue_build(build_id, payload.start_stage)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get("/api/target-languages")
-async def target_languages() -> dict[str, Any]:
-    return {"languages": service.get_target_languages()}
 
 
 # ── Niche project routes ────────────────────────────────────────────
@@ -578,7 +249,7 @@ async def update_niche_project(project_id: str, payload: NicheProjectUpdateReque
 @app.delete("/api/niche-projects/{project_id}")
 async def delete_niche_project(project_id: str) -> dict[str, Any]:
     try:
-        return service.delete_project(project_id)
+        return service.delete_niche_project(project_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -699,19 +370,6 @@ async def delete_translation_profile(profile_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-# ── Translation execution ──────────────────────────────────────────
-
-
-@app.post("/api/builds/{build_id}/translate")
-async def trigger_translation(build_id: str, payload: TranslateRequest) -> dict[str, Any]:
-    try:
-        return service.translate_build(build_id, payload.translation_profile_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
 # ── Voice profile CRUD ─────────────────────────────────────────────
 
 
@@ -758,16 +416,6 @@ async def delete_voice_profile(profile_id: str) -> dict[str, Any]:
 
 
 # ── TTS execution ──────────────────────────────────────────────────
-
-
-@app.post("/api/builds/{build_id}/tts")
-async def trigger_tts(build_id: str, payload: TTSTriggerRequest) -> dict[str, Any]:
-    try:
-        return service.submit_build_tts(build_id, payload.voice_profile_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/voice-profiles/{profile_id}/test")

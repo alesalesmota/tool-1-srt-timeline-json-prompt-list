@@ -661,7 +661,7 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                     master_language="en",
                     configured_languages=["pt-BR", "es"],
                 )
-                p = service.db.get_project(project["project"]["id"])
+                p = service.db.get_niche_project(project["project"]["id"])
                 langs = json.loads(p["configured_languages"])
                 self.assertIn("en", langs)
                 self.assertEqual(langs[0], "en")

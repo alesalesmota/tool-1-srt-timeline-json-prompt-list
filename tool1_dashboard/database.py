@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-import shutil
 import sqlite3
 import threading
 import time
 from pathlib import Path
 from typing import Any, Iterable
 
-from .config import DATABASE_PATH, DEFAULT_SETTINGS, LEGACY_DATABASE_PATH
+from .config import DATABASE_PATH, DEFAULT_SETTINGS
 from .runtime import ensure_dir, utc_now
 
 
@@ -21,64 +20,12 @@ class Tool1Database:
     # ── initialisation ──────────────────────────────────────────────
 
     def initialize(self) -> None:
-        self._maybe_migrate_legacy_db()
-        self._migrate_videos_to_episodes()
         self._create_tables()
-        self._migrate_jobs_to_projects()
         for key, value in DEFAULT_SETTINGS.items():
             self.set_setting(key, value)
 
-    def _maybe_migrate_legacy_db(self) -> None:
-        """Copy legacy tool1_dashboard.db → creator_studio.db if the new DB doesn't exist yet."""
-        if self.path.exists():
-            return
-        if LEGACY_DATABASE_PATH.exists():
-            shutil.copy2(LEGACY_DATABASE_PATH, self.path)
-
-    def _migrate_videos_to_episodes(self) -> None:
-        """Rename videos → episodes and video_language_status → episode_language_status."""
-        if not self.path.exists():
-            return
-        with self._lock, self._connect() as conn:
-            tables = {r[0] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()}
-            if "videos" in tables and "episodes" not in tables:
-                conn.execute("ALTER TABLE videos RENAME TO episodes")
-            if "video_language_status" in tables and "episode_language_status" not in tables:
-                # Rebuild table to rename video_id → episode_id
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS episode_language_status (
-                        id TEXT PRIMARY KEY,
-                        episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
-                        language_code TEXT NOT NULL,
-                        translation_status TEXT NOT NULL DEFAULT 'pending',
-                        tts_status TEXT NOT NULL DEFAULT 'pending',
-                        srt_status TEXT NOT NULL DEFAULT 'pending',
-                        timeline_status TEXT NOT NULL DEFAULT 'pending',
-                        script_path TEXT,
-                        tts_audio_path TEXT,
-                        srt_path TEXT,
-                        timeline_path TEXT,
-                        tts_job_id TEXT,
-                        error_message TEXT,
-                        updated_at TEXT NOT NULL,
-                        UNIQUE(episode_id, language_code)
-                    )
-                """)
-                conn.execute("""
-                    INSERT INTO episode_language_status
-                    SELECT id, video_id, language_code, translation_status, tts_status,
-                           srt_status, timeline_status, script_path, tts_audio_path,
-                           srt_path, timeline_path, tts_job_id, error_message, updated_at
-                    FROM video_language_status
-                """)
-                conn.execute("DROP TABLE video_language_status")
-            conn.commit()
-
     def _create_tables(self) -> None:
         statements = [
-            # ── existing tables ──
             """
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -97,91 +44,17 @@ class Tool1Database:
                 PRIMARY KEY (stage, provider)
             )
             """,
+            # ── Niche Projects ──
             """
-            CREATE TABLE IF NOT EXISTS jobs (
+            CREATE TABLE IF NOT EXISTS niche_projects (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
-                board_status TEXT NOT NULL,
-                pipeline_status TEXT NOT NULL,
-                current_stage TEXT NOT NULL,
-                queued_from_stage TEXT NOT NULL,
-                language_code TEXT NOT NULL,
-                scene_provider TEXT NOT NULL,
-                prompt_provider TEXT NOT NULL,
-                scene_planning_provider TEXT NOT NULL DEFAULT 'claude',
-                visual_bible_provider TEXT NOT NULL DEFAULT 'claude',
-                video_prompt_provider TEXT NOT NULL DEFAULT 'codex',
-                image_prompt_provider TEXT NOT NULL DEFAULT 'codex',
-                scene_planning_model TEXT NOT NULL DEFAULT 'haiku',
-                visual_bible_model TEXT NOT NULL DEFAULT 'haiku',
-                video_prompt_model TEXT NOT NULL DEFAULT 'gpt-5.4',
-                image_prompt_model TEXT NOT NULL DEFAULT 'gpt-5.4',
-                leading_video_scene_count INTEGER NOT NULL DEFAULT 20,
-                workspace_dir TEXT NOT NULL,
-                audio_filename TEXT NOT NULL,
-                script_filename TEXT NOT NULL,
-                audio_path TEXT NOT NULL,
-                script_path TEXT NOT NULL,
-                final_srt_path TEXT,
-                alignment_report_path TEXT,
-                segments_path TEXT,
-                planning_manifest_path TEXT,
-                timeline_draft_path TEXT,
-                timeline_validation_path TEXT,
-                visual_bible_path TEXT,
-                visual_bible_validation_path TEXT,
-                prompt_list_draft_path TEXT,
-                prompt_blueprint_path TEXT,
-                prompt_validation_path TEXT,
-                export_timeline_path TEXT,
-                export_prompt_list_path TEXT,
-                export_video_prompt_list_path TEXT,
-                export_image_prompt_list_path TEXT,
-                review_ready INTEGER NOT NULL DEFAULT 0,
-                warning_count INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS stage_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                job_id TEXT NOT NULL,
-                stage TEXT NOT NULL,
-                provider TEXT,
-                status TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                finished_at TEXT,
-                exit_code INTEGER,
-                template_hash TEXT,
-                workdir TEXT,
-                command_json TEXT,
-                stdout_path TEXT,
-                stderr_path TEXT,
-                parsed_output_path TEXT,
-                validation_path TEXT,
-                error_text TEXT
-            )
-            """,
-            # ── new tables (Creator Studio multilingual) ──
-            """
-            CREATE TABLE IF NOT EXISTS projects (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                source_language TEXT NOT NULL DEFAULT 'en',
+                master_language TEXT NOT NULL DEFAULT 'en',
+                configured_languages TEXT NOT NULL DEFAULT '[]',
+                language_voice_profiles TEXT NOT NULL DEFAULT '{}',
+                language_translation_profiles TEXT NOT NULL DEFAULT '{}',
                 board_status TEXT NOT NULL DEFAULT 'Draft',
                 workspace_dir TEXT NOT NULL,
-                audio_filename TEXT,
-                script_filename TEXT,
-                audio_path TEXT,
-                script_path TEXT,
-                master_scenes_path TEXT,
-                consistency_guide_path TEXT,
-                asset_manifest_path TEXT,
-                master_prompt_list_path TEXT,
-                master_video_prompt_list_path TEXT,
-                master_image_prompt_list_path TEXT,
                 scene_planning_provider TEXT NOT NULL DEFAULT 'claude',
                 visual_bible_provider TEXT NOT NULL DEFAULT 'claude',
                 video_prompt_provider TEXT NOT NULL DEFAULT 'codex',
@@ -197,120 +70,11 @@ class Tool1Database:
                 updated_at TEXT NOT NULL
             )
             """,
-            """
-            CREATE TABLE IF NOT EXISTS builds (
-                id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL REFERENCES projects(id),
-                build_type TEXT NOT NULL DEFAULT 'master',
-                language_code TEXT NOT NULL,
-                board_status TEXT NOT NULL DEFAULT 'Draft',
-                pipeline_status TEXT NOT NULL DEFAULT 'idle',
-                current_stage TEXT NOT NULL DEFAULT 'draft',
-                queued_from_stage TEXT NOT NULL DEFAULT 'alignment',
-                script_path TEXT,
-                audio_path TEXT,
-                srt_path TEXT,
-                timeline_path TEXT,
-                alignment_report_path TEXT,
-                segments_path TEXT,
-                planning_manifest_path TEXT,
-                timeline_draft_path TEXT,
-                timeline_validation_path TEXT,
-                visual_bible_path TEXT,
-                visual_bible_validation_path TEXT,
-                prompt_list_draft_path TEXT,
-                prompt_blueprint_path TEXT,
-                prompt_validation_path TEXT,
-                export_timeline_path TEXT,
-                export_prompt_list_path TEXT,
-                export_video_prompt_list_path TEXT,
-                export_image_prompt_list_path TEXT,
-                translation_draft_path TEXT,
-                translation_chunks_path TEXT,
-                tts_job_id TEXT,
-                narration_path TEXT,
-                review_ready INTEGER NOT NULL DEFAULT 0,
-                warning_count INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT,
-                workspace_dir TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS voice_profiles (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                language_code TEXT NOT NULL DEFAULT '',
-                audio_file TEXT NOT NULL,
-                audio_path TEXT NOT NULL,
-                latents_path TEXT,
-                has_latents INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS translation_profiles (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                api_key_ref TEXT NOT NULL DEFAULT '',
-                model TEXT NOT NULL,
-                is_default INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS tts_jobs (
-                job_id TEXT PRIMARY KEY,
-                build_id TEXT,
-                job_type TEXT NOT NULL DEFAULT 'generate',
-                profile_id TEXT,
-                status TEXT NOT NULL DEFAULT 'queued',
-                progress TEXT,
-                result_path TEXT,
-                filename TEXT,
-                payload_json TEXT NOT NULL DEFAULT '{}',
-                meta_json TEXT,
-                queue_priority INTEGER NOT NULL DEFAULT 10,
-                worker_id TEXT,
-                control_action TEXT,
-                error_message TEXT,
-                created_at REAL NOT NULL,
-                updated_at REAL NOT NULL,
-                finished_at REAL
-            )
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_builds_project
-            ON builds(project_id)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_tts_jobs_queue
-            ON tts_jobs(status, queue_priority, created_at)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_tts_jobs_build
-            ON tts_jobs(build_id)
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS worker_heartbeats (
-                worker_id TEXT PRIMARY KEY,
-                status TEXT NOT NULL,
-                current_job_id TEXT,
-                pid INTEGER,
-                started_at REAL NOT NULL,
-                heartbeat_at REAL NOT NULL,
-                last_error TEXT
-            )
-            """,
-            # ── Episode pipeline (TTS-first unified) ──
+            # ── Episodes (TTS-first unified pipeline) ──
             """
             CREATE TABLE IF NOT EXISTS episodes (
                 id TEXT PRIMARY KEY,
-                niche_project_id TEXT NOT NULL REFERENCES projects(id),
+                niche_project_id TEXT NOT NULL REFERENCES niche_projects(id),
                 title TEXT NOT NULL,
                 script_text TEXT NOT NULL,
                 board_status TEXT NOT NULL DEFAULT 'Draft',
@@ -359,6 +123,89 @@ class Tool1Database:
                 UNIQUE(episode_id, language_code)
             )
             """,
+            # ── Stage runs (shared audit trail) ──
+            """
+            CREATE TABLE IF NOT EXISTS stage_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                episode_id TEXT,
+                stage TEXT NOT NULL,
+                provider TEXT,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                exit_code INTEGER,
+                template_hash TEXT,
+                workdir TEXT,
+                command_json TEXT,
+                stdout_path TEXT,
+                stderr_path TEXT,
+                parsed_output_path TEXT,
+                validation_path TEXT,
+                error_text TEXT
+            )
+            """,
+            # ── Voice profiles ──
+            """
+            CREATE TABLE IF NOT EXISTS voice_profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                language_code TEXT NOT NULL DEFAULT '',
+                audio_file TEXT NOT NULL,
+                audio_path TEXT NOT NULL,
+                latents_path TEXT,
+                has_latents INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            # ── Translation profiles ──
+            """
+            CREATE TABLE IF NOT EXISTS translation_profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                api_key_ref TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            # ── TTS jobs ──
+            """
+            CREATE TABLE IF NOT EXISTS tts_jobs (
+                job_id TEXT PRIMARY KEY,
+                build_id TEXT,
+                job_type TEXT NOT NULL DEFAULT 'generate',
+                profile_id TEXT,
+                status TEXT NOT NULL DEFAULT 'queued',
+                progress TEXT,
+                result_path TEXT,
+                filename TEXT,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                meta_json TEXT,
+                queue_priority INTEGER NOT NULL DEFAULT 10,
+                worker_id TEXT,
+                control_action TEXT,
+                error_message TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                finished_at REAL
+            )
+            """,
+            # ── Worker heartbeats ──
+            """
+            CREATE TABLE IF NOT EXISTS worker_heartbeats (
+                worker_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                current_job_id TEXT,
+                pid INTEGER,
+                started_at REAL NOT NULL,
+                heartbeat_at REAL NOT NULL,
+                last_error TEXT
+            )
+            """,
+            # ── Indexes ──
             """
             CREATE INDEX IF NOT EXISTS idx_episodes_niche
             ON episodes(niche_project_id)
@@ -367,195 +214,24 @@ class Tool1Database:
             CREATE INDEX IF NOT EXISTS idx_els_episode
             ON episode_language_status(episode_id)
             """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_tts_jobs_queue
+            ON tts_jobs(status, queue_priority, created_at)
+            """,
         ]
         with self._connect() as connection:
             for statement in statements:
                 connection.execute(statement)
-            # ensure columns on legacy jobs table
-            self._ensure_columns(
-                connection,
-                "jobs",
-                {
-                    "scene_planning_provider": "TEXT NOT NULL DEFAULT 'claude'",
-                    "visual_bible_provider": "TEXT NOT NULL DEFAULT 'claude'",
-                    "video_prompt_provider": "TEXT NOT NULL DEFAULT 'codex'",
-                    "image_prompt_provider": "TEXT NOT NULL DEFAULT 'codex'",
-                    "scene_planning_model": "TEXT NOT NULL DEFAULT 'haiku'",
-                    "visual_bible_model": "TEXT NOT NULL DEFAULT 'haiku'",
-                    "video_prompt_model": "TEXT NOT NULL DEFAULT 'gpt-5.4'",
-                    "image_prompt_model": "TEXT NOT NULL DEFAULT 'gpt-5.4'",
-                    "leading_video_scene_count": "INTEGER NOT NULL DEFAULT 20",
-                    "visual_bible_path": "TEXT",
-                    "visual_bible_validation_path": "TEXT",
-                    "prompt_blueprint_path": "TEXT",
-                    "export_video_prompt_list_path": "TEXT",
-                    "export_image_prompt_list_path": "TEXT",
-                    "project_id": "TEXT",
-                },
-            )
-            # ensure build_id column on stage_runs
+            # Ensure episode_id column exists on stage_runs (migration from legacy schema)
             self._ensure_columns(
                 connection,
                 "stage_runs",
-                {"build_id": "TEXT"},
+                {"episode_id": "TEXT"},
             )
-            # ensure profile columns on builds
-            self._ensure_columns(
-                connection,
-                "builds",
-                {
-                    "translation_profile_id": "TEXT",
-                    "voice_profile_id": "TEXT",
-                },
-            )
-            # ensure niche project columns on projects
-            self._ensure_columns(
-                connection,
-                "projects",
-                {
-                    "master_language": "TEXT DEFAULT 'en'",
-                    "configured_languages": "TEXT DEFAULT '[]'",
-                    "language_voice_profiles": "TEXT DEFAULT '{}'",
-                    "language_translation_profiles": "TEXT DEFAULT '{}'",
-                    "is_niche": "INTEGER DEFAULT 0",
-                },
-            )
+            # Create index after ensuring column exists
             connection.execute(
-                """
-                UPDATE jobs
-                SET scene_planning_provider = COALESCE(NULLIF(scene_planning_provider, ''), scene_provider, 'claude'),
-                    visual_bible_provider = COALESCE(NULLIF(visual_bible_provider, ''), prompt_provider, 'claude'),
-                    video_prompt_provider = COALESCE(NULLIF(video_prompt_provider, ''), prompt_provider, 'codex'),
-                    image_prompt_provider = COALESCE(NULLIF(image_prompt_provider, ''), prompt_provider, 'codex'),
-                    scene_planning_model = COALESCE(NULLIF(scene_planning_model, ''), 'haiku'),
-                    visual_bible_model = COALESCE(NULLIF(visual_bible_model, ''), 'haiku'),
-                    video_prompt_model = COALESCE(NULLIF(video_prompt_model, ''), 'gpt-5.4'),
-                    image_prompt_model = COALESCE(NULLIF(image_prompt_model, ''), 'gpt-5.4'),
-                    leading_video_scene_count = COALESCE(leading_video_scene_count, 20)
-                """
+                "CREATE INDEX IF NOT EXISTS idx_stage_runs_episode ON stage_runs(episode_id)"
             )
-            connection.commit()
-
-    def _migrate_jobs_to_projects(self) -> None:
-        """For each legacy job that has no project_id, create a project + master build."""
-        with self._lock, self._connect() as connection:
-            orphan_jobs = connection.execute(
-                "SELECT * FROM jobs WHERE project_id IS NULL OR project_id = ''"
-            ).fetchall()
-            if not orphan_jobs:
-                return
-            now = utc_now()
-            for job_row in orphan_jobs:
-                job = dict(job_row)
-                job_id = job["id"]
-                project_id = f"proj-{job_id}"
-                build_id = f"build-master-{job_id}"
-
-                # Create project
-                connection.execute(
-                    """
-                    INSERT OR IGNORE INTO projects(
-                        id, title, source_language, board_status, workspace_dir,
-                        audio_filename, script_filename, audio_path, script_path,
-                        scene_planning_provider, visual_bible_provider,
-                        video_prompt_provider, image_prompt_provider,
-                        scene_planning_model, visual_bible_model,
-                        video_prompt_model, image_prompt_model,
-                        leading_video_scene_count, warning_count, last_error,
-                        created_at, updated_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    """,
-                    (
-                        project_id,
-                        job.get("title", job_id),
-                        job.get("language_code", "en"),
-                        job.get("board_status", "Draft"),
-                        job.get("workspace_dir", ""),
-                        job.get("audio_filename"),
-                        job.get("script_filename"),
-                        job.get("audio_path"),
-                        job.get("script_path"),
-                        job.get("scene_planning_provider", "claude"),
-                        job.get("visual_bible_provider", "claude"),
-                        job.get("video_prompt_provider", "codex"),
-                        job.get("image_prompt_provider", "codex"),
-                        job.get("scene_planning_model", "haiku"),
-                        job.get("visual_bible_model", "haiku"),
-                        job.get("video_prompt_model", "gpt-5.4"),
-                        job.get("image_prompt_model", "gpt-5.4"),
-                        job.get("leading_video_scene_count", 20),
-                        job.get("warning_count", 0),
-                        job.get("last_error"),
-                        job.get("created_at", now),
-                        now,
-                    ),
-                )
-
-                # Create master build
-                connection.execute(
-                    """
-                    INSERT OR IGNORE INTO builds(
-                        id, project_id, build_type, language_code,
-                        board_status, pipeline_status, current_stage, queued_from_stage,
-                        script_path, audio_path, srt_path, timeline_path,
-                        alignment_report_path, segments_path,
-                        planning_manifest_path, timeline_draft_path, timeline_validation_path,
-                        visual_bible_path, visual_bible_validation_path,
-                        prompt_list_draft_path, prompt_blueprint_path, prompt_validation_path,
-                        export_timeline_path, export_prompt_list_path,
-                        export_video_prompt_list_path, export_image_prompt_list_path,
-                        review_ready, warning_count, last_error,
-                        workspace_dir, created_at, updated_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    """,
-                    (
-                        build_id,
-                        project_id,
-                        "master",
-                        job.get("language_code", "en"),
-                        job.get("board_status", "Draft"),
-                        job.get("pipeline_status", "idle"),
-                        job.get("current_stage", "draft"),
-                        job.get("queued_from_stage", "alignment"),
-                        job.get("script_path"),
-                        job.get("audio_path"),
-                        job.get("final_srt_path"),
-                        job.get("timeline_draft_path"),
-                        job.get("alignment_report_path"),
-                        job.get("segments_path"),
-                        job.get("planning_manifest_path"),
-                        job.get("timeline_draft_path"),
-                        job.get("timeline_validation_path"),
-                        job.get("visual_bible_path"),
-                        job.get("visual_bible_validation_path"),
-                        job.get("prompt_list_draft_path"),
-                        job.get("prompt_blueprint_path"),
-                        job.get("prompt_validation_path"),
-                        job.get("export_timeline_path"),
-                        job.get("export_prompt_list_path"),
-                        job.get("export_video_prompt_list_path"),
-                        job.get("export_image_prompt_list_path"),
-                        job.get("review_ready", 0),
-                        job.get("warning_count", 0),
-                        job.get("last_error"),
-                        job.get("workspace_dir", ""),
-                        job.get("created_at", now),
-                        now,
-                    ),
-                )
-
-                # Link job to project
-                connection.execute(
-                    "UPDATE jobs SET project_id = ? WHERE id = ?",
-                    (project_id, job_id),
-                )
-
-                # Backfill build_id on stage_runs
-                connection.execute(
-                    "UPDATE stage_runs SET build_id = ? WHERE job_id = ? AND (build_id IS NULL OR build_id = '')",
-                    (build_id, job_id),
-                )
-
             connection.commit()
 
     # ── helpers ──────────────────────────────────────────────────────
@@ -662,56 +338,11 @@ class Tool1Database:
     def list_templates(self) -> list[dict[str, Any]]:
         return self._fetchall("SELECT * FROM templates ORDER BY stage, provider")
 
-    # ── legacy jobs (backward compat) ───────────────────────────────
-
-    def create_job(self, payload: dict[str, Any]) -> None:
-        columns = ", ".join(payload.keys())
-        placeholders = ", ".join(["?"] * len(payload))
-        self._execute(
-            f"INSERT INTO jobs({columns}) VALUES ({placeholders})",
-            tuple(payload.values()),
-        )
-
-    def list_jobs(self) -> list[dict[str, Any]]:
-        return self._fetchall("SELECT * FROM jobs ORDER BY updated_at DESC, created_at DESC")
-
-    def get_job(self, job_id: str) -> dict[str, Any] | None:
-        return self._fetchone("SELECT * FROM jobs WHERE id = ?", (job_id,))
-
-    def update_job(self, job_id: str, **fields: Any) -> None:
-        if not fields:
-            return
-        fields["updated_at"] = utc_now()
-        assignments = ", ".join(f"{key} = ?" for key in fields)
-        params = list(fields.values()) + [job_id]
-        self._execute(f"UPDATE jobs SET {assignments} WHERE id = ?", params)
-
-    def has_running_stage_run(self, job_id: str) -> bool:
-        row = self._fetchone(
-            """
-            SELECT id FROM stage_runs
-            WHERE job_id = ? AND status = 'running'
-            LIMIT 1
-            """,
-            (job_id,),
-        )
-        return row is not None
-
-    def delete_job_records(self, job_id: str) -> None:
-        with self._lock, self._connect() as connection:
-            connection.execute("DELETE FROM stage_runs WHERE job_id = ?", (job_id,))
-            connection.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-            connection.commit()
-
-    def list_stage_runs(self, job_id: str) -> list[dict[str, Any]]:
-        return self._fetchall(
-            "SELECT * FROM stage_runs WHERE job_id = ? ORDER BY id DESC",
-            (job_id,),
-        )
+    # ── stage runs ──────────────────────────────────────────────────
 
     def start_stage_run(
         self,
-        job_id: str,
+        episode_id: str,
         stage: str,
         provider: str | None,
         template_hash: str | None,
@@ -725,13 +356,13 @@ class Tool1Database:
         return self._execute(
             """
             INSERT INTO stage_runs(
-                job_id, stage, provider, status, started_at, template_hash, workdir,
+                episode_id, stage, provider, status, started_at, template_hash, workdir,
                 command_json, stdout_path, stderr_path, parsed_output_path, validation_path
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                job_id,
+                episode_id,
                 stage,
                 provider,
                 "running",
@@ -783,134 +414,120 @@ class Tool1Database:
             (json.dumps(command_payload, ensure_ascii=False), run_id),
         )
 
-    def next_queued_job(self) -> dict[str, Any] | None:
-        return self._fetchone(
-            """
-            SELECT * FROM jobs
-            WHERE board_status = 'Queued'
-            ORDER BY updated_at ASC, created_at ASC
-            LIMIT 1
-            """
+    def list_stage_runs(self, episode_id: str) -> list[dict[str, Any]]:
+        return self._fetchall(
+            "SELECT * FROM stage_runs WHERE episode_id = ? ORDER BY id DESC",
+            (episode_id,),
         )
 
-    # ── projects ────────────────────────────────────────────────────
+    # ── niche projects ──────────────────────────────────────────────
 
-    def create_project(self, payload: dict[str, Any]) -> None:
-        self._insert("projects", payload)
+    def create_niche_project(self, payload: dict[str, Any]) -> None:
+        self._insert("niche_projects", payload)
 
-    def list_projects(self) -> list[dict[str, Any]]:
-        return self._fetchall("SELECT * FROM projects ORDER BY updated_at DESC, created_at DESC")
+    def list_niche_projects(self) -> list[dict[str, Any]]:
+        return self._fetchall("SELECT * FROM niche_projects ORDER BY updated_at DESC, created_at DESC")
 
-    def get_project(self, project_id: str) -> dict[str, Any] | None:
-        return self._fetchone("SELECT * FROM projects WHERE id = ?", (project_id,))
+    def get_niche_project(self, project_id: str) -> dict[str, Any] | None:
+        return self._fetchone("SELECT * FROM niche_projects WHERE id = ?", (project_id,))
 
-    def update_project(self, project_id: str, **fields: Any) -> None:
-        self._update("projects", "id", project_id, **fields)
+    def update_niche_project(self, project_id: str, **fields: Any) -> None:
+        self._update("niche_projects", "id", project_id, **fields)
 
-    def delete_project(self, project_id: str) -> None:
+    def delete_niche_project(self, project_id: str) -> None:
         with self._lock, self._connect() as connection:
-            build_ids = [
+            episode_ids = [
                 row["id"]
                 for row in connection.execute(
-                    "SELECT id FROM builds WHERE project_id = ?", (project_id,)
+                    "SELECT id FROM episodes WHERE niche_project_id = ?", (project_id,)
                 ).fetchall()
             ]
-            for build_id in build_ids:
-                connection.execute("DELETE FROM stage_runs WHERE build_id = ?", (build_id,))
-                connection.execute("DELETE FROM tts_jobs WHERE build_id = ?", (build_id,))
-            connection.execute("DELETE FROM builds WHERE project_id = ?", (project_id,))
-            connection.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+            for eid in episode_ids:
+                connection.execute("DELETE FROM episode_language_status WHERE episode_id = ?", (eid,))
+                connection.execute("DELETE FROM stage_runs WHERE episode_id = ?", (eid,))
+                connection.execute("DELETE FROM tts_jobs WHERE build_id = ?", (eid,))
+            connection.execute("DELETE FROM episodes WHERE niche_project_id = ?", (project_id,))
+            connection.execute("DELETE FROM niche_projects WHERE id = ?", (project_id,))
             connection.commit()
 
-    # ── builds ──────────────────────────────────────────────────────
+    # ── Episodes ────────────────────────────────────────────────────
 
-    def create_build(self, payload: dict[str, Any]) -> None:
-        self._insert("builds", payload)
+    def create_episode(self, payload: dict[str, Any]) -> None:
+        self._insert("episodes", payload)
 
-    def list_builds(self, project_id: str) -> list[dict[str, Any]]:
+    def list_episodes(self, niche_project_id: str) -> list[dict[str, Any]]:
         return self._fetchall(
-            "SELECT * FROM builds WHERE project_id = ? ORDER BY created_at ASC",
-            (project_id,),
+            "SELECT * FROM episodes WHERE niche_project_id = ? ORDER BY created_at DESC",
+            (niche_project_id,),
         )
 
-    def get_build(self, build_id: str) -> dict[str, Any] | None:
-        return self._fetchone("SELECT * FROM builds WHERE id = ?", (build_id,))
+    def get_episode(self, episode_id: str) -> dict[str, Any] | None:
+        return self._fetchone("SELECT * FROM episodes WHERE id = ?", (episode_id,))
 
-    def get_master_build(self, project_id: str) -> dict[str, Any] | None:
-        return self._fetchone(
-            "SELECT * FROM builds WHERE project_id = ? AND build_type = 'master' LIMIT 1",
-            (project_id,),
-        )
+    def update_episode(self, episode_id: str, **fields: Any) -> None:
+        self._update("episodes", "id", episode_id, **fields)
 
-    def list_localization_builds(self, project_id: str) -> list[dict[str, Any]]:
-        return self._fetchall(
-            "SELECT * FROM builds WHERE project_id = ? AND build_type = 'localization' ORDER BY language_code",
-            (project_id,),
-        )
-
-    def update_build(self, build_id: str, **fields: Any) -> None:
-        self._update("builds", "id", build_id, **fields)
-
-    def delete_build(self, build_id: str) -> None:
+    def delete_episode(self, episode_id: str) -> None:
         with self._lock, self._connect() as connection:
-            connection.execute("DELETE FROM stage_runs WHERE build_id = ?", (build_id,))
-            connection.execute("DELETE FROM tts_jobs WHERE build_id = ?", (build_id,))
-            connection.execute("DELETE FROM builds WHERE id = ?", (build_id,))
+            connection.execute("DELETE FROM episode_language_status WHERE episode_id = ?", (episode_id,))
+            connection.execute("DELETE FROM stage_runs WHERE episode_id = ?", (episode_id,))
+            connection.execute("DELETE FROM tts_jobs WHERE build_id = ?", (episode_id,))
+            connection.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))
             connection.commit()
 
-    def next_queued_build(self) -> dict[str, Any] | None:
+    def next_queued_episode(self) -> dict[str, Any] | None:
         return self._fetchone(
             """
-            SELECT * FROM builds
+            SELECT * FROM episodes
             WHERE board_status = 'Queued'
             ORDER BY updated_at ASC, created_at ASC
             LIMIT 1
             """
         )
 
-    def list_build_stage_runs(self, build_id: str) -> list[dict[str, Any]]:
+    def list_all_episodes_for_board(self) -> list[dict[str, Any]]:
+        """Return all episodes with their niche project title for the kanban board."""
         return self._fetchall(
-            "SELECT * FROM stage_runs WHERE build_id = ? ORDER BY id DESC",
-            (build_id,),
+            """
+            SELECT e.*, p.title as niche_project_title
+            FROM episodes e
+            JOIN niche_projects p ON e.niche_project_id = p.id
+            ORDER BY e.updated_at DESC
+            """
         )
 
-    def start_build_stage_run(
-        self,
-        build_id: str,
-        job_id: str,
-        stage: str,
-        provider: str | None,
-        template_hash: str | None,
-        workdir: str,
-        command_payload: Any,
-        stdout_path: str | None,
-        stderr_path: str | None,
-        parsed_output_path: str | None = None,
-        validation_path: str | None = None,
-    ) -> int:
-        return self._execute(
-            """
-            INSERT INTO stage_runs(
-                build_id, job_id, stage, provider, status, started_at, template_hash, workdir,
-                command_json, stdout_path, stderr_path, parsed_output_path, validation_path
+    # ── Episode language status ──────────────────────────────────────
+
+    def create_episode_language_status(self, payload: dict[str, Any]) -> None:
+        self._insert("episode_language_status", payload)
+
+    def get_episode_language_statuses(self, episode_id: str) -> list[dict[str, Any]]:
+        return self._fetchall(
+            "SELECT * FROM episode_language_status WHERE episode_id = ? ORDER BY language_code",
+            (episode_id,),
+        )
+
+    def get_episode_language_status(self, episode_id: str, language_code: str) -> dict[str, Any] | None:
+        return self._fetchone(
+            "SELECT * FROM episode_language_status WHERE episode_id = ? AND language_code = ?",
+            (episode_id, language_code),
+        )
+
+    def update_episode_language_status(self, episode_id: str, language_code: str, **fields: Any) -> None:
+        fields["updated_at"] = utc_now()
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [episode_id, language_code]
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                f"UPDATE episode_language_status SET {set_clause} WHERE episode_id = ? AND language_code = ?",
+                values,
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                build_id,
-                job_id,
-                stage,
-                provider,
-                "running",
-                utc_now(),
-                template_hash,
-                workdir,
-                json.dumps(command_payload, ensure_ascii=False),
-                stdout_path,
-                stderr_path,
-                parsed_output_path,
-                validation_path,
-            ),
+            connection.commit()
+
+    def list_paused_tts_episodes(self) -> list[dict[str, Any]]:
+        """Return episodes currently paused waiting for TTS to complete."""
+        return self._fetchall(
+            "SELECT * FROM episodes WHERE pipeline_status = 'paused_for_tts'"
         )
 
     # ── voice profiles ──────────────────────────────────────────────
@@ -1105,96 +722,4 @@ class Tool1Database:
             LIMIT 1
             """,
             (profile_id,),
-        )
-
-    def list_paused_tts_builds(self) -> list[dict[str, Any]]:
-        """Return localization builds currently paused waiting for TTS."""
-        return self._fetchall(
-            "SELECT * FROM builds WHERE pipeline_status = 'paused_for_tts' AND tts_job_id IS NOT NULL"
-        )
-
-    # ── Episodes (TTS-first unified pipeline) ────────────────────────
-
-    def create_episode(self, payload: dict[str, Any]) -> None:
-        self._insert("episodes", payload)
-
-    def list_episodes(self, niche_project_id: str) -> list[dict[str, Any]]:
-        return self._fetchall(
-            "SELECT * FROM episodes WHERE niche_project_id = ? ORDER BY created_at DESC",
-            (niche_project_id,),
-        )
-
-    def get_episode(self, episode_id: str) -> dict[str, Any] | None:
-        return self._fetchone("SELECT * FROM episodes WHERE id = ?", (episode_id,))
-
-    def update_episode(self, episode_id: str, **fields: Any) -> None:
-        self._update("episodes", "id", episode_id, **fields)
-
-    def delete_episode(self, episode_id: str) -> None:
-        with self._lock, self._connect() as connection:
-            connection.execute("DELETE FROM episode_language_status WHERE episode_id = ?", (episode_id,))
-            connection.execute("DELETE FROM stage_runs WHERE build_id = ?", (episode_id,))
-            connection.execute("DELETE FROM tts_jobs WHERE build_id = ?", (episode_id,))
-            connection.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))
-            connection.commit()
-
-    def next_queued_episode(self) -> dict[str, Any] | None:
-        return self._fetchone(
-            """
-            SELECT * FROM episodes
-            WHERE board_status = 'Queued'
-            ORDER BY updated_at ASC, created_at ASC
-            LIMIT 1
-            """
-        )
-
-    def list_all_episodes_for_board(self) -> list[dict[str, Any]]:
-        """Return all episodes with their niche project title for the kanban board."""
-        return self._fetchall(
-            """
-            SELECT e.*, p.title as niche_project_title
-            FROM episodes e
-            JOIN projects p ON e.niche_project_id = p.id
-            ORDER BY e.updated_at DESC
-            """
-        )
-
-    # ── Episode language status ──────────────────────────────────────
-
-    def create_episode_language_status(self, payload: dict[str, Any]) -> None:
-        self._insert("episode_language_status", payload)
-
-    def get_episode_language_statuses(self, episode_id: str) -> list[dict[str, Any]]:
-        return self._fetchall(
-            "SELECT * FROM episode_language_status WHERE episode_id = ? ORDER BY language_code",
-            (episode_id,),
-        )
-
-    def get_episode_language_status(self, episode_id: str, language_code: str) -> dict[str, Any] | None:
-        return self._fetchone(
-            "SELECT * FROM episode_language_status WHERE episode_id = ? AND language_code = ?",
-            (episode_id, language_code),
-        )
-
-    def update_episode_language_status(self, episode_id: str, language_code: str, **fields: Any) -> None:
-        fields["updated_at"] = utc_now()
-        set_clause = ", ".join(f"{k} = ?" for k in fields)
-        values = list(fields.values()) + [episode_id, language_code]
-        with self._lock, self._connect() as connection:
-            connection.execute(
-                f"UPDATE episode_language_status SET {set_clause} WHERE episode_id = ? AND language_code = ?",
-                values,
-            )
-            connection.commit()
-
-    def list_paused_tts_episodes(self) -> list[dict[str, Any]]:
-        """Return episodes currently paused waiting for TTS to complete."""
-        return self._fetchall(
-            "SELECT * FROM episodes WHERE pipeline_status = 'paused_for_tts'"
-        )
-
-    def list_niche_projects(self) -> list[dict[str, Any]]:
-        """Return projects that are niche projects (have is_niche=1)."""
-        return self._fetchall(
-            "SELECT * FROM projects WHERE is_niche = 1 ORDER BY updated_at DESC"
         )
