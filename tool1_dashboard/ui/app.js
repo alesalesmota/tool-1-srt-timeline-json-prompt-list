@@ -730,6 +730,12 @@ function renderEpisodeCard(ep) {
   const tone = pipelineTone(ep.pipeline_status);
   const error = ep.last_error ? `<div class="episode-card-error">${esc(summarizeCardIssue(ep.last_error, 80))}</div>` : "";
   const nicheLabel = ep.niche_project_title ? `<span class="episode-card-niche">${esc(ep.niche_project_title)}</span>` : "";
+  const langCount = (ep.configured_languages || []).length;
+  const isRunning = ep.pipeline_status === "running";
+  const canQueue = ["idle", "failed", "review", "done"].includes(ep.pipeline_status || "idle");
+  const elapsedHtml = isRunning && ep.updated_at
+    ? `<span class="running-elapsed episode-elapsed" data-started-at="${esc(ep.updated_at)}">${esc(relativeTime(ep.updated_at))}</span>`
+    : "";
 
   return `
     <div class="episode-card surface" data-open-episode="${esc(ep.id)}">
@@ -740,10 +746,18 @@ function renderEpisodeCard(ep) {
       <div class="badge-row" style="margin-top:6px;">
         <span class="badge badge-${tone}">${esc(EPISODE_STAGE_LABELS[currentStage] || titleCase(currentStage))}</span>
         <span class="badge">${esc(titleCase(ep.pipeline_status || "idle"))}</span>
+        ${langCount ? `<span class="badge badge-small">${langCount} lang${langCount > 1 ? "s" : ""}</span>` : ""}
+        ${elapsedHtml}
       </div>
       ${progress}
       ${error}
-      <div class="helper" style="margin-top:4px;font-size:0.7rem;opacity:0.5;">${esc(relativeTime(ep.updated_at))}</div>
+      <div class="episode-card-footer">
+        <span class="helper" style="font-size:0.7rem;opacity:0.5;">${esc(relativeTime(ep.updated_at))}</span>
+        <div class="episode-quick-actions" onclick="event.stopPropagation()">
+          ${canQueue ? `<button type="button" class="button button-primary button-tiny" data-queue-episode="${esc(ep.id)}" title="Queue">${iconContent("play", "Queue")}</button>` : ""}
+          <button type="button" class="button button-danger button-tiny" data-delete-episode="${esc(ep.id)}" title="Delete">${iconContent("delete", "Delete", { iconOnly: true })}</button>
+        </div>
+      </div>
     </div>`;
 }
 
@@ -956,16 +970,25 @@ function renderEpisodeDetail() {
   const stageRuns = detail.stage_runs || [];
   const currentStage = episode.current_stage || "draft";
 
-  // Stage strip
+  // Pipeline progress bar
   const allStages = EPISODE_PIPELINE_COLUMNS.filter((c) => c.id !== "needs_attention");
   const currentIdx = allStages.findIndex((c) => c.id === currentStage);
+  const doneCount = allStages.filter((s, i) => {
+    if (episode.pipeline_status === "done") return true;
+    if (i < currentIdx) return true;
+    if (i === currentIdx && (episode.pipeline_status === "review" || episode.pipeline_status === "done")) return true;
+    return false;
+  }).length;
+  const progressPct = allStages.length ? Math.round((doneCount / allStages.length) * 100) : 0;
+
   const stageStrip = allStages.map((s, i) => {
     let st = "pending";
-    if (episode.pipeline_status === "done" || episode.pipeline_status === "review" && i <= currentIdx) st = "done";
+    if (episode.pipeline_status === "done") st = "done";
     else if (i < currentIdx) st = "done";
     else if (i === currentIdx && episode.pipeline_status === "running") st = "active";
     else if (i === currentIdx && (episode.pipeline_status === "review" || episode.pipeline_status === "done")) st = "done";
-    return '<div class="stage-strip-item" data-state="' + st + '">' + esc(s.short) + '</div>';
+    else if (i === currentIdx && episode.pipeline_status === "failed") st = "failed";
+    return '<div class="stage-strip-item" data-state="' + st + '" title="' + esc(s.label) + '">' + esc(s.short) + '</div>';
   }).join("");
 
   // Per-language table
@@ -986,16 +1009,43 @@ function renderEpisodeDetail() {
       <tbody>${langRows}</tbody>
     </table>` : '<p class="helper">No language data.</p>';
 
-  // Stage runs
-  const runsHtml = stageRuns.length ? stageRuns.slice(0, 20).map((r) =>
-    '<div class="badge-row" style="margin-top:4px;">' +
-      '<span class="badge badge-' + toneFromRunStatus(r.status) + '">' + esc(r.stage || "?") + '</span>' +
-      '<span class="badge">' + esc(r.status || "?") + '</span>' +
-      '<span class="helper" style="font-size:0.75rem;">' + esc(relativeTime(r.started_at)) + '</span>' +
-    '</div>'
-  ).join("") : '<p class="helper">No stage runs yet.</p>';
+  // Stage runs — expandable detail cards
+  const runsHtml = stageRuns.length ? stageRuns.slice(0, 30).map((r) => {
+    const duration = r.started_at && r.finished_at
+      ? Math.round((new Date(r.finished_at) - new Date(r.started_at)) / 1000) + "s"
+      : r.started_at && !r.finished_at ? "running…" : "";
+    return `<details class="run-detail-card">
+      <summary>
+        <div class="run-detail-head">
+          <span class="badge badge-${toneFromRunStatus(r.status)}">${esc(r.stage || "?")}</span>
+          <span class="badge">${esc(r.status || "?")}</span>
+          ${r.language_code ? '<span class="badge badge-small">' + esc(r.language_code) + '</span>' : ''}
+          ${duration ? '<span class="helper" style="font-size:0.75rem;">' + esc(duration) + '</span>' : ''}
+          <span class="helper" style="font-size:0.75rem;margin-left:auto;">${esc(relativeTime(r.started_at))}</span>
+        </div>
+      </summary>
+      <div class="run-detail-body">
+        ${r.provider ? '<div class="run-meta">Provider: <strong>' + esc(r.provider) + '</strong></div>' : ''}
+        ${r.error_message ? '<div class="notice" data-tone="error" style="margin-top:6px;font-size:0.8rem;">' + esc(r.error_message) + '</div>' : ''}
+        ${r.stdout_preview ? '<pre class="run-output">' + esc(r.stdout_preview) + '</pre>' : ''}
+      </div>
+    </details>`;
+  }).join("") : '<p class="helper">No stage runs recorded yet.</p>';
 
   const queueDisabled = episode.pipeline_status === "running" ? "disabled" : "";
+  const isRunning = episode.pipeline_status === "running";
+
+  // Output files section (lazy-loaded)
+  const filesSection = `
+    <div class="detail-section">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div class="eyebrow">Output files</div>
+        <button type="button" class="button button-ghost button-small" onclick="loadEpisodeFiles('${esc(episode.id)}')">Refresh files</button>
+      </div>
+      <div id="episode-files-list" class="output-files-grid" style="margin-top:10px;">
+        <p class="helper">Click "Refresh files" to load output files.</p>
+      </div>
+    </div>`;
 
   $("view").innerHTML = `
     <div class="detail-section">
@@ -1005,13 +1055,18 @@ function renderEpisodeDetail() {
         <span class="badge badge-${pipelineTone(episode.pipeline_status)}">${esc(titleCase(episode.pipeline_status || "idle"))}</span>
         <span class="badge">${esc(EPISODE_STAGE_LABELS[currentStage] || titleCase(currentStage))}</span>
         <span class="badge">Master: ${esc(episode.master_language || "en")}</span>
+        ${langStatuses.length ? '<span class="badge badge-small">' + langStatuses.length + ' lang' + (langStatuses.length > 1 ? 's' : '') + '</span>' : ''}
+        ${isRunning ? '<span class="running-elapsed" data-started-at="' + esc(episode.updated_at) + '">…</span>' : ''}
       </div>
       ${episode.last_error ? '<div class="notice" data-tone="error" style="margin-top:8px;">' + esc(episode.last_error) + '</div>' : ""}
     </div>
 
     <div class="detail-section">
-      <div class="eyebrow">Pipeline stages</div>
-      <div class="stage-strip">${stageStrip}</div>
+      <div class="eyebrow">Pipeline progress — ${progressPct}%</div>
+      <div class="pipeline-progress-bar" style="margin-top:8px;">
+        <div class="pipeline-progress-fill" style="width:${progressPct}%"></div>
+      </div>
+      <div class="stage-strip" style="margin-top:10px;">${stageStrip}</div>
       <div class="button-row" style="margin-top:12px;">
         <button type="button" class="button button-primary has-icon" data-queue-episode="${esc(episode.id)}" ${queueDisabled}>${iconContent("play", "Queue / Rerun")}</button>
         <button type="button" class="button button-danger has-icon" data-delete-episode="${esc(episode.id)}">${iconContent("delete", "Delete episode")}</button>
@@ -1023,8 +1078,10 @@ function renderEpisodeDetail() {
       ${langTable}
     </div>
 
+    ${filesSection}
+
     <div class="detail-section">
-      <div class="eyebrow">Stage runs</div>
+      <div class="eyebrow">Stage runs (${stageRuns.length})</div>
       ${runsHtml}
     </div>
 
@@ -1032,6 +1089,39 @@ function renderEpisodeDetail() {
       <button type="button" class="button button-ghost has-icon" data-nav="pipeline-board">${iconContent("back", "Back to board")}</button>
     </div>
   `;
+
+  // Auto-load files
+  loadEpisodeFiles(episode.id);
+}
+
+async function loadEpisodeFiles(episodeId) {
+  const container = $("episode-files-list");
+  if (!container) return;
+  container.innerHTML = '<p class="helper">Loading…</p>';
+  try {
+    const data = await api("/api/episodes/" + encodeURIComponent(episodeId) + "/files");
+    const files = data.files || [];
+    if (!files.length) {
+      container.innerHTML = '<p class="helper">No output files yet.</p>';
+      return;
+    }
+    const fileIcons = { ".srt": "timeline", ".json": "settings", ".txt": "prompts", ".wav": "play", ".mp3": "play" };
+    container.innerHTML = files.map((f) => {
+      const sizeKb = (f.size / 1024).toFixed(1);
+      const icon = fileIcons[f.ext] || "open";
+      return '<div class="output-file-card">' +
+        '<div class="output-file-info">' +
+          iconMarkup(icon) +
+          '<div>' +
+            '<div class="output-file-name">' + esc(f.name) + '</div>' +
+            '<div class="helper" style="font-size:0.7rem;">' + sizeKb + ' KB</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    }).join("");
+  } catch (err) {
+    container.innerHTML = '<p class="helper" style="color:var(--clr-error);">' + esc(err.message) + '</p>';
+  }
 }
 
 function langStatusBadge(status) {
@@ -1363,13 +1453,14 @@ function resetAutoRefresh() {
 function resetElapsedTimer() {
   if (elapsedTimer) window.clearInterval(elapsedTimer);
   elapsedTimer = window.setInterval(() => {
-    const el = document.querySelector(".running-elapsed");
-    if (!el || !el.dataset.startedAt) return;
-    const startMs = new Date(el.dataset.startedAt).getTime();
-    const diffSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
-    const mins = Math.floor(diffSec / 60);
-    const secs = diffSec % 60;
-    el.textContent = mins > 0 ? `${mins}m ${secs}s elapsed` : `${secs}s elapsed`;
+    document.querySelectorAll(".running-elapsed").forEach((el) => {
+      if (!el.dataset.startedAt) return;
+      const startMs = new Date(el.dataset.startedAt).getTime();
+      const diffSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+      const mins = Math.floor(diffSec / 60);
+      const secs = diffSec % 60;
+      el.textContent = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+    });
   }, 1000);
 }
 

@@ -1678,3 +1678,156 @@ details.editor-card summary::-webkit-details-marker {
   .modal-panel { width: 95vw; padding: 16px; }
   .pipeline-board { grid-template-columns: repeat(13, minmax(140px, 1fr)); }
 }
+
+/* ── Phase 6: Episode Board Enhancements ─────────────────────── */
+
+/* Episode card footer with quick actions */
+.episode-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  gap: 6px;
+}
+
+.episode-quick-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.episode-card:hover .episode-quick-actions {
+  opacity: 1;
+}
+
+/* Tiny button variant */
+.button-tiny {
+  padding: 3px 8px;
+  font-size: 0.7rem;
+  border-radius: 8px;
+  min-height: unset;
+  gap: 3px;
+}
+.button-tiny .button-icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* Elapsed timer on cards */
+.episode-elapsed {
+  font-size: 0.7rem;
+  color: var(--accent);
+  font-weight: 500;
+  animation: pulse-glow 1.6s ease-in-out infinite;
+}
+
+/* Pipeline progress bar (episode detail) */
+.pipeline-progress-bar {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--line);
+  overflow: hidden;
+  position: relative;
+}
+.pipeline-progress-fill {
+  height: 100%;
+  border-radius: 5px;
+  background: linear-gradient(90deg, var(--success), var(--brand));
+  transition: width 0.5s ease;
+}
+
+/* Stage strip failed state */
+.stage-strip-item[data-state="failed"] {
+  background: var(--badge-error-bg, rgba(248, 113, 113, 0.12));
+  border-color: var(--badge-error-border, rgba(248, 113, 113, 0.25));
+  color: var(--badge-error-fg, #f87171);
+  font-weight: 600;
+}
+
+/* Output files grid */
+.output-files-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 8px;
+}
+
+.output-file-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  transition: border-color 0.15s;
+}
+.output-file-card:hover {
+  border-color: var(--brand);
+}
+
+.output-file-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.output-file-info .button-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.output-file-name {
+  font-size: 0.82rem;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+/* Stage run detail cards */
+.run-detail-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+.run-detail-card summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  transition: background 0.15s;
+}
+.run-detail-card summary::-webkit-details-marker {
+  display: none;
+}
+.run-detail-card summary:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.run-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.run-detail-body {
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.01);
+}
+
+.run-meta {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.run-output {
+  margin-top: 8px;
+  max-height: 200px;
+  overflow: auto;
+  font-size: 0.75rem;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--panel-strong);
+  min-height: unset;
+}

@@ -57,13 +57,13 @@
 - [x] Verify: manual browser test (no JS errors, all nav works)
 
 ## Phase 6: Episode Pipeline Board Enhancement
-- [ ] Per-language progress indicators on episode cards
-- [ ] Current stage + elapsed time display
-- [ ] Quick actions (queue, restart, delete)
-- [ ] Episode detail: per-language status table
-- [ ] Stage run history view
-- [ ] Output file previews
-- [ ] Pipeline progress bar
+- [x] Per-language progress indicators on episode cards
+- [x] Current stage + elapsed time display
+- [x] Quick actions (queue, restart, delete)
+- [x] Episode detail: per-language status table
+- [x] Stage run history view
+- [x] Output file previews
+- [x] Pipeline progress bar
 
 ## Phase 7: Niche Project Detail Enhancement
 - [ ] Language config with voice/translation profile assignments

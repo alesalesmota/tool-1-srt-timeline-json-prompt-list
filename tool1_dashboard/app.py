@@ -304,6 +304,51 @@ async def board_episodes() -> dict[str, Any]:
     return {"episodes": service.list_all_episodes_for_board()}
 
 
+@app.get("/api/episodes/{episode_id}/files")
+async def episode_files(episode_id: str) -> dict[str, Any]:
+    """List output files in the episode workspace for preview."""
+    try:
+        detail = service.get_episode_detail(episode_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    episode = detail["episode"]
+    workspace_dir = episode.get("workspace_dir", "")
+    files: list[dict[str, Any]] = []
+
+    if workspace_dir:
+        from pathlib import Path
+        ws = Path(workspace_dir)
+        if ws.exists():
+            # Collect key output files
+            patterns = ["*.srt", "*.json", "*.txt", "*.wav", "*.mp3"]
+            seen: set[str] = set()
+            for pattern in patterns:
+                for fp in ws.glob(pattern):
+                    if fp.name not in seen:
+                        seen.add(fp.name)
+                        files.append({
+                            "name": fp.name,
+                            "size": fp.stat().st_size,
+                            "ext": fp.suffix,
+                            "path": str(fp),
+                        })
+            # Also check subdirs (runs/, alignment/)
+            for fp in ws.rglob("*"):
+                if fp.is_file() and fp.suffix in {".srt", ".json", ".txt"} and fp.name not in seen:
+                    seen.add(fp.name)
+                    rel = str(fp.relative_to(ws)).replace("\\", "/")
+                    files.append({
+                        "name": rel,
+                        "size": fp.stat().st_size,
+                        "ext": fp.suffix,
+                        "path": str(fp),
+                    })
+            files.sort(key=lambda f: f["name"])
+
+    return {"files": files}
+
+
 # ── Voice & Translation profile routes ─────────────────────────────
 
 
