@@ -66,12 +66,14 @@
 - [x] Pipeline progress bar
 
 ## Phase 7: Niche Project Detail Enhancement
-- [ ] Language config with voice/translation profile assignments
-- [ ] Episode list with status summary
-- [ ] "Submit New Episode" form
-- [ ] Inline language config editing
-- [ ] Batch operations
-- [ ] Project statistics
+- [x] Language config with voice/translation profile assignments
+- [x] Episode list with status summary (per-language mini-dots)
+- [x] "Submit New Episode" form (existed from Phase 5, verified working)
+- [x] Inline language config editing (add/remove languages, assign profiles)
+- [x] Batch operations (queue all drafts, re-run failed)
+- [x] Project statistics (stats bar with totals, by-status, completion rate)
+- [x] AI provider/model configuration per project (inline editing)
+- [x] Missing /api/target-languages endpoint added
 
 ## Phase 8: TTS & Translation Integration Polish
 - [ ] Fix TTS pause/resume for multi-language

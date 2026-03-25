@@ -83,7 +83,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 | Phase 4 | API Layer Consolidation | DONE |
 | Phase 5 | Frontend — Remove Legacy Views | DONE |
 | Phase 6 | Episode Pipeline Board Enhancement | DONE |
-| Phase 7 | Niche Project Detail Enhancement | TODO |
+| Phase 7 | Niche Project Detail Enhancement | DONE |
 | Phase 8 | TTS & Translation Polish | TODO |
 | Phase 9 | Review & Export Phase | TODO |
 | Phase 10 | Final Cleanup & Documentation | TODO |
@@ -92,6 +92,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-25 | Phase 7 complete: niche project detail enhancement — stats bar, inline language config with voice/translation profile dropdowns, AI provider/model config, enhanced episode cards with per-language mini-dots, batch operations (queue drafts, re-run failed), added missing `/api/target-languages` endpoint. 87 tests passing. |
 | 2026-03-25 | Phase 6 complete: enhanced Episode Pipeline Board with elapsed timers, progress bars, quick actions (Queue, Delete), output file previews, and expandable stage run details with stdout/error logs. Added `/api/episodes/{id}/files` endpoint. |
 | 2026-03-25 | Phase 5 complete: removed ~2100 lines of legacy frontend code from app.js (3854→1717 lines). Removed legacy sidebar items, routing, render functions, state, event handlers. Default route changed to pipeline-board. 87 tests pass, 0 JS errors |
 | 2026-03-25 | Phases 2-4 complete: removed all legacy code (jobs/projects/builds). database.py rewritten with niche_projects table, service.py reduced from 4500→1737 lines, app.py from 849→496 lines, 87 tests passing |
