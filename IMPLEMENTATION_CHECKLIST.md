@@ -6,22 +6,22 @@
 - [x] Create this checklist (`IMPLEMENTATION_CHECKLIST.md`)
 - [x] Update `CLAUDE.md` global behavior with plan persistence rule
 - [x] Save feedback memory about plan persistence
-- [ ] Archive outdated docs to `archive/`
-- [ ] Update `PROJECT_REGISTRY.md` with new plan
+- [x] Archive outdated docs to `archive/`
+- [x] Update `PROJECT_REGISTRY.md` with new plan
 
 ## Phase 1: Cleanup & Git Hygiene
-- [ ] Delete `TRADUTOR/` directory
-- [ ] Delete `TTS -NARRAÇAO/` directory
-- [ ] Delete `QUEBRADOR DE SRT/` directory
-- [ ] Delete `UI for Open AI Whisper/` directory
-- [ ] Archive `tool_1_multilingual_implementation.md` to `archive/`
-- [ ] Archive `tool_1_prd_readme_revised.md` to `archive/`
-- [ ] Delete `WORKFLOW_STATUS.md`
-- [ ] Create/update `.gitignore`
-- [ ] Commit all uncommitted work on `feat/cleanup-and-consolidation`
-- [ ] Push to remote
-- [ ] Verify: app starts
-- [ ] Verify: existing tests pass
+- [x] Delete `TRADUTOR/` directory
+- [x] Delete `TTS -NARRAÇAO/` directory
+- [x] Delete `QUEBRADOR DE SRT/` directory
+- [x] Delete `UI for Open AI Whisper/` directory
+- [x] Archive `tool_1_multilingual_implementation.md` to `archive/`
+- [x] Archive `tool_1_prd_readme_revised.md` to `archive/`
+- [x] Delete `WORKFLOW_STATUS.md`
+- [x] Create/update `.gitignore`
+- [x] Commit all uncommitted work on `feat/cleanup-and-consolidation`
+- [x] Push to remote
+- [x] Verify: app starts
+- [x] Verify: existing tests pass (119 passed, 0 failures)
 
 ## Phase 2: Database Consolidation
 - [ ] Create `niche_projects` table in database.py

@@ -1,6 +1,6 @@
 # PROJECT REGISTRY — Tool 1: Multilingual Planning & Pre-Generation System
 
-> **This file is the cross-conversation source of truth.** Every Claude session must read this first and update it before ending. It captures project state, decisions, user insights, and plans so nothing is lost between conversations.
+> **This file is the cross-conversation source of truth.** Every Claude session must read this first and update it before ending.
 
 ---
 
@@ -17,6 +17,8 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 
 **The fundamental principle:** Scenes are defined ONCE by the master language. All other languages reuse the same scene structure but with timing adjusted to their narration duration.
 
+**Consistency guide is per-episode** (not shared at niche project level).
+
 ## Two-Tool Architecture
 
 - **Tool 1** (this project) — Planning & pre-generation: translation → TTS → alignment → scene planning → timeline → prompts
@@ -24,34 +26,28 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 
 ## Current State (as of 2026-03-25)
 
-### What Exists
-- **Dashboard app** (`tool1_dashboard/`) — Kanban-style pipeline UI (Flask-based)
-  - Unified backend with service layer
+### What Exists & Works
+- **Dashboard app** (`tool1_dashboard/`) — FastAPI-based, Kanban-style pipeline UI
+  - Unified backend with service layer + SQLite
   - Dark/light theme, responsive layout
-  - Views: dashboard, create, job workspace, settings, templates
+  - Views: Pipeline Board, Niche Projects, Episodes, Voice Profiles, Translation Profiles, Settings, Templates
+  - Legacy views also present (Jobs, Projects/Builds) — **being removed in Phase 2-5**
 - **Translation module** (`tool1_dashboard/translation/`) — adapter, chunker, prompts, service
-- **TTS module** (`tool1_dashboard/tts/`) — audio, chunker, constants, manager, worker
+- **TTS module** (`tool1_dashboard/tts/`) — audio, chunker, constants, manager, worker (XTTS-v2)
 - **Alignment tool** (`tool1_dashboard/alignment_tool/`)
 - **SRT chunker** (`tool1_dashboard/srt_chunker/`)
-- **AI agent configs** (`config/agents/`) — scene planning, image prompt gen, video prompt gen, visual bible (Claude + Codex variants)
-- **Tests** — api, chunking/validation, cli_runner, pipeline, build_pipeline, translation, tts, video_pipeline
-- **Local CLI worker layer** for running pipeline steps
+- **Episode pipeline** — all 10 stages implemented in `_process_episode()` (service.py)
+- **AI agent configs** (`config/agents/`) — scene planning, visual bible, video/image prompts (Claude + Codex)
+- **Test suite** — 119 tests passing (api, chunking, cli_runner, pipeline, build, translation, tts, video_pipeline)
 
-### What's Working
-- Kanban UI shell with stage-based workflow
-- Backend service architecture
-- Test suite passing (as of last known state)
+### What's Being Worked On
+See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase plan.
 
-### What Needs Work
-- Runtime polish against real live CLI outputs
-- Manual browser validation of UI (desktop + mobile)
-- Packaging/install quality improvements
-- **PRD may be outdated** — user noted `tool_1_multilingual_implementation.md` needs revisiting
-- Integration of translation + TTS + alignment into the live pipeline flow
+**Currently:** Phase 1 complete (cleanup). Phase 2 next (database consolidation).
 
 ### Git State
-- Single initial commit on `main`
-- Many uncommitted changes across dashboard, tests, configs, translation, TTS modules
+- Branch: `feat/cleanup-and-consolidation` (active)
+- All code committed and pushed
 - Remote: `https://github.com/alesalesmota/tool-1-srt-timeline-json-prompt-list.git`
 
 ## Architecture Decisions
@@ -60,39 +56,43 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 |----------|-----|------|
 | TTS only, no human audio upload | All narration generated via TTS for full automation | 2026-03-24 |
 | One master language defines scene structure | Enables shared assets across all languages | 2026-03-24 |
-| Duration mismatch MVP: images stretch, videos hold last frame | Keep MVP simple, no slow-motion effects | 2026-03-24 |
-| Pre-configured voice/translation profiles per Niche Project | Minimize per-video setup, submit script → get all languages | 2026-03-24 |
-| Sequential processing (no parallel TTS/translation) | Local machine constraints, GPU-bound TTS, API rate limits | 2026-03-24 |
-| CLI-first approach with kanban dashboard | Approved direction for Tool 1 | Pre-2026-03-25 |
+| Duration mismatch MVP: images stretch, videos hold last frame | Keep MVP simple | 2026-03-24 |
+| Pre-configured voice/translation profiles per Niche Project | Minimize per-video setup | 2026-03-24 |
+| Sequential processing (no parallel TTS/translation) | Local machine constraints, GPU-bound TTS | 2026-03-24 |
+| Consistency guide per-episode (not per-niche) | More flexibility per episode | 2026-03-25 |
+| Remove all legacy code (Jobs, Projects/Builds) | Episodes is the final model, legacy is ~4000 lines of dead weight | 2026-03-25 |
+| Archive outdated docs instead of deleting | Preserves reference material | 2026-03-25 |
 
-## User Observations & Insights (Not Yet Implemented)
+## User Observations & Insights
 
-> These are things the user (Blue) said or observed but we haven't acted on yet. CRITICAL for future sessions.
-
-- **2026-03-25**: "the PRD (`tool_1_multilingual_implementation.md`) is probably not updated — we need to reconversate about this"
-- **2026-03-25**: A 10+ phase implementation plan was created in a previous conversation but was LOST because it wasn't saved to a file. This must never happen again.
-- **2026-03-24**: Niche Project hierarchy — Niche Project (e.g., "Religion Channel") → Videos. Each niche has pre-configured languages, voice profiles, translation profiles.
-- **2026-03-24**: Future vision includes multiple Niche Projects (Religion Channel, Sports Channel, etc.), each with their own language channels.
+- **2026-03-25**: Lost 10+ phase plan between conversations → created IMPLEMENTATION_PLAN.md + IMPLEMENTATION_CHECKLIST.md in repo + updated CLAUDE.md behavior to always persist plans
+- **2026-03-25**: Standalone tools (TRADUTOR, TTS, SRT chunker, Whisper UI) all duplicated integrated modules → deleted
+- **2026-03-24**: Niche Project hierarchy — each niche has pre-configured languages, voice profiles, translation profiles
+- **2026-03-24**: Future: multiple Niche Projects (Religion, Sports, etc.)
 
 ## Phase Plan
 
-> **STATUS: NEEDS RECONSTRUCTION** — A 10+ phase plan was created in a previous conversation but lost. It needs to be rebuilt based on the PRD and current codebase state. This section will be updated when the plan is recreated.
+**See `IMPLEMENTATION_PLAN.md` for full details and `IMPLEMENTATION_CHECKLIST.md` for progress.**
+
+| Phase | Goal | Status |
+|-------|------|--------|
+| Pre-Implementation | Continuity setup (plan docs, checklist, CLAUDE.md) | DONE |
+| Phase 1 | Cleanup & Git Hygiene | DONE |
+| Phase 2 | Database Consolidation | NEXT |
+| Phase 3 | Service Layer — Remove Legacy | TODO |
+| Phase 4 | API Layer Consolidation | TODO |
+| Phase 5 | Frontend — Remove Legacy Views | TODO |
+| Phase 6 | Episode Pipeline Board Enhancement | TODO |
+| Phase 7 | Niche Project Detail Enhancement | TODO |
+| Phase 8 | TTS & Translation Polish | TODO |
+| Phase 9 | Review & Export Phase | TODO |
+| Phase 10 | Final Cleanup & Documentation | TODO |
 
 ## Change Log
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-25 | Phase 1 complete: deleted 4 standalone tools, archived outdated docs, committed all uncommitted code, 119 tests passing |
+| 2026-03-25 | Reconstructed 10-phase implementation plan (saved to IMPLEMENTATION_PLAN.md) |
 | 2026-03-25 | Created PROJECT_REGISTRY.md for cross-conversation continuity |
-| 2026-03-25 | Set up global CLAUDE.md with auto-versioning and doc management behaviors |
-| Pre-2026-03-25 | Initial commit with dashboard, translation, TTS, alignment, tests |
-| Pre-2026-03-25 | UI shell redesign: dashboard, create, job workspace, settings, templates |
-| Pre-2026-03-25 | Local CLI worker layer created |
-
-## Future Improvements & Ideas
-
-- Reconstruct the 10+ phase implementation plan
-- Revisit and update the PRD
-- Manual smoke testing of the full pipeline
-- Package/install quality improvements
-- Multiple Niche Project support
-- Full automation: submit script → all language versions out
+| Pre-2026-03-25 | Built multilingual episode pipeline, translation module, TTS module, UI |
