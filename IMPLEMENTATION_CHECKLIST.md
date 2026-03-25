@@ -76,12 +76,12 @@
 - [x] Missing /api/target-languages endpoint added
 
 ## Phase 8: TTS & Translation Integration Polish
-- [ ] Fix TTS pause/resume for multi-language
-- [ ] TTS progress display in episode detail
-- [ ] TTS worker health indicator
-- [ ] Translation preview (side-by-side)
-- [ ] Per-language retry mechanism
-- [ ] Error handling (API keys, rate limits)
+- [x] Fix TTS pause/resume for multi-language (backend already working, now wired to UI with worker health indicator)
+- [x] TTS progress display in episode detail (per-language TTS job progress in status table)
+- [x] TTS worker health indicator (active/stale/offline badge + start worker button)
+- [x] Translation preview (side-by-side original vs translated with chunk log)
+- [x] Per-language retry mechanism (retry failed translation or TTS per language)
+- [x] Error handling (API keys, rate limits) — errors display in per-language table, retry available
 
 ## Phase 9: Review & Export Phase
 - [ ] Timeline editor in review view
