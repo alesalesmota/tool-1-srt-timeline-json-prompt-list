@@ -3,7 +3,10 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 workspace/
+*.db
+venv/
+.env
+.playwright-cli/
 tool1_dashboard/alignment_tool/logs/
 tool1_dashboard/alignment_tool/output/
 tool1_dashboard/alignment_tool/temp/
-UI for Open AI Whisper/
