@@ -327,14 +327,6 @@ class Tool1Service:
                     language_code=language_code,
                     profile_id=profile_id or None,
                 ))
-            elif profile.get("language_code") and profile.get("language_code") != language_code:
-                warnings.append(self._queue_issue(
-                    "voice_profile_language_mismatch",
-                    f"Voice profile '{profile.get('name') or profile_id}' is assigned to '{language_code}' but is tagged as '{profile.get('language_code')}'.",
-                    project_id=project_id,
-                    language_code=language_code,
-                    profile_id=profile_id,
-                ))
 
         for language_code in configured_languages:
             if language_code == master_language:
@@ -924,9 +916,9 @@ class Tool1Service:
         self,
         *,
         name: str,
-        language_code: str,
         audio_bytes: bytes,
         audio_filename: str,
+        language_code: str = "",
     ) -> dict[str, Any]:
         from .config import TTS_PROFILES_DIR
         from .tts.constants import LATENT_PRIORITY
@@ -946,7 +938,7 @@ class Tool1Service:
         self.db.create_voice_profile({
             "id": profile_id,
             "name": name.strip() or f"Profile-{profile_id}",
-            "language_code": language_code,
+            "language_code": str(language_code or "").strip(),
             "audio_file": audio_file,
             "audio_path": str(audio_path),
             "latents_path": None,
@@ -1026,12 +1018,20 @@ class Tool1Service:
         except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
             pass  # ffmpeg not available or failed — skip trimming
 
+    @staticmethod
+    def _default_voice_test_text(profile_name: str) -> str:
+        name = (profile_name or "this voice").strip() or "this voice"
+        return (
+            f"This is {name}. I am ready for the TTS workflow. "
+            "Here is a calm line, a brighter line, and a softer ending so you can hear my range."
+        )
+
     # ── TTS execution ────────────────────────────────────────────────
 
     def submit_voice_test(
         self,
         profile_id: str,
-        text: str,
+        text: str | None = None,
         language: str = "en",
     ) -> dict[str, Any]:
         """Submit a quick voice test TTS job."""
@@ -1041,11 +1041,12 @@ class Tool1Service:
         if profile is None:
             raise FileNotFoundError("Voice profile not found.")
 
-        xtts_lang = map_language_code(language)
+        resolved_text = str(text or "").strip() or self._default_voice_test_text(str(profile.get("name") or ""))
+        xtts_lang = map_language_code(str(language or "").strip() or "en")
         payload = {
             "profile_id": profile_id,
             "ref_path": profile.get("audio_path", ""),
-            "text": text,
+            "text": resolved_text,
             "language": xtts_lang,
         }
 
@@ -1056,7 +1057,7 @@ class Tool1Service:
             payload=payload,
             queue_priority=TEST_VOICE_PRIORITY,
         )
-        return {"job_id": job_id, "status": "queued"}
+        return {"job_id": job_id, "status": "queued", "text": resolved_text, "language": xtts_lang}
 
     def get_tts_job_status(self, job_id: str) -> dict[str, Any]:
         result = self.tts_manager.get_job_status(job_id)

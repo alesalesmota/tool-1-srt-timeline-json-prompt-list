@@ -54,7 +54,7 @@ class TranslationProfileUpdateRequest(BaseModel):
 
 
 class VoiceTestRequest(BaseModel):
-    text: str
+    text: str | None = None
     language: str = "en"
 
 
@@ -547,7 +547,7 @@ async def create_voice_profile(
     try:
         return service.create_voice_profile(
             name=name,
-            language_code=language_code,
+            language_code=(language_code or "").strip(),
             audio_bytes=audio_bytes,
             audio_filename=audio_file.filename or "upload.wav",
         )

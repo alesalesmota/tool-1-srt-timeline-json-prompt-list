@@ -1710,7 +1710,7 @@ details.editor-card summary::-webkit-details-marker {
 .profile-card-head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
 }
 
@@ -1719,6 +1719,17 @@ details.editor-card summary::-webkit-details-marker {
   font-weight: 600;
   margin: 0;
   color: var(--heading);
+}
+
+.profile-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.profile-card-body {
+  display: grid;
+  gap: 10px;
 }
 
 .profile-card-section {
@@ -1738,6 +1749,32 @@ details.editor-card summary::-webkit-details-marker {
 .profile-card-meta {
   color: var(--muted-soft);
   font-size: 0.74rem;
+}
+
+.voice-worker-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.voice-worker-banner-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.voice-worker-banner-copy .helper {
+  margin: 0;
+}
+
+.voice-worker-meta {
+  color: var(--muted-soft);
 }
 
 .profile-inline-message {

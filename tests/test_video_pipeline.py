@@ -182,14 +182,21 @@ def _patches(temp_path: Path):
     )
 
 
-def _seed_voice_profile(service: Tool1Service, temp_path: Path, profile_id: str, language_code: str) -> str:
+def _seed_voice_profile(
+    service: Tool1Service,
+    temp_path: Path,
+    profile_id: str,
+    language_code: str,
+    *,
+    stored_language_code: str | None = None,
+) -> str:
     audio_path = temp_path / f"{profile_id}.wav"
     audio_path.write_bytes(b"RIFF....WAVEfmt ")
     now = utc_now()
     service.db.create_voice_profile({
         "id": profile_id,
         "name": f"Voice {language_code}",
-        "language_code": language_code,
+        "language_code": stored_language_code if stored_language_code is not None else language_code,
         "audio_file": audio_path.name,
         "audio_path": str(audio_path),
         "latents_path": None,
@@ -436,6 +443,42 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     })
                     self.assertEqual(resp.status_code, 200)
                     self.assertEqual(resp.json()["start_stage"], "translation")
+                finally:
+                    self.app_module.service = original
+
+    def test_queue_episode_accepts_language_agnostic_voice_profiles_without_mismatch_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    shared_voice = _seed_voice_profile(
+                        service,
+                        temp_path,
+                        "vp-shared",
+                        "shared",
+                        stored_language_code="fr",
+                    )
+                    translation_profile = _seed_translation_profile(service, "tp-ptbr", "pt-BR")
+                    _, episode = self._create_niche_and_episode(client, project_payload={
+                        "language_voice_profiles": {
+                            "en": shared_voice,
+                            "pt-BR": shared_voice,
+                        },
+                        "language_translation_profiles": {
+                            "pt-BR": translation_profile,
+                        },
+                    })
+
+                    detail = client.get(f"/api/episodes/{episode['id']}")
+                    self.assertEqual(detail.status_code, 200)
+                    warnings = detail.json()["episode"]["queue_readiness"]["warnings"]
+                    self.assertFalse(any(item["code"] == "voice_profile_language_mismatch" for item in warnings))
+
+                    resp = client.post(f"/api/episodes/{episode['id']}/queue", json={})
+                    self.assertEqual(resp.status_code, 200)
+                    self.assertTrue(resp.json()["queued"])
                 finally:
                     self.app_module.service = original
 

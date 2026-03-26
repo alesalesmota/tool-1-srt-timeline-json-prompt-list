@@ -47,8 +47,9 @@ const state = {
   theme: "dark",
   notice: { text: "", tone: "neutral" },
   modal: { kind: null },
-  activeVoiceTestProfileId: null,
-  voiceTestDrafts: {},
+  submittingVoiceTestProfileId: null,
+  pendingVoiceTestJobs: {},
+  autoPlayedVoiceTestJobs: {},
   episodeOverlayId: null,
   boardScrollLeft: 0,
   voiceProfiles: [],
@@ -374,7 +375,7 @@ function routeTitle(route) {
   if (route.view === "voice-profiles") {
     return {
       title: "Voice Profiles",
-      copy: "Manage voice profiles for TTS narration. Upload reference audio and test voice cloning.",
+      copy: "Create a voice once, then generate a fresh test sample whenever you need to hear it.",
     };
   }
   if (route.view === "translation-profiles") {
@@ -772,183 +773,187 @@ function describeWorkerHealth(wh = {}) {
   };
 }
 
-function voiceProfileCloneState(profile, workerHealth = {}) {
-  const job = profile.latest_latent_job;
-  if (profile.has_latents) {
+function voiceProfileLatestReadyJob(profile) {
+  const job = profile.latest_test_job;
+  if (job?.status === "completed" && job.result_available) {
+    return job;
+  }
+  return null;
+}
+
+function voiceProfileIsGenerating(profile) {
+  const job = profile.latest_test_job;
+  return (
+    state.submittingVoiceTestProfileId === profile.id ||
+    job?.status === "processing" ||
+    job?.status === "queued"
+  );
+}
+
+function voiceProfileCardState(profile, workerHealth = {}) {
+  const latentJob = profile.latest_latent_job;
+  const latestTestJob = profile.latest_test_job;
+  const latestReadyJob = voiceProfileLatestReadyJob(profile);
+
+  if (voiceProfileIsGenerating(profile)) {
     return {
-      label: "Ready",
-      tone: "success",
-      copy: "Clone cache is ready for narration and tests.",
+      label: "Generating sample",
+      tone: latestTestJob?.status === "processing" ? "active" : "warn",
+      copy: latestTestJob?.progress || "Generating a fresh sample for this voice.",
+      error: "",
     };
   }
-  if (job?.status === "processing") {
+  if (latestTestJob?.status === "failed") {
+    return {
+      label: "Needs attention",
+      tone: "error",
+      copy: "The latest sample failed. Click Play test to try again.",
+      error: latestTestJob.error_message || "",
+    };
+  }
+  if (latestTestJob?.status === "completed" && !latestTestJob.result_available) {
+    return {
+      label: "Needs attention",
+      tone: "warn",
+      copy: "The latest sample finished, but the audio file is no longer available.",
+      error: "",
+    };
+  }
+  if (latentJob?.status === "failed") {
+    return {
+      label: "Needs attention",
+      tone: "error",
+      copy: "The saved voice needs another clone attempt.",
+      error: latentJob.error_message || "",
+    };
+  }
+  if (latentJob?.status === "processing" || latentJob?.status === "queued") {
     return {
       label: "Preparing",
-      tone: "active",
-      copy: job.progress || "Building the clone cache from the reference audio.",
+      tone: latentJob.status === "processing" ? "active" : "warn",
+      copy: latentJob.progress || "Saving the voice and preparing the cache in the background.",
+      error: "",
     };
   }
-  if (job?.status === "queued") {
+  if (workerHealth.startup_error && !latestReadyJob) {
     return {
-      label: "Queued",
-      tone: "warn",
-      copy: "Reference audio saved. The worker will prepare this profile next.",
-    };
-  }
-  if (job?.status === "failed") {
-    return {
-      label: "Failed",
+      label: "Needs attention",
       tone: "error",
-      copy: job.error_message || "Clone preparation failed for this reference audio.",
+      copy: "The reference audio is saved, but the XTTS runtime is unavailable on this machine.",
+      error: "",
     };
   }
-  if (workerHealth.startup_error) {
+  if (latestReadyJob) {
     return {
-      label: "Runtime missing",
-      tone: "warn",
-      copy: "Reference audio is saved, but the XTTS runtime is not available on this machine yet.",
+      label: "Ready to test",
+      tone: "success",
+      copy: `Latest sample ready ${relativeTime(latestReadyJob.finished_at || latestReadyJob.updated_at || latestReadyJob.created_at)}. Click Play test for a fresh one.`,
+      error: "",
+    };
+  }
+  if (profile.has_latents) {
+    return {
+      label: "Ready to test",
+      tone: "success",
+      copy: "Profile saved. Click Play test to generate a fresh sample.",
+      error: "",
     };
   }
   return {
-    label: "Reference saved",
+    label: "Ready to test",
     tone: "neutral",
-    copy: "Reference audio is attached. Run a test to validate the cloned voice.",
+    copy: "Profile saved. Click Play test to generate the first sample.",
+    error: "",
   };
 }
 
-function voiceProfileTestState(profile) {
-  const job = profile.latest_test_job;
-  if (!job) {
-    return {
-      label: "Not run yet",
-      tone: "neutral",
-      copy: "Submit a short line to hear how this voice clone sounds.",
-    };
-  }
-  if (job.status === "completed") {
-    return {
-      label: job.result_available ? "Ready" : "Missing audio",
-      tone: job.result_available ? "success" : "warn",
-      copy: job.result_available
-        ? `Latest test ready ${relativeTime(job.finished_at || job.updated_at || job.created_at)}.`
-        : "The latest test finished, but its audio file is no longer available.",
-    };
-  }
-  if (job.status === "processing") {
-    return {
-      label: "Generating",
-      tone: "active",
-      copy: job.progress || "Generating a preview clip for this voice.",
-    };
-  }
-  if (job.status === "queued") {
-    return {
-      label: "Queued",
-      tone: "warn",
-      copy: "Waiting for the worker to generate the preview clip.",
-    };
-  }
-  if (job.status === "failed") {
-    return {
-      label: "Failed",
-      tone: "error",
-      copy: job.error_message || "The last voice test failed.",
-    };
-  }
-  return {
-    label: titleCase(job.status || "unknown"),
-    tone: ttsJobTone(job.status),
-    copy: job.progress || "Voice test status updated.",
-  };
-}
+function syncVoiceProfileAudioAutoplay() {
+  if (state.route.view !== "voice-profiles") return;
+  const pendingEntries = Object.entries(state.pendingVoiceTestJobs || {});
+  if (!pendingEntries.length) return;
 
-function renderVoiceTestComposer(profile) {
-  const draft = state.voiceTestDrafts[profile.id] || "";
-  return `
-    <form class="voice-test-form stack" data-voice-test-form="${esc(profile.id)}">
-      <label class="field">
-        <span class="field-label">Text to speak</span>
-        <textarea
-          rows="3"
-          required
-          data-voice-test-text="${esc(profile.id)}"
-          placeholder="Type a short line and generate an in-card preview."
-        >${esc(draft)}</textarea>
-      </label>
-      <div class="button-row voice-test-actions">
-        <button type="submit" class="button button-primary button-small">Generate test</button>
-        <button type="button" class="button button-ghost button-small" data-cancel-voice-test="${esc(profile.id)}">Cancel</button>
-      </div>
-    </form>
-  `;
+  for (const [profileId, jobId] of pendingEntries) {
+    const profile = (state.voiceProfiles || []).find((item) => item.id === profileId);
+    const job = profile?.latest_test_job;
+    if (!job || job.job_id !== jobId) continue;
+
+    if (job.status === "failed") {
+      delete state.pendingVoiceTestJobs[profileId];
+      state.autoPlayedVoiceTestJobs[profileId] = jobId;
+      continue;
+    }
+
+    if (job.status === "completed" && job.result_available) {
+      delete state.pendingVoiceTestJobs[profileId];
+      if (state.autoPlayedVoiceTestJobs[profileId] === jobId) continue;
+      state.autoPlayedVoiceTestJobs[profileId] = jobId;
+      const audio = document.querySelector(`[data-profile-audio="${profileId}"]`);
+      if (!audio) continue;
+      audio.currentTime = 0;
+      const playback = audio.play();
+      if (playback?.catch) playback.catch(() => {});
+    }
+  }
 }
 
 function renderVoiceProfiles() {
   const profiles = state.voiceProfiles || [];
   const wh = state.workerHealth || {};
   const workerInfo = describeWorkerHealth(wh);
+  const showWorkerBanner = workerInfo.status !== "running" || Boolean(wh.current_job_id);
 
   const cards = profiles
-    .map(
-      (p) => `
+    .map((p) => {
+      const cardState = voiceProfileCardState(p, wh);
+      const latestReadyJob = voiceProfileLatestReadyJob(p);
+      const generating = voiceProfileIsGenerating(p);
+      return `
       <div class="profile-card">
         <div class="profile-card-head">
           <h3 class="profile-card-title">${esc(p.name)}</h3>
-          <div style="display:flex;gap:4px;">
-            <button type="button" class="button button-ghost button-small" data-test-voice="${esc(p.id)}" title="${esc(state.activeVoiceTestProfileId === p.id ? "Hide test form" : "Open test form")}">${esc(state.activeVoiceTestProfileId === p.id ? "Close test" : "Test voice")}</button>
+          <div class="profile-card-actions">
+            <button
+              type="button"
+              class="button button-primary button-small has-icon"
+              data-test-voice="${esc(p.id)}"
+              ${generating ? "disabled" : ""}
+            >${iconContent("play", generating ? "Generating..." : "Play test")}</button>
             <button type="button" class="button button-danger button-small icon-only" data-delete-voice-profile="${esc(p.id)}" aria-label="Delete" title="Delete">${iconContent("delete", "Delete", { iconOnly: true })}</button>
           </div>
         </div>
-        <div class="badge-row" style="margin-top:8px;">
-          <span class="badge">${esc(p.language_code || "?")}</span>
-          ${statusBadge(voiceProfileCloneState(p, wh).label, voiceProfileCloneState(p, wh).tone)}
-        </div>
-        <p class="helper" style="margin-top:6px;font-size:0.78rem;">${esc(p.audio_file || "")}</p>
-        <div class="profile-card-section">
-          <div class="profile-card-section-head">
-            <span class="eyebrow">Voice clone</span>
-            ${p.latest_latent_job ? `<span class="profile-card-meta">${esc(titleCase(p.latest_latent_job.status || "unknown"))}${p.latest_latent_job.updated_at ? ` · ${esc(relativeTime(p.latest_latent_job.updated_at))}` : ""}</span>` : ""}
-          </div>
-          <p class="helper">${esc(voiceProfileCloneState(p, wh).copy)}</p>
-          ${p.latest_latent_job?.error_message ? `<div class="profile-inline-message" data-tone="error">${esc(p.latest_latent_job.error_message)}</div>` : ""}
-        </div>
-        <div class="profile-card-section">
-          <div class="profile-card-section-head">
-            <span class="eyebrow">Voice test</span>
-            ${statusBadge(voiceProfileTestState(p).label, voiceProfileTestState(p).tone)}
-          </div>
-          <p class="helper">${esc(voiceProfileTestState(p).copy)}</p>
-          ${p.latest_test_job?.payload?.text ? `<div class="profile-test-text">${esc(shortText(p.latest_test_job.payload.text, 160))}</div>` : ""}
-          ${p.latest_test_job?.result_available ? `
-            <audio class="profile-audio-player" controls preload="none" src="${esc(p.latest_test_job.download_url)}"></audio>
-            <div class="profile-audio-actions">
-              <a class="button button-ghost button-small" href="${esc(p.latest_test_job.download_url)}" target="_blank" rel="noopener">Open WAV</a>
-            </div>
+        <div class="profile-card-body">
+          ${statusBadge(cardState.label, cardState.tone)}
+          <p class="helper">${esc(cardState.copy)}</p>
+          ${latestReadyJob ? `
+            <audio
+              class="profile-audio-player"
+              controls
+              preload="none"
+              data-profile-audio="${esc(p.id)}"
+              src="${esc(latestReadyJob.download_url)}"
+            ></audio>
+            <div class="profile-card-meta">Fresh sample generated ${esc(relativeTime(latestReadyJob.finished_at || latestReadyJob.updated_at || latestReadyJob.created_at))}.</div>
           ` : ""}
-          ${p.latest_test_job?.error_message ? `<div class="profile-inline-message" data-tone="error">${esc(p.latest_test_job.error_message)}</div>` : ""}
-          ${state.activeVoiceTestProfileId === p.id ? renderVoiceTestComposer(p) : ""}
+          ${cardState.error ? `<div class="profile-inline-message" data-tone="error">${esc(cardState.error)}</div>` : ""}
         </div>
       </div>
-    `
-    )
+    `;
+    })
     .join("");
 
   $("view").innerHTML = `
-    <div class="detail-section">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;">
-        <div>
-          <div class="eyebrow">TTS Worker</div>
-          <p class="helper" style="margin-top:6px;">${esc(workerInfo.copy)}</p>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;">
+    ${showWorkerBanner ? `
+      <div class="voice-worker-banner" data-status="${workerInfo.status}">
+        <div class="voice-worker-banner-copy">
           <span class="worker-badge" data-status="${workerInfo.status}">${esc(workerInfo.label)}</span>
-          ${wh.running
-            ? `<button type="button" class="button button-danger button-small" data-worker-action="stop">Stop</button>`
-            : `<button type="button" class="button button-primary button-small" data-worker-action="start">Start</button>`}
+          <p class="helper">${esc(workerInfo.copy)}</p>
+          ${workerInfo.meta && workerInfo.status !== "running" ? `<p class="helper voice-worker-meta">${esc(workerInfo.meta)}</p>` : ""}
         </div>
+        ${wh.running
+          ? `<button type="button" class="button button-danger button-small" data-worker-action="stop">Stop</button>`
+          : `<button type="button" class="button button-primary button-small" data-worker-action="start">Start</button>`}
       </div>
-      ${workerInfo.meta ? `<p class="helper" style="margin-top:8px;">${esc(workerInfo.meta)}</p>` : ""}
-    </div>
+    ` : ""}
 
     <div class="detail-section">
       <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -965,8 +970,6 @@ function renderVoiceProfiles() {
 }
 
 function renderCreateVoiceProfileModal() {
-  const langs = state.targetLanguages || [];
-  const langOpts = langs.map((l) => `<option value="${esc(l.code)}">${esc(l.label || l.code)}</option>`).join("");
   return `
     <div class="modal-backdrop" data-modal-backdrop="true">
       <div class="modal-panel">
@@ -979,10 +982,6 @@ function renderCreateVoiceProfileModal() {
             <label class="field">
               <span class="field-label">Name</span>
               <input id="vp-name" required />
-            </label>
-            <label class="field">
-              <span class="field-label">Language</span>
-              <select id="vp-language">${langOpts}</select>
             </label>
             <label class="field">
               <span class="field-label">Reference audio</span>
@@ -1379,7 +1378,6 @@ function renderLanguageConfigSection(project, voiceProfiles, translationProfiles
     const langLabel = langObj ? langObj.label : langCode;
 
     const vpOptions = (voiceProfiles || [])
-      .filter((vp) => !vp.language_code || vp.language_code === langCode || vp.language_code === langCode.split("-")[0])
       .map((vp) =>
         '<option value="' + esc(vp.id) + '"' + (vps[langCode] === vp.id ? " selected" : "") + '>' + esc(vp.name) + '</option>'
       ).join("");
@@ -2269,6 +2267,7 @@ function renderApp() {
   else renderNicheProjects();
   document.body.classList.toggle("modal-open", Boolean(state.modal.kind) || Boolean(state.episodeOverlayId));
   if (state.modal.kind === "create-niche") syncCreateNicheLanguagePicker();
+  syncVoiceProfileAudioAutoplay();
   syncAllProviderModelSelects();
   resetElapsedTimer();
   restoreDashboardScroll();
@@ -2284,7 +2283,6 @@ async function refreshData({ preserveNotice = true, routeLoading = false, force 
   const shouldFetchBoardEpisodes = force || route.view === "pipeline-board";
   const shouldFetchTargetLanguages = (
     force ||
-    route.view === "voice-profiles" ||
     route.view === "niche-project" ||
     route.view === "niche-projects"
   ) && (!state.targetLanguages.length || !cacheIsFresh(state.targetLanguagesFetchedAt, TARGET_LANGUAGES_CACHE_TTL_MS));
@@ -2459,12 +2457,7 @@ function resetAutoRefresh() {
   if (refreshTimer) window.clearInterval(refreshTimer);
   if (!autoRefreshAllowed(state.route)) return;
   refreshTimer = window.setInterval(() => {
-    if (
-      state.modal.kind ||
-      (state.route.view === "voice-profiles" && state.activeVoiceTestProfileId) ||
-      state.isLoadingRoute ||
-      state.isRefreshingData
-    ) return;
+    if (state.modal.kind || state.isLoadingRoute || state.isRefreshingData) return;
     refreshData().then(renderApp).catch(() => {});
   }, REFRESH_INTERVAL_MS);
 }
@@ -2549,7 +2542,6 @@ async function createVoiceProfile(event) {
   if (!audioFile) throw new Error("Choose a reference audio file.");
   const fd = new FormData();
   fd.append("name", $("vp-name").value.trim());
-  fd.append("language_code", $("vp-language").value);
   fd.append("audio_file", audioFile);
   const created = await api("/api/voice-profiles", { method: "POST", body: fd });
   state.modal = { kind: null };
@@ -2562,22 +2554,23 @@ async function createVoiceProfile(event) {
   setNotice("Voice profile created.", "success");
 }
 
-async function testVoiceProfile(event) {
-  event.preventDefault();
-  const form = event.target;
-  const profileId = form.dataset.voiceTestForm;
+async function testVoiceProfile(profileId) {
   if (!profileId) throw new Error("No profile selected.");
-  const text = (state.voiceTestDrafts[profileId] || "").trim();
-  if (!text) throw new Error("Enter some text to test.");
-  await api(`/api/voice-profiles/${encodeURIComponent(profileId)}/test`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
-  });
-  state.activeVoiceTestProfileId = null;
-  setNotice("Voice test job submitted.", "success");
-  await refreshData();
+  state.submittingVoiceTestProfileId = profileId;
   renderApp();
+  try {
+    const submitted = await api(`/api/voice-profiles/${encodeURIComponent(profileId)}/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    state.pendingVoiceTestJobs[profileId] = submitted.job_id;
+    delete state.autoPlayedVoiceTestJobs[profileId];
+    await refreshData();
+  } finally {
+    state.submittingVoiceTestProfileId = null;
+    renderApp();
+  }
 }
 
 async function createTranslationProfile(event) {
@@ -2700,7 +2693,7 @@ document.addEventListener("click", async (event) => {
     closeEpisodeOverlay();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-cancel-voice-test], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
+  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
   if (!target) return;
   event.preventDefault();
   try {
@@ -2727,7 +2720,6 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (target.dataset.nav) {
-      state.activeVoiceTestProfileId = null;
       resetEpisodeSupplementalState(state.episodeOverlayId);
       state.episodeOverlayId = null;
       state.translationPreview = null;
@@ -2763,9 +2755,8 @@ document.addEventListener("click", async (event) => {
     }
     if (target.dataset.deleteVoiceProfile) {
       if (!confirm("Delete this voice profile?")) return;
-      if (state.activeVoiceTestProfileId === target.dataset.deleteVoiceProfile) {
-        state.activeVoiceTestProfileId = null;
-      }
+      delete state.pendingVoiceTestJobs[target.dataset.deleteVoiceProfile];
+      delete state.autoPlayedVoiceTestJobs[target.dataset.deleteVoiceProfile];
       await api(`/api/voice-profiles/${encodeURIComponent(target.dataset.deleteVoiceProfile)}`, { method: "DELETE" });
       await refreshData();
       renderApp();
@@ -2779,19 +2770,7 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (target.dataset.testVoice) {
-      const profileId = target.dataset.testVoice;
-      state.activeVoiceTestProfileId = state.activeVoiceTestProfileId === profileId ? null : profileId;
-      if (!state.voiceTestDrafts[profileId]) {
-        state.voiceTestDrafts[profileId] = "";
-      }
-      renderApp();
-      resetAutoRefresh();
-      return;
-    }
-    if (target.dataset.cancelVoiceTest) {
-      state.activeVoiceTestProfileId = null;
-      renderApp();
-      resetAutoRefresh();
+      await testVoiceProfile(target.dataset.testVoice);
       return;
     }
     if (target.dataset.createTranslationProfile) {
@@ -3055,7 +3034,6 @@ document.addEventListener("submit", async (event) => {
   const form = event.target;
   try {
     if (form.id === "create-voice-profile-form") await createVoiceProfile(event);
-    else if (form.dataset.voiceTestForm) await testVoiceProfile(event);
     else if (form.id === "create-translation-profile-form") await createTranslationProfile(event);
     else if (form.id === "create-niche-form") await createNicheProject(event);
     else if (form.id === "submit-episode-form") await submitEpisode(event);
@@ -3101,12 +3079,6 @@ document.addEventListener("change", (event) => {
   }
 });
 
-document.addEventListener("input", (event) => {
-  if (event.target.dataset.voiceTestText) {
-    state.voiceTestDrafts[event.target.dataset.voiceTestText] = event.target.value;
-  }
-});
-
 document.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && event.target.id === "niche-lang-search") {
     event.preventDefault();
@@ -3117,12 +3089,6 @@ document.addEventListener("keydown", (event) => {
     if (state.modal.kind) {
       if (state.modal.kind === "translation-preview") state.translationPreview = null;
       state.modal = { kind: null };
-      renderApp();
-      resetAutoRefresh();
-      return;
-    }
-    if (state.activeVoiceTestProfileId) {
-      state.activeVoiceTestProfileId = null;
       renderApp();
       resetAutoRefresh();
       return;

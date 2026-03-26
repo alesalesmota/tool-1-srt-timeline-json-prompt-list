@@ -471,13 +471,32 @@ class ServiceVoiceRuntimeTests(unittest.TestCase):
         ):
             profile = self.service.create_voice_profile(
                 name="Fresh Voice",
-                language_code="pt-BR",
                 audio_bytes=b"RIFF....WAVEfmt ",
                 audio_filename="fresh.wav",
             )
         self.assertIsNone(profile["latent_job_id"])
         self.assertEqual(profile["runtime_warning"], "TTS runtime unavailable.")
+        self.assertEqual(profile["language_code"], "")
         self.assertEqual(self.service.db.list_active_tts_jobs(), [])
+
+    def test_submit_voice_test_uses_default_sample_when_text_missing(self):
+        with patch.object(self.service.tts_manager, "ensure_worker_ready"), patch.object(
+            self.service.tts_manager,
+            "submit_tts_job",
+            return_value="job-123",
+        ) as submit_mock:
+            result = self.service.submit_voice_test("voice-1", None)
+
+        payload = submit_mock.call_args.kwargs["payload"]
+        self.assertEqual(result["job_id"], "job-123")
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(result["language"], "en")
+        self.assertEqual(payload["language"], "en")
+        self.assertEqual(
+            payload["text"],
+            "This is Voice One. I am ready for the TTS workflow. Here is a calm line, a brighter line, and a softer ending so you can hear my range.",
+        )
+        self.assertEqual(result["text"], payload["text"])
 
     def test_list_voice_profiles_includes_latest_voice_jobs(self):
         now = time.time()
