@@ -17,6 +17,11 @@ from tool1_dashboard.translation.chunker import (
 from tool1_dashboard.translation.prompts import build_translation_prompt
 from tool1_dashboard.translation.service import TranslationService
 from tool1_dashboard.translation.adapter import TranslationAdapter, TranslationError
+from tool1_dashboard.translation_profiles import (
+    normalize_openai_model,
+    recommended_openai_model,
+    sanitize_translation_profile,
+)
 from tool1_dashboard.database import Tool1Database
 
 
@@ -346,6 +351,50 @@ class TranslationProfileCrudTests(unittest.TestCase):
         self.db.delete_translation_profile("tp3")
         self.assertIsNone(self.db.get_translation_profile("tp3"))
         self.assertEqual(len(self.db.list_translation_profiles()), 0)
+
+
+class TranslationProfilePresentationTests(unittest.TestCase):
+
+    def test_sanitize_translation_profile_masks_api_key(self):
+        sanitized = sanitize_translation_profile({
+            "id": "tp-openai",
+            "name": "OpenAI Main",
+            "provider": "openai",
+            "api_key_ref": "sk-test-secret-1234",
+            "model": "gpt-5.4-mini",
+        })
+        self.assertNotIn("api_key_ref", sanitized)
+        self.assertTrue(sanitized["has_api_key"])
+        self.assertTrue(sanitized["api_key_masked"].startswith("sk-t"))
+        self.assertEqual(sanitized["provider_label"], "OpenAI API")
+        self.assertEqual(sanitized["provider_mode"], "api")
+        self.assertFalse(sanitized["provider_placeholder"])
+
+    def test_sanitize_legacy_translation_profile_keeps_legacy_label(self):
+        sanitized = sanitize_translation_profile({
+            "id": "tp-legacy",
+            "name": "Old Anthropic",
+            "provider": "anthropic",
+            "api_key_ref": "",
+            "model": "claude-3",
+        })
+        self.assertEqual(sanitized["provider_label"], "Anthropic API (legacy)")
+        self.assertEqual(sanitized["provider_mode"], "legacy")
+        self.assertFalse(sanitized["provider_editable"])
+
+    def test_normalize_openai_model_filters_non_text_models(self):
+        self.assertIsNone(normalize_openai_model({"id": "gpt-image-1"}))
+        model = normalize_openai_model({"id": "gpt-4o-mini", "owned_by": "openai"})
+        self.assertIsNotNone(model)
+        assert model is not None
+        self.assertEqual(model["capability_label"], "Affordable")
+
+    def test_recommended_openai_model_prefers_default_order(self):
+        recommended = recommended_openai_model([
+            {"id": "gpt-4o", "priority": 40},
+            {"id": "gpt-5.4-mini", "priority": 10},
+        ])
+        self.assertEqual(recommended, "gpt-5.4-mini")
 
 
 if __name__ == "__main__":

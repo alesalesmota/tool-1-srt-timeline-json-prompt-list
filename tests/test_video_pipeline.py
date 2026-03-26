@@ -182,6 +182,32 @@ def _patches(temp_path: Path):
     )
 
 
+class FakeAsyncResponse:
+    def __init__(self, status_code: int, payload: dict[str, object], text: str = "") -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+
+class FakeAsyncClient:
+    def __init__(self, response: FakeAsyncResponse, recorder: list[dict[str, object]]) -> None:
+        self.response = response
+        self.recorder = recorder
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, url: str, headers: dict[str, str] | None = None):
+        self.recorder.append({"url": url, "headers": headers or {}})
+        return self.response
+
+
 def _seed_voice_profile(
     service: Tool1Service,
     temp_path: Path,
@@ -343,6 +369,134 @@ class NicheProjectApiTests(unittest.TestCase):
                     self.assertEqual(resp.status_code, 200)
                     resp = client.get(f"/api/niche-projects/{project_id}")
                     self.assertEqual(resp.status_code, 404)
+                finally:
+                    self.app_module.service = original
+
+
+class TranslationProfileApiTests(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.app_module = importlib.import_module("tool1_dashboard.app")
+
+    def test_list_and_detail_mask_translation_api_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    created = service.create_translation_profile(
+                        name="OpenAI Main",
+                        provider="openai",
+                        api_key="sk-test-secret-1234",
+                        model="gpt-5.4-mini",
+                    )
+                    resp = client.get("/api/translation-profiles")
+                    self.assertEqual(resp.status_code, 200)
+                    profile = resp.json()["profiles"][0]
+                    self.assertNotIn("api_key_ref", profile)
+                    self.assertTrue(profile["has_api_key"])
+                    self.assertEqual(profile["provider_label"], "OpenAI API")
+
+                    resp = client.get(f"/api/translation-profiles/{created['id']}")
+                    self.assertEqual(resp.status_code, 200)
+                    detail = resp.json()
+                    self.assertNotIn("api_key_ref", detail)
+                    self.assertTrue(detail["api_key_masked"])
+                finally:
+                    self.app_module.service = original
+
+    def test_create_translation_profile_rejects_placeholder_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    resp = client.post("/api/translation-profiles", json={
+                        "name": "Codex Preview",
+                        "provider": "codex_cli",
+                        "api_key": "unused",
+                        "model": "gpt-5.4",
+                    })
+                    self.assertEqual(resp.status_code, 400)
+                    self.assertIn("OpenAI API", resp.json()["detail"])
+                finally:
+                    self.app_module.service = original
+
+    def test_discover_openai_models_with_inline_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                recorder: list[dict[str, object]] = []
+                fake_response = FakeAsyncResponse(200, {
+                    "data": [
+                        {"id": "gpt-5.4-mini", "owned_by": "openai"},
+                        {"id": "gpt-4o", "owned_by": "openai"},
+                        {"id": "gpt-image-1", "owned_by": "openai"},
+                    ]
+                })
+                try:
+                    with patch(
+                        "tool1_dashboard.service.httpx.AsyncClient",
+                        side_effect=lambda *args, **kwargs: FakeAsyncClient(fake_response, recorder),
+                    ):
+                        resp = client.post("/api/translation-profiles/openai/discover", json={"api_key": "sk-inline"})
+                    self.assertEqual(resp.status_code, 200)
+                    payload = resp.json()
+                    self.assertEqual(payload["recommended_model"], "gpt-5.4-mini")
+                    self.assertEqual([item["id"] for item in payload["models"]], ["gpt-5.4-mini", "gpt-4o"])
+                    self.assertEqual(recorder[0]["headers"]["Authorization"], "Bearer sk-inline")
+                finally:
+                    self.app_module.service = original
+
+    def test_discover_openai_models_with_saved_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                recorder: list[dict[str, object]] = []
+                fake_response = FakeAsyncResponse(200, {
+                    "data": [{"id": "gpt-4o-mini", "owned_by": "openai"}]
+                })
+                try:
+                    profile = service.create_translation_profile(
+                        name="Saved Key",
+                        provider="openai",
+                        api_key="sk-saved",
+                        model="gpt-4o-mini",
+                    )
+                    with patch(
+                        "tool1_dashboard.service.httpx.AsyncClient",
+                        side_effect=lambda *args, **kwargs: FakeAsyncClient(fake_response, recorder),
+                    ):
+                        resp = client.post("/api/translation-profiles/openai/discover", json={"profile_id": profile["id"]})
+                    self.assertEqual(resp.status_code, 200)
+                    payload = resp.json()
+                    self.assertTrue(payload["from_saved_key"])
+                    self.assertEqual(recorder[0]["headers"]["Authorization"], "Bearer sk-saved")
+                finally:
+                    self.app_module.service = original
+
+    def test_discover_openai_models_rejects_bad_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                recorder: list[dict[str, object]] = []
+                fake_response = FakeAsyncResponse(401, {"error": {"message": "Invalid API key"}})
+                try:
+                    with patch(
+                        "tool1_dashboard.service.httpx.AsyncClient",
+                        side_effect=lambda *args, **kwargs: FakeAsyncClient(fake_response, recorder),
+                    ):
+                        resp = client.post("/api/translation-profiles/openai/discover", json={"api_key": "sk-bad"})
+                    self.assertEqual(resp.status_code, 400)
+                    self.assertIn("rejected", resp.json()["detail"])
                 finally:
                     self.app_module.service = original
 

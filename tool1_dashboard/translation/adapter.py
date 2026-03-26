@@ -62,16 +62,15 @@ class TranslationAdapter:
             return ""
 
     async def _call_openai(self, api_key: str, model: str, prompt: str) -> str:
-        url = "https://api.openai.com/v1/chat/completions"
+        url = "https://api.openai.com/v1/responses"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
         body = {
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": _TEMPERATURE,
-            "max_tokens": _MAX_TOKENS,
+            "input": prompt,
+            "max_output_tokens": _MAX_TOKENS,
         }
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=body)
@@ -79,8 +78,15 @@ class TranslationAdapter:
             msg = self._extract_error(resp, "error", "message")
             raise TranslationError("OpenAI", resp.status_code, msg)
         data = resp.json()
+        if isinstance(data.get("output_text"), str):
+            return data["output_text"]
         try:
-            return data["choices"][0]["message"]["content"]
+            return "".join(
+                item.get("text", "")
+                for output in data["output"]
+                for item in output["content"]
+                if item.get("type") == "output_text"
+            )
         except (KeyError, IndexError, TypeError):
             return ""
 

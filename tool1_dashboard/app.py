@@ -53,6 +53,11 @@ class TranslationProfileUpdateRequest(BaseModel):
     model: str | None = None
 
 
+class OpenAiModelDiscoveryRequest(BaseModel):
+    api_key: str | None = None
+    profile_id: str | None = None
+
+
 class VoiceTestRequest(BaseModel):
     text: str | None = None
     language: str = "en"
@@ -490,18 +495,32 @@ async def voice_profile_detail(profile_id: str) -> dict[str, Any]:
 
 @app.get("/api/translation-profiles")
 async def list_translation_profiles() -> dict[str, Any]:
-    return {"profiles": service.list_translation_profiles()}
+    return {"profiles": service.list_translation_profiles_public()}
 
 
 @app.post("/api/translation-profiles")
 async def create_translation_profile(payload: TranslationProfileRequest) -> dict[str, Any]:
     try:
-        return service.create_translation_profile(
+        profile = service.create_translation_profile(
             name=payload.name,
             provider=payload.provider,
             api_key=payload.api_key,
             model=payload.model,
         )
+        return service.get_translation_profile_public(profile["id"])
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/translation-profiles/openai/discover")
+async def discover_openai_translation_models(payload: OpenAiModelDiscoveryRequest) -> dict[str, Any]:
+    try:
+        return await service.discover_openai_translation_models(
+            api_key=payload.api_key or "",
+            profile_id=payload.profile_id,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -509,7 +528,7 @@ async def create_translation_profile(payload: TranslationProfileRequest) -> dict
 @app.get("/api/translation-profiles/{profile_id}")
 async def translation_profile_detail(profile_id: str) -> dict[str, Any]:
     try:
-        return service.get_translation_profile(profile_id)
+        return service.get_translation_profile_public(profile_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -523,7 +542,8 @@ async def update_translation_profile(
         fields = payload.model_dump(exclude_none=True)
         if "api_key" in fields:
             fields["api_key_ref"] = fields.pop("api_key")
-        return service.update_translation_profile(profile_id, **fields)
+        service.update_translation_profile(profile_id, **fields)
+        return service.get_translation_profile_public(profile_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

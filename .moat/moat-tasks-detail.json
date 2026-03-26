@@ -1,0 +1,257 @@
+[
+  {
+    "id": "62e61bbe-f886-4fd0-b278-f01fc5fb46cb",
+    "title": "Freeform Rectangle Task",
+    "comment": "here is actually create episode",
+    "selector": "freeform",
+    "boundingRect": {
+      "x": 1698,
+      "y": 97,
+      "w": 159,
+      "h": 81
+    },
+    "screenshotPath": "./screenshots/moat-1774538479838-u1h2b3l6z.png",
+    "status": "done",
+    "timestamp": 1774538479992,
+    "boundingBox": {
+      "xyxy": {
+        "x1": 1698,
+        "y1": 97,
+        "x2": 1857,
+        "y2": 178
+      },
+      "xywh": {
+        "x": 1698,
+        "y": 97,
+        "width": 159,
+        "height": 81
+      },
+      "normalized": {
+        "x": 0.884375,
+        "y": 0.10264550264550265,
+        "width": 0.0828125,
+        "height": 0.08571428571428572
+      },
+      "viewport": {
+        "width": 1920,
+        "height": 945
+      },
+      "type": "freeform"
+    }
+  },
+  {
+    "id": "6ba787de-fd66-437c-9943-b6d9e883b539",
+    "title": "Freeform Rectangle Task",
+    "comment": "the target language is very messi here, maybe a box where i type, some language options appear, and i choose, once i choose it add to a list below",
+    "selector": "freeform",
+    "boundingRect": {
+      "x": 598,
+      "y": 220,
+      "w": 731,
+      "h": 501
+    },
+    "screenshotPath": "./screenshots/moat-1774540492876-bu41429k5.png",
+    "status": "done",
+    "timestamp": 1774540493021,
+    "boundingBox": {
+      "xyxy": {
+        "x1": 598,
+        "y1": 220,
+        "x2": 1329,
+        "y2": 721
+      },
+      "xywh": {
+        "x": 598,
+        "y": 220,
+        "width": 731,
+        "height": 501
+      },
+      "normalized": {
+        "x": 0.31145833333333334,
+        "y": 0.2328042328042328,
+        "width": 0.3807291666666667,
+        "height": 0.5301587301587302
+      },
+      "viewport": {
+        "width": 1920,
+        "height": 945
+      },
+      "type": "freeform"
+    }
+  },
+  {
+    "id": "7d498a2a-e35b-4119-8e5c-1aceabff3ab0",
+    "title": "Freeform Rectangle Task",
+    "comment": "this could be just a + sign, when i hove the mouse i see the button explanation",
+    "selector": "freeform",
+    "boundingRect": {
+      "x": 300,
+      "y": 299,
+      "w": 139,
+      "h": 79
+    },
+    "screenshotPath": "./screenshots/moat-1774541720346-yzv2rn7s7.png",
+    "status": "done",
+    "timestamp": 1774541720492,
+    "boundingBox": {
+      "xyxy": {
+        "x1": 300,
+        "y1": 299,
+        "x2": 439,
+        "y2": 378
+      },
+      "xywh": {
+        "x": 300,
+        "y": 299,
+        "width": 139,
+        "height": 79
+      },
+      "normalized": {
+        "x": 0.15625,
+        "y": 0.3164021164021164,
+        "width": 0.07239583333333334,
+        "height": 0.0835978835978836
+      },
+      "viewport": {
+        "width": 1920,
+        "height": 945
+      },
+      "type": "freeform"
+    }
+  },
+  {
+    "id": "cf55fd24-b14e-438c-bdd5-35c387488d78",
+    "title": "Freeform Rectangle Task",
+    "comment": "for every colum, this colum explanation can happen when i hover the mouse on the name title of colum, instead of appearing here and ocupying space",
+    "selector": "freeform",
+    "boundingRect": {
+      "x": 126,
+      "y": 293,
+      "w": 174,
+      "h": 138
+    },
+    "screenshotPath": "./screenshots/moat-1774541784027-26amwh0sc.png",
+    "status": "done",
+    "timestamp": 1774541784176,
+    "boundingBox": {
+      "xyxy": {
+        "x1": 126,
+        "y1": 293,
+        "x2": 300,
+        "y2": 431
+      },
+      "xywh": {
+        "x": 126,
+        "y": 293,
+        "width": 174,
+        "height": 138
+      },
+      "normalized": {
+        "x": 0.065625,
+        "y": 0.3100529100529101,
+        "width": 0.090625,
+        "height": 0.14603174603174604
+      },
+      "viewport": {
+        "width": 1920,
+        "height": 945
+      },
+      "type": "freeform"
+    }
+  },
+  {
+    "id": "a25f2b9c-ef12-4704-bdfd-35a35ef49350",
+    "title": "Freeform Rectangle Task",
+    "comment": "the voice clone and testing is unintuitive, i added the voice and clicked on test, and outside the card i see some status, i see this stale but i dont know what it means, but this informations related to the card should happen inside the card, because imagine if i had other voices profiles created, i also wanna hear the resulted test, i actually dont know if the voice clone profile worked",
+    "selector": "freeform",
+    "boundingRect": {
+      "x": 2,
+      "y": 5,
+      "w": 1915,
+      "h": 733
+    },
+    "screenshotPath": "./screenshots/moat-1774543697163-re74t0o9r.png",
+    "status": "done",
+    "timestamp": 1774543697316,
+    "boundingBox": {
+      "xyxy": {
+        "x1": 2,
+        "y1": 5,
+        "x2": 1917,
+        "y2": 738
+      },
+      "xywh": {
+        "x": 2,
+        "y": 5,
+        "width": 1915,
+        "height": 733
+      },
+      "normalized": {
+        "x": 0.0010416666666666667,
+        "y": 0.005291005291005291,
+        "width": 0.9973958333333334,
+        "height": 0.7756613756613756
+      },
+      "viewport": {
+        "width": 1920,
+        "height": 945
+      },
+      "type": "freeform"
+    }
+  },
+  {
+    "id": "29eb90f2-dd37-4ab3-bff5-4c680c72abd1",
+    "title": "Freeform Rectangle Task",
+    "comment": "this UI elements are looking bad, and bad coded acroos all play testing steps, pls review and fix, also the play button can be a smal minimal play button without text, the explanation appear only when i hover the mouse",
+    "selector": "freeform",
+    "boundingRect": {
+      "x": 89,
+      "y": 130,
+      "w": 435,
+      "h": 243
+    },
+    "screenshotPath": "./screenshots/moat-1774562175580-fpyomfb6m.png",
+    "status": "done",
+    "timestamp": 1774562175751,
+    "boundingBox": {
+      "xyxy": {
+        "x1": 89,
+        "y1": 130,
+        "x2": 524,
+        "y2": 373
+      },
+      "xywh": {
+        "x": 89,
+        "y": 130,
+        "width": 435,
+        "height": 243
+      },
+      "normalized": {
+        "x": 0.04635416666666667,
+        "y": 0.13756613756613756,
+        "width": 0.2265625,
+        "height": 0.2571428571428571
+      },
+      "viewport": {
+        "width": 1920,
+        "height": 945
+      },
+      "type": "freeform"
+    }
+  },
+  {
+    "id": "9d96f21b-ec71-4952-8c5a-bce15f8b75fc",
+    "title": "Colored Container",
+    "comment": "so here in this section we have many, imrpovement to make\n\n1 first i want clarification on CLI use\nand API use\n\nother important thing\nif i set up a api use, once i paste and set the api, the app recognizes it and tells me the available model\n\nplus i also need some sort and filtering\nif possible even informations like\nprice use (can be just a score)\nso i know the cheap and expensive models in comparison\ni want to see those details when i hover the mouse above the model\n\nyou can set for now just openai support like it is for the api key",
+    "selector": "#view > div.modal-backdrop:nth-child(2)",
+    "boundingRect": {
+      "x": 0,
+      "y": 0,
+      "w": 1920,
+      "h": 945
+    },
+    "screenshotPath": "./screenshots/moat-1774565805926-0i30f81ot.png",
+    "status": "doing",
+    "timestamp": 1774565806084
+  }
+]

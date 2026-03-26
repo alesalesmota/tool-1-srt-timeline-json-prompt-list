@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import httpx
 import json
 import re
 import shutil
@@ -53,6 +54,13 @@ from .runtime import (
 )
 from .srt_chunker.srt_io import parse_srt_text
 from .templates import TemplateStore
+from .translation_profiles import (
+    is_runnable_translation_profile_provider,
+    normalize_openai_model,
+    recommended_openai_model,
+    sanitize_translation_profile,
+    sort_openai_models,
+)
 from .tts.voice_config import (
     DEFAULT_VOICE_TTS_PRESET,
     chunk_text_for_voice_tts,
@@ -932,11 +940,88 @@ class Tool1Service:
     def list_translation_profiles(self) -> list[dict[str, Any]]:
         return self.db.list_translation_profiles()
 
+    def list_translation_profiles_public(self) -> list[dict[str, Any]]:
+        return [sanitize_translation_profile(profile) for profile in self.list_translation_profiles()]
+
     def get_translation_profile(self, profile_id: str) -> dict[str, Any]:
         profile = self.db.get_translation_profile(profile_id)
         if profile is None:
             raise FileNotFoundError("Translation profile not found.")
         return profile
+
+    def get_translation_profile_public(self, profile_id: str) -> dict[str, Any]:
+        return sanitize_translation_profile(self.get_translation_profile(profile_id))
+
+    async def discover_openai_translation_models(
+        self,
+        *,
+        api_key: str = "",
+        profile_id: str | None = None,
+    ) -> dict[str, Any]:
+        profile = None
+        resolved_api_key = str(api_key or "").strip()
+        if profile_id:
+            profile = self.db.get_translation_profile(profile_id)
+            if profile is None:
+                raise FileNotFoundError("Translation profile not found.")
+            if str(profile.get("provider") or "").strip() != "openai":
+                raise ValueError("Only OpenAI translation profiles support model discovery.")
+            if not resolved_api_key:
+                resolved_api_key = str(profile.get("api_key_ref") or "").strip()
+        if not resolved_api_key:
+            raise ValueError("Paste an OpenAI API key first.")
+
+        headers = {
+            "Authorization": f"Bearer {resolved_api_key}",
+            "Content-Type": "application/json",
+        }
+        timeout = httpx.Timeout(20.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get("https://api.openai.com/v1/models", headers=headers)
+
+        if response.status_code != 200:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            detail = str(payload.get("error", {}).get("message") or "").strip() or response.text[:240].strip()
+            if response.status_code == 401:
+                raise ValueError(f"OpenAI API key rejected. {detail}".strip())
+            raise ValueError(f"OpenAI model discovery failed. {detail}".strip())
+
+        payload = response.json()
+        raw_models = payload.get("data")
+        if not isinstance(raw_models, list):
+            raise ValueError("OpenAI model discovery returned an unexpected payload.")
+
+        normalized_models: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for raw_model in raw_models:
+            if not isinstance(raw_model, dict):
+                continue
+            normalized = normalize_openai_model(raw_model)
+            if not normalized:
+                continue
+            model_id = str(normalized.get("id") or "").strip()
+            if not model_id or model_id in seen_ids:
+                continue
+            seen_ids.add(model_id)
+            normalized_models.append(normalized)
+
+        normalized_models = sort_openai_models(normalized_models)
+        recommended_model = recommended_openai_model(normalized_models)
+        for model in normalized_models:
+            model["recommended"] = model.get("id") == recommended_model
+
+        if not normalized_models:
+            raise ValueError("No text-capable OpenAI models were available for this API key.")
+
+        return {
+            "models": normalized_models,
+            "recommended_model": recommended_model,
+            "from_saved_key": bool(profile_id and not str(api_key or "").strip()),
+            "profile_id": profile_id,
+        }
 
     def create_translation_profile(
         self,
@@ -946,9 +1031,15 @@ class Tool1Service:
         api_key: str,
         model: str,
     ) -> dict[str, Any]:
-        from .config import TRANSLATION_PROVIDERS
-        if provider not in TRANSLATION_PROVIDERS:
-            raise ValueError(f"Invalid provider. Must be one of: {', '.join(TRANSLATION_PROVIDERS)}")
+        provider = str(provider or "").strip()
+        if not is_runnable_translation_profile_provider(provider):
+            raise ValueError("Only OpenAI API translation profiles can be created right now.")
+        api_key = str(api_key or "").strip()
+        model = " ".join(str(model or "").split()).strip()
+        if not api_key:
+            raise ValueError("OpenAI API key is required.")
+        if not model:
+            raise ValueError("Model is required.")
         profile_id = str(uuid.uuid4())[:8]
         now = utc_now()
         self.db.create_translation_profile({
@@ -974,6 +1065,24 @@ class Tool1Service:
         allowed = {"name", "provider", "api_key_ref", "model", "is_default"}
         filtered = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if filtered:
+            effective_provider = str(filtered.get("provider") or profile.get("provider") or "").strip()
+            if (
+                any(key in filtered for key in ("provider", "api_key_ref", "model"))
+                and not is_runnable_translation_profile_provider(effective_provider)
+            ):
+                raise ValueError("Only OpenAI API translation profiles can be edited in the current setup flow.")
+            if "name" in filtered:
+                filtered["name"] = str(filtered["name"]).strip() or profile["name"]
+            if "provider" in filtered:
+                filtered["provider"] = effective_provider
+            if "api_key_ref" in filtered:
+                filtered["api_key_ref"] = str(filtered["api_key_ref"] or "").strip()
+                if not filtered["api_key_ref"]:
+                    filtered.pop("api_key_ref")
+            if "model" in filtered:
+                filtered["model"] = " ".join(str(filtered["model"] or "").split()).strip()
+                if effective_provider == "openai" and not filtered["model"]:
+                    raise ValueError("Model is required.")
             self.db.update_translation_profile(profile_id, **filtered)
         return self.db.get_translation_profile(profile_id) or {}
 
@@ -1277,7 +1386,7 @@ class Tool1Service:
 
         # Include profiles for dropdowns
         voice_profile_list = self.list_voice_profiles()
-        translation_profile_list = self.list_translation_profiles()
+        translation_profile_list = self.list_translation_profiles_public()
         project["queue_readiness"] = self._build_queue_readiness(
             project=project,
             provider_health=provider_health,
