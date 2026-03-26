@@ -48,7 +48,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - Voice profile creation now skips latent precompute when XTTS runtime is unavailable instead of queuing dead jobs
   - Voice-test submission now fails fast with an actionable runtime error instead of leaving jobs permanently queued
   - Worker health now surfaces missing XTTS dependencies directly in the UI
-  - Voice profile cards now surface per-profile clone state, latest voice-test state, inline test input, and in-card preview playback/download when a test clip exists
+  - Voice profiles are now language-agnostic, create with only name + reference audio, and expose a one-click `Play test` action that generates a fresh inline sample without manual text entry
 - **Stage-run logging for provider stages**
   - consistency guide, scene planning, and prompt generation now preserve structured stage runs and full failure details
 - **Template/settings reads**
@@ -58,7 +58,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - dashboard refreshes now reuse short-lived frontend cache windows for health/settings metadata and skip legacy board fetches unless the board view is active
   - CLI provider probe calls are now cached briefly inside `CliRunner`, avoiding repeated `codex`/`claude` subprocess checks on every click
 - **AI agent configs** (`config/agents/`) — scene planning, visual bible, video/image prompts (Claude + Codex)
-- **Test suite** — 99 tests passing (chunking, cli_runner, translation, tts, video_pipeline, API/service coverage)
+- **Test suite** — 101 tests passing (chunking, cli_runner, translation, tts, video_pipeline, API/service coverage)
 
 ### What's Being Worked On
 See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase plan.
@@ -72,7 +72,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - Fresh Windows environments still need the XTTS runtime installed manually; Coqui TTS may require Microsoft C++ Build Tools before voice cloning can work
 
 ### Git State
-- Branch: `codex/bridge-tooltips` (active)
+- Branch: `codex/voice-profile-flow-simplification` (active)
 - Responsiveness/latency fixes for route changes, overlay opens, repeated provider health probes, and the latest Drawbridge tooltip polish all live in codex feature branches
 - Remote: `https://github.com/alesalesmota/tool-1-srt-timeline-json-prompt-list.git`
 
@@ -93,6 +93,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 | Queue/requeue is blocked by server-side readiness checks | Missing voices, translations, provider auth, or languages must fail fast before work starts | 2026-03-26 |
 | Provider failures stay on the failed stage with full logs | Failures must be actionable; no silent Claude->Codex fallback | 2026-03-26 |
 | Template/settings reads are side-effect free | GET requests should not mutate template state | 2026-03-26 |
+| Voice profiles are language-agnostic | XTTS profiles can be reused across languages, so the UI should not force or validate a language tag | 2026-03-26 |
 
 ## User Observations & Insights
 
@@ -107,6 +108,8 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - **2026-03-26**: Provider failures must remain explicit and controllable; do not add automatic Claude->Codex fallback
 - **2026-03-26**: App feedback feels too slow; clicking pages or any action should respond immediately instead of feeling delayed by background refresh work
 - **2026-03-26**: Voice clone/test feedback must stay inside each voice-profile card; the global worker badge alone is too abstract, `stale` is unclear copy, and the user needs an inline way to hear the generated preview clip
+- **2026-03-26**: Voice profile creation should only ask for a name and an audio file; language should not be required because these XTTS voices can handle multiple languages
+- **2026-03-26**: The voice-profile card should be much simpler, show less technical information, and use one click to generate a fresh test sample instead of asking for manual test text
 - **2026-03-25**: Lost 10+ phase plan between conversations → created IMPLEMENTATION_PLAN.md + IMPLEMENTATION_CHECKLIST.md in repo + updated CLAUDE.md behavior to always persist plans
 - **2026-03-25**: Standalone tools (TRADUTOR, TTS, SRT chunker, Whisper UI) all duplicated integrated modules → deleted
 - **2026-03-24**: Niche Project hierarchy — each niche has pre-configured languages, voice profiles, translation profiles
@@ -141,6 +144,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-26 | **Voice profile flow simplified**: removed language from the create-profile UI, stopped filtering/validating voice profiles by language in project assignment, moved default sample text generation to the backend, and rebuilt the voice-profile card around a one-click `Play test` action with inline fresh-sample playback. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`101` passing), and browser smoke confirming create modal simplification, fresh-test generation state, and project language dropdowns showing the same voice profile for every language. |
 | 2026-03-26 | **TTS Runtime Fixed**: Resolved multiple environment issues preventing `TTS.api` imports and worker startup. Pinned `torch` to `2.3.1`, `transformers` to `4.39.3`, and manually installed missing binary dependencies (`bangla`, `gruut`, `spacy[ja]`, `umap-learn`). Verified worker status as `idle` and healthy on port 8020. |
 | 2026-03-26 | **Drawbridge voice-profile UX pass complete**: enriched voice-profile payloads with the latest latent-precompute and voice-test job metadata, moved voice testing into an inline card form, added per-card clone/test status messaging plus preview playback/download, and replaced the raw worker `stale` label with clearer restart guidance. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`99` passing), and browser smoke on `http://127.0.0.1:8765/#/voice-profiles` confirming the inline test form, the new worker/card copy, and only the existing `favicon.ico` 404 in the console. |
 | 2026-03-26 | **Drawbridge hover affordance polish complete**: collapsed the Draft-column add CTA into an icon-only `+` button with a hover tooltip, and moved column guidance copy into hover tooltips on the column titles so the kanban headers stay compact. Verified with `node --check tool1_dashboard/ui/app.js` plus browser smoke on `http://127.0.0.1:8765/#/niche-projects/niche-20260325-215207-audit-project`, including screenshots for the Draft `+` tooltip and the Draft-column title tooltip. |

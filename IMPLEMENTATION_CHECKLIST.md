@@ -122,3 +122,10 @@
 - [x] Preserve provider-stage failure logs and keep failures explicit without provider fallback
 - [x] Make template/settings reads side-effect free
 - [x] Verify with 93 passing tests, JS syntax check, and browser smoke
+
+## Voice Profile Flow Simplification (2026-03-26)
+- [x] Remove language from the create voice-profile flow
+- [x] Make voice profiles language-agnostic in queue readiness and project assignment
+- [x] Replace manual voice-test text entry with a backend-generated default English sample
+- [x] Simplify voice-profile cards to one-click `Play test`, compact state text, and inline sample playback
+- [x] Verify with `node --check`, `python -m unittest discover -s tests -v` (`101` passing), and browser smoke
