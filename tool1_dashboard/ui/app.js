@@ -313,12 +313,14 @@ function iconSvg(name) {
   return icons[name] || icons.overview;
 }
 
-function iconMarkup(name) {
-  return `<span class="button-icon" aria-hidden="true">${iconSvg(name)}</span>`;
+function iconMarkup(name, { className = "" } = {}) {
+  const classes = ["button-icon"];
+  if (className) classes.push(className);
+  return `<span class="${classes.join(" ")}" aria-hidden="true">${iconSvg(name)}</span>`;
 }
 
-function iconContent(name, label, { iconOnly = false } = {}) {
-  return `${iconMarkup(name)}${iconOnly ? `<span class="sr-only">${esc(label)}</span>` : `<span class="button-label">${esc(label)}</span>`}`;
+function iconContent(name, label, { iconOnly = false, iconClass = "" } = {}) {
+  return `${iconMarkup(name, { className: iconClass })}${iconOnly ? `<span class="sr-only">${esc(label)}</span>` : `<span class="button-label">${esc(label)}</span>`}`;
 }
 
 function apiErrorMessage(detail) {
@@ -1007,6 +1009,8 @@ function renderVoiceProfiles() {
       const starting = voiceProfileIsStarting(p);
       const generating = voiceProfileIsGenerating(p);
       const actionBusy = starting || generating;
+      const playLabel = actionBusy ? (starting ? "Starting voice engine" : "Generating sample") : "Play test";
+      const playIcon = actionBusy ? "refresh" : "play";
       return `
       <div class="profile-card">
         <div class="profile-card-head">
@@ -1014,17 +1018,36 @@ function renderVoiceProfiles() {
           <div class="profile-card-actions">
             <button
               type="button"
-              class="button button-primary button-small has-icon"
+              class="button button-primary button-small icon-only tooltip-anchor profile-card-action profile-card-action-primary${actionBusy ? " is-busy" : ""}"
               data-test-voice="${esc(p.id)}"
+              data-tooltip="${esc(playLabel)}"
+              aria-label="${esc(playLabel)}"
+              title="${esc(playLabel)}"
               ${actionBusy ? "disabled" : ""}
-            >${iconContent("play", actionBusy ? (starting ? "Starting..." : "Generating...") : "Play test")}</button>
-            <button type="button" class="button button-ghost button-small has-icon" data-open-voice-tuning="${esc(p.id)}">${iconContent("settings", "Tuning")}</button>
-            <button type="button" class="button button-danger button-small icon-only" data-delete-voice-profile="${esc(p.id)}" aria-label="Delete" title="Delete">${iconContent("delete", "Delete", { iconOnly: true })}</button>
+            >${iconContent(playIcon, playLabel, { iconOnly: true, iconClass: actionBusy ? "button-icon-spin" : "" })}</button>
+            <button
+              type="button"
+              class="button button-ghost button-small icon-only tooltip-anchor profile-card-action"
+              data-open-voice-tuning="${esc(p.id)}"
+              data-tooltip="Tune voice"
+              aria-label="Tune voice"
+              title="Tune voice"
+            >${iconContent("settings", "Tune voice", { iconOnly: true })}</button>
+            <button
+              type="button"
+              class="button button-danger button-small icon-only tooltip-anchor profile-card-action"
+              data-delete-voice-profile="${esc(p.id)}"
+              data-tooltip="Delete voice"
+              aria-label="Delete voice"
+              title="Delete voice"
+            >${iconContent("delete", "Delete voice", { iconOnly: true })}</button>
           </div>
         </div>
         <div class="profile-card-body">
-          ${statusBadge(cardState.label, cardState.tone)}
-          <p class="helper">${esc(cardState.copy)}</p>
+          <div class="profile-card-status">
+            ${statusBadge(cardState.label, cardState.tone)}
+            <p class="profile-card-copy">${esc(cardState.copy)}</p>
+          </div>
           ${latestReadyJob ? `
             <audio
               class="profile-audio-player"

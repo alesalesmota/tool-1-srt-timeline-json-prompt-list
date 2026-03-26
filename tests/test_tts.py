@@ -773,6 +773,12 @@ class VoiceProfileUiCopyTests(unittest.TestCase):
             / "ui"
             / "app.js"
         ).read_text(encoding="utf-8")
+        app_css = (
+            Path(__file__).resolve().parents[1]
+            / "tool1_dashboard"
+            / "ui"
+            / "app.css"
+        ).read_text(encoding="utf-8")
 
         self.assertNotIn("Needs restart", app_js)
         self.assertNotIn("Start Worker", app_js)
@@ -780,6 +786,10 @@ class VoiceProfileUiCopyTests(unittest.TestCase):
         self.assertIn("data-open-voice-tuning", app_js)
         self.assertIn("voice-profile-tuning-form", app_js)
         self.assertIn("Save and play test", app_js)
+        self.assertIn("tooltip-anchor profile-card-action", app_js)
+        self.assertIn("profile-card-status", app_js)
+        self.assertIn("button-icon-spin", app_css)
+        self.assertIn(".profile-card-action.button.icon-only", app_css)
 
 
 class PausedTtsEpisodeTests(unittest.TestCase):
