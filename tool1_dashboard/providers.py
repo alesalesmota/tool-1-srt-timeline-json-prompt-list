@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import os
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,12 +24,29 @@ class CliRunner:
     def __init__(self) -> None:
         self.codex_bin = os.environ.get("TOOL1_CODEX_BIN") or shutil.which("codex") or "codex"
         self.claude_bin = os.environ.get("TOOL1_CLAUDE_BIN") or shutil.which("claude") or "claude"
+        self._probe_ttl_seconds = float(os.environ.get("TOOL1_PROVIDER_PROBE_TTL_SECONDS", "10"))
+        self._probe_cache: dict[str, Any] | None = None
+        self._probe_cached_at = 0.0
+        self._probe_lock = threading.Lock()
 
-    def probe(self) -> dict[str, Any]:
-        return {
+    def probe(self, *, force: bool = False) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._probe_lock:
+            if (
+                not force
+                and self._probe_cache is not None
+                and (now - self._probe_cached_at) < self._probe_ttl_seconds
+            ):
+                return deepcopy(self._probe_cache)
+
+        payload = {
             "codex": self._probe_codex(),
             "claude": self._probe_claude(),
         }
+        with self._probe_lock:
+            self._probe_cache = deepcopy(payload)
+            self._probe_cached_at = now
+        return payload
 
     def _probe_codex(self) -> dict[str, Any]:
         path = shutil.which(self.codex_bin) if self.codex_bin != "codex" else shutil.which("codex")

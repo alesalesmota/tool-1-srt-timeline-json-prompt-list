@@ -32,10 +32,15 @@ const DEFAULT_MODEL_CATALOG = {
   ],
 };
 const REFRESH_INTERVAL_MS = 5000;
+const HEALTH_CACHE_TTL_MS = 15000;
+const SETTINGS_CACHE_TTL_MS = 30000;
+const TARGET_LANGUAGES_CACHE_TTL_MS = 60000;
 
 const state = {
   health: null,
+  healthFetchedAt: 0,
   settings: null,
+  settingsFetchedAt: 0,
   modelCatalog: DEFAULT_MODEL_CATALOG,
   templates: [],
   route: { view: "niche-projects" },
@@ -47,17 +52,25 @@ const state = {
   voiceProfiles: [],
   translationProfiles: [],
   targetLanguages: [],
+  targetLanguagesFetchedAt: 0,
   workerHealth: null,
   nicheProjects: [],
   nicheProjectDetail: null,
   boardEpisodes: [],
   episodeDetail: null,
   translationPreview: null,
+  isLoadingRoute: false,
+  isRefreshingData: false,
+  lastEpisodeFilesLoadedFor: null,
+  lastEpisodeReviewLoadedFor: null,
 };
 
 let refreshTimer = null;
 let noticeTimer = null;
 let elapsedTimer = null;
+let refreshGeneration = 0;
+let activeRefreshes = 0;
+let blockingRefreshes = 0;
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) =>
@@ -256,6 +269,46 @@ function apiErrorMessage(detail) {
   return "Request failed.";
 }
 
+function cacheIsFresh(timestamp, ttlMs) {
+  return Boolean(timestamp) && (Date.now() - timestamp) < ttlMs;
+}
+
+function resetEpisodeSupplementalState(episodeId = null) {
+  if (!episodeId || state.lastEpisodeFilesLoadedFor === episodeId) {
+    state.lastEpisodeFilesLoadedFor = null;
+  }
+  if (!episodeId || state.lastEpisodeReviewLoadedFor === episodeId) {
+    state.lastEpisodeReviewLoadedFor = null;
+  }
+}
+
+function ensureEpisodeSupplementalDataLoaded(episodeId, { force = false } = {}) {
+  if (!episodeId) return;
+  if (force || state.lastEpisodeFilesLoadedFor !== episodeId) {
+    state.lastEpisodeFilesLoadedFor = episodeId;
+    loadEpisodeFiles(episodeId);
+  }
+  if (force || state.lastEpisodeReviewLoadedFor !== episodeId) {
+    state.lastEpisodeReviewLoadedFor = episodeId;
+    loadReviewData(episodeId);
+  }
+}
+
+function renderLoadingSurface(title, copy) {
+  return `
+    <section class="surface loading-surface">
+      <div class="loading-surface-copy">
+        <div class="loading-inline">
+          <span class="loading-dot" aria-hidden="true"></span>
+          <span class="eyebrow">Syncing</span>
+        </div>
+        <h2 class="loading-title">${esc(title)}</h2>
+        <p class="helper">${esc(copy)}</p>
+      </div>
+    </section>
+  `;
+}
+
 async function api(url, options = {}) {
   const response = await fetch(url, options);
   const data = await response.json().catch(() => ({}));
@@ -392,7 +445,15 @@ function renderTopbar() {
   $("topbar").innerHTML = `
     <div class="topbar-head">
       <h1 class="topbar-title">${esc(current.title)}</h1>
-      ${state.notice.text ? `<div class="notice" data-tone="${esc(state.notice.tone)}">${esc(state.notice.text)}</div>` : ""}
+      <div class="topbar-meta">
+        ${state.isRefreshingData ? `
+          <div class="topbar-sync-indicator">
+            <span class="loading-dot" aria-hidden="true"></span>
+            <span>Syncing</span>
+          </div>
+        ` : ""}
+        ${state.notice.text ? `<div class="notice" data-tone="${esc(state.notice.tone)}">${esc(state.notice.text)}</div>` : ""}
+      </div>
     </div>
     <div class="topbar-actions">
       <button type="button" class="button button-ghost icon-only" data-refresh="true" aria-label="Refresh" title="Refresh">
@@ -1146,7 +1207,9 @@ function renderProjectBoardKanban(project, episodes) {
 function renderNicheProjectDetail() {
   const detail = state.nicheProjectDetail;
   if (!detail) {
-    $("view").innerHTML = '<div class="surface" style="padding:2rem;"><p class="helper">Niche project not found.</p></div>';
+    $("view").innerHTML = state.isLoadingRoute
+      ? renderLoadingSurface("Loading project board", "Pulling episodes, queue readiness, and language setup for this project.")
+      : '<div class="surface" style="padding:2rem;"><p class="helper">Niche project not found.</p></div>';
     return;
   }
   const project = detail.project;
@@ -1210,14 +1273,32 @@ function renderNicheProjectDetail() {
   syncProviderModelSelect("niche-video_prompt-provider", "niche-video_prompt-model");
   syncProviderModelSelect("niche-image_prompt-provider", "niche-image_prompt-model");
   if (state.episodeOverlayId && state.episodeDetail?.episode?.id === state.episodeOverlayId) {
-    loadEpisodeFiles(state.episodeOverlayId);
-    loadReviewData(state.episodeOverlayId);
+    ensureEpisodeSupplementalDataLoaded(state.episodeOverlayId);
   }
 }
 
 function renderEpisodeDetailOverlay() {
   const detail = state.episodeDetail;
-  if (!state.episodeOverlayId || !detail || detail.episode?.id !== state.episodeOverlayId) return "";
+  if (!state.episodeOverlayId) return "";
+  if (!detail || detail.episode?.id !== state.episodeOverlayId) {
+    if (!state.isLoadingRoute) return "";
+    return `
+      <div class="board-modal-backdrop" data-episode-overlay-backdrop="true">
+        <div class="board-modal-shell" onclick="event.stopPropagation()">
+          <div class="board-modal-head">
+            <div>
+              <h2 style="margin:0;">Loading episode</h2>
+              <div class="helper" style="margin-top:10px;">Fetching pipeline status, stage runs, and language progress.</div>
+            </div>
+            <button type="button" class="modal-close-button" data-close-episode-overlay="true">${iconContent("close", "Close", { iconOnly: true })}</button>
+          </div>
+          <div class="board-modal-main">
+            ${renderLoadingSurface("Opening overlay", "The board stays in place while the episode data refreshes in the background.")}
+          </div>
+        </div>
+      </div>
+    `;
+  }
   const episode = detail.episode;
   const langStatuses = detail.language_statuses || [];
   const stageRuns = detail.stage_runs || [];
@@ -1358,7 +1439,9 @@ function renderEpisodeDetailOverlay() {
 function renderEpisodeDetail() {
   const detail = state.episodeDetail;
   if (!detail) {
-    $("view").innerHTML = '<div class="surface" style="padding:2rem;"><p class="helper">Episode not found.</p></div>';
+    $("view").innerHTML = state.isLoadingRoute
+      ? renderLoadingSurface("Loading episode", "Fetching pipeline state, per-language progress, and stage runs.")
+      : '<div class="surface" style="padding:2rem;"><p class="helper">Episode not found.</p></div>';
     return;
   }
   const episode = detail.episode;
@@ -1518,8 +1601,7 @@ function renderEpisodeDetail() {
   `;
 
   // Auto-load files
-  loadEpisodeFiles(episode.id);
-  loadReviewData(episode.id);
+  ensureEpisodeSupplementalDataLoaded(episode.id);
 }
 
 async function loadEpisodeFiles(episodeId) {
@@ -1883,110 +1965,192 @@ function renderApp() {
   restoreDashboardScroll();
 }
 
-async function refreshData({ preserveNotice = true } = {}) {
-  const route = state.route;
-  const [health, settings] = await Promise.all([api("/api/health"), api("/api/settings")]);
-  state.health = health;
-  state.settings = settings.settings || {};
-  state.modelCatalog = settings.model_catalog || DEFAULT_MODEL_CATALOG;
-  state.templates = settings.templates || [];
+async function refreshData({ preserveNotice = true, routeLoading = false, force = false } = {}) {
+  const generation = ++refreshGeneration;
+  const route = { ...state.route };
+  const overlayId = state.episodeOverlayId;
+  const now = Date.now();
+  const shouldFetchHealth = force || !state.health || !cacheIsFresh(state.healthFetchedAt, HEALTH_CACHE_TTL_MS);
+  const shouldFetchSettings = force || !state.settings || ["settings", "templates"].includes(route.view) || !cacheIsFresh(state.settingsFetchedAt, SETTINGS_CACHE_TTL_MS);
+  const shouldFetchBoardEpisodes = force || route.view === "pipeline-board";
+  const shouldFetchTargetLanguages = (
+    force ||
+    route.view === "voice-profiles" ||
+    route.view === "niche-project" ||
+    route.view === "niche-projects"
+  ) && (!state.targetLanguages.length || !cacheIsFresh(state.targetLanguagesFetchedAt, TARGET_LANGUAGES_CACHE_TTL_MS));
 
-  // Always fetch niche projects + board episodes for sidebar/board
+  activeRefreshes += 1;
+  if (routeLoading) {
+    blockingRefreshes += 1;
+  }
+  state.isRefreshingData = true;
+  state.isLoadingRoute = blockingRefreshes > 0;
+
   try {
-    const [npRes, beRes] = await Promise.all([
-      api("/api/niche-projects"),
-      api("/api/board/episodes"),
+    const healthPromise = shouldFetchHealth ? api("/api/health") : Promise.resolve(state.health);
+    const settingsPromise = shouldFetchSettings ? api("/api/settings") : Promise.resolve({
+      settings: state.settings || {},
+      model_catalog: state.modelCatalog || DEFAULT_MODEL_CATALOG,
+      templates: state.templates || [],
+    });
+    const nicheProjectsPromise = api("/api/niche-projects");
+    const boardEpisodesPromise = shouldFetchBoardEpisodes
+      ? api("/api/board/episodes")
+      : Promise.resolve({ episodes: state.boardEpisodes || [] });
+    const targetLanguagesPromise = shouldFetchTargetLanguages
+      ? api("/api/target-languages")
+      : Promise.resolve({ languages: state.targetLanguages || [] });
+    const voiceProfilesPromise = route.view === "voice-profiles"
+      ? api("/api/voice-profiles")
+      : Promise.resolve({ profiles: state.voiceProfiles || [] });
+    const workerHealthPromise = route.view === "voice-profiles"
+      ? api("/api/worker-health")
+      : Promise.resolve(state.workerHealth);
+    const translationProfilesPromise = route.view === "translation-profiles"
+      ? api("/api/translation-profiles")
+      : Promise.resolve({ profiles: state.translationProfiles || [] });
+
+    const episodeTargetId = route.view === "episode" ? route.episodeId : overlayId;
+    const episodeDetailPromise = episodeTargetId
+      ? api(`/api/episodes/${encodeURIComponent(episodeTargetId)}`)
+      : Promise.resolve(null);
+    const projectDetailPromise = route.view === "niche-project" && route.nicheProjectId
+      ? api(`/api/niche-projects/${encodeURIComponent(route.nicheProjectId)}`).catch((error) => ({ __error: error }))
+      : Promise.resolve(null);
+
+    const [
+      health,
+      settings,
+      nicheProjects,
+      boardEpisodes,
+      targetLanguages,
+      voiceProfiles,
+      workerHealth,
+      translationProfiles,
+      projectDetailResultRaw,
+    ] = await Promise.all([
+      healthPromise,
+      settingsPromise,
+      nicheProjectsPromise,
+      boardEpisodesPromise,
+      targetLanguagesPromise,
+      voiceProfilesPromise,
+      workerHealthPromise,
+      translationProfilesPromise,
+      projectDetailPromise,
     ]);
-    state.nicheProjects = npRes.projects || [];
-    state.boardEpisodes = beRes.episodes || [];
-  } catch { state.nicheProjects = []; state.boardEpisodes = []; }
 
-  const episodeTargetId = route.view === "episode" ? route.episodeId : state.episodeOverlayId;
-
-  if (episodeTargetId) {
-    try {
-      state.episodeDetail = await api(`/api/episodes/${encodeURIComponent(episodeTargetId)}`);
-    } catch (error) {
-      state.episodeDetail = null;
-      state.episodeOverlayId = null;
-      if (route.view === "episode") {
-        if (!preserveNotice) throw error;
-        setNotice(error.message, "error");
+    if (projectDetailResultRaw?.__error) {
+      if (!preserveNotice) throw projectDetailResultRaw.__error;
+      if (generation === refreshGeneration) {
+        setNotice(projectDetailResultRaw.__error.message, "error");
         window.location.hash = routeToHash({ view: "niche-projects" });
+      }
+      return;
+    }
+
+    let episodeDetailResult = null;
+    if (episodeTargetId) {
+      try {
+        episodeDetailResult = await episodeDetailPromise;
+      } catch (error) {
+        if (route.view === "episode") {
+          if (!preserveNotice) throw error;
+          if (generation === refreshGeneration) {
+            setNotice(error.message, "error");
+            window.location.hash = routeToHash({ view: "niche-projects" });
+          }
+          return;
+        }
+        if (generation === refreshGeneration) {
+          state.episodeOverlayId = null;
+          state.episodeDetail = null;
+          resetEpisodeSupplementalState(episodeTargetId);
+        }
+      }
+    }
+
+    let activeProjectId = route.view === "niche-project"
+      ? route.nicheProjectId
+      : episodeDetailResult?.episode?.niche_project_id;
+    let nicheProjectDetailResult = projectDetailResultRaw;
+    if (!nicheProjectDetailResult && activeProjectId) {
+      try {
+        nicheProjectDetailResult = await api(`/api/niche-projects/${encodeURIComponent(activeProjectId)}`);
+      } catch (error) {
+        if (!preserveNotice) throw error;
+        if (generation === refreshGeneration) {
+          setNotice(error.message, "error");
+          window.location.hash = routeToHash({ view: "niche-projects" });
+        }
         return;
       }
     }
-  } else {
-    state.episodeDetail = null;
-  }
 
-  const activeProjectId = route.view === "niche-project"
-    ? route.nicheProjectId
-    : state.episodeDetail?.episode?.niche_project_id;
+    if (generation !== refreshGeneration) return;
 
-  // Niche project detail
-  if (activeProjectId) {
-    try {
-      state.nicheProjectDetail = await api(`/api/niche-projects/${encodeURIComponent(activeProjectId)}`);
-      rememberLastOpenProject(activeProjectId);
-    } catch (error) {
-      state.nicheProjectDetail = null;
-      if (!preserveNotice) throw error;
-      setNotice(error.message, "error");
-      window.location.hash = routeToHash({ view: "niche-projects" });
-      return;
+    if (shouldFetchHealth) {
+      state.health = health;
+      state.healthFetchedAt = now;
     }
-  } else {
-    state.nicheProjectDetail = null;
-  }
+    if (shouldFetchSettings) {
+      state.settings = settings.settings || {};
+      state.modelCatalog = settings.model_catalog || DEFAULT_MODEL_CATALOG;
+      state.templates = settings.templates || [];
+      state.settingsFetchedAt = now;
+    }
 
-  // Fetch target languages + profiles for niche project modals
-  if (route.view === "niche-projects" || route.view === "niche-project" || Boolean(state.nicheProjectDetail)) {
-    try {
-      const [tlRes, vpRes, tpRes] = await Promise.all([
-        api("/api/target-languages"),
-        api("/api/voice-profiles"),
-        api("/api/translation-profiles"),
-      ]);
-      state.targetLanguages = tlRes.languages || [];
-      state.voiceProfiles = vpRes.profiles || [];
-      state.translationProfiles = tpRes.profiles || [];
-    } catch { /* keep existing */ }
-  }
+    state.nicheProjects = nicheProjects.projects || [];
+    if (shouldFetchBoardEpisodes) {
+      state.boardEpisodes = boardEpisodes.episodes || [];
+    }
+    if (shouldFetchTargetLanguages) {
+      state.targetLanguages = targetLanguages.languages || [];
+      state.targetLanguagesFetchedAt = now;
+    }
 
-  if (route.view === "voice-profiles") {
-    try {
-      const [vpRes, whRes] = await Promise.all([
-        api("/api/voice-profiles"),
-        api("/api/worker-health"),
-      ]);
-      state.voiceProfiles = vpRes.profiles || [];
-      state.workerHealth = whRes;
-    } catch { state.voiceProfiles = []; state.workerHealth = null; }
-  }
+    if (route.view === "voice-profiles") {
+      state.voiceProfiles = voiceProfiles.profiles || [];
+      state.workerHealth = workerHealth || null;
+    }
+    if (route.view === "translation-profiles") {
+      state.translationProfiles = translationProfiles.profiles || [];
+    }
 
-  if (route.view === "translation-profiles") {
-    try {
-      const tpRes = await api("/api/translation-profiles");
-      state.translationProfiles = tpRes.profiles || [];
-    } catch { state.translationProfiles = []; }
-  }
+    if (episodeTargetId) {
+      state.episodeDetail = episodeDetailResult;
+    } else {
+      state.episodeDetail = null;
+    }
 
-  // Fetch target languages for modals that need them
-  if (route.view === "voice-profiles") {
-    try {
-      const tlRes = await api("/api/target-languages");
-      state.targetLanguages = tlRes.languages || [];
-    } catch { state.targetLanguages = []; }
+    if (activeProjectId) {
+      state.nicheProjectDetail = nicheProjectDetailResult;
+      if (nicheProjectDetailResult?.voice_profiles) {
+        state.voiceProfiles = nicheProjectDetailResult.voice_profiles;
+      }
+      if (nicheProjectDetailResult?.translation_profiles) {
+        state.translationProfiles = nicheProjectDetailResult.translation_profiles;
+      }
+      rememberLastOpenProject(activeProjectId);
+    } else {
+      state.nicheProjectDetail = null;
+    }
+  } finally {
+    activeRefreshes = Math.max(0, activeRefreshes - 1);
+    if (routeLoading) {
+      blockingRefreshes = Math.max(0, blockingRefreshes - 1);
+    }
+    state.isRefreshingData = activeRefreshes > 0;
+    state.isLoadingRoute = blockingRefreshes > 0;
   }
-
 }
 
 function resetAutoRefresh() {
   if (refreshTimer) window.clearInterval(refreshTimer);
   if (!autoRefreshAllowed(state.route)) return;
   refreshTimer = window.setInterval(() => {
-    if (state.modal.kind) return;
+    if (state.modal.kind || state.isLoadingRoute || state.isRefreshingData) return;
     refreshData().then(renderApp).catch(() => {});
   }, REFRESH_INTERVAL_MS);
 }
@@ -2006,31 +2170,54 @@ function resetElapsedTimer() {
 }
 
 async function syncRouteAndRender() {
-  state.route = parseRoute();
-  if (state.route.view === "episode" && state.route.episodeId) {
-    state.episodeOverlayId = state.route.episodeId;
+  const nextRoute = parseRoute();
+  const nextEpisodeId = nextRoute.view === "episode" ? nextRoute.episodeId : null;
+  const nextProjectId = nextRoute.view === "niche-project" ? nextRoute.nicheProjectId : null;
+  state.route = nextRoute;
+  if (nextEpisodeId) {
+    if (state.episodeDetail?.episode?.id !== nextEpisodeId) {
+      state.episodeDetail = null;
+      resetEpisodeSupplementalState();
+    }
+    state.episodeOverlayId = nextEpisodeId;
   } else if (!["niche-project", "episode"].includes(state.route.view)) {
     state.episodeOverlayId = null;
+    state.episodeDetail = null;
     state.translationPreview = null;
+    resetEpisodeSupplementalState();
   }
-  await refreshData();
+  if (nextProjectId && state.nicheProjectDetail?.project?.id !== nextProjectId) {
+    state.nicheProjectDetail = null;
+  }
+  state.isLoadingRoute = true;
+  renderApp();
+  await refreshData({ routeLoading: true });
   renderApp();
   resetAutoRefresh();
 }
 
 async function openEpisodeOverlay(episodeId, projectId = null) {
+  if (state.episodeDetail?.episode?.id !== episodeId) {
+    state.episodeDetail = null;
+    resetEpisodeSupplementalState();
+  }
   state.episodeOverlayId = episodeId;
   if (projectId && state.route.view !== "niche-project") {
+    state.isLoadingRoute = true;
+    renderApp();
     window.location.hash = routeToHash({ view: "niche-project", nicheProjectId: projectId });
     return;
   }
-  await refreshData();
+  state.isLoadingRoute = true;
+  renderApp();
+  await refreshData({ routeLoading: true });
   renderApp();
   resetAutoRefresh();
 }
 
 function closeEpisodeOverlay() {
   const projectId = state.nicheProjectDetail?.project?.id || state.episodeDetail?.episode?.niche_project_id;
+  resetEpisodeSupplementalState(state.episodeOverlayId);
   state.episodeOverlayId = null;
   state.episodeDetail = null;
   state.translationPreview = null;
@@ -2224,13 +2411,14 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (target.dataset.nav) {
+      resetEpisodeSupplementalState(state.episodeOverlayId);
       state.episodeOverlayId = null;
       state.translationPreview = null;
       window.location.hash = routeToHash({ view: target.dataset.nav });
       return;
     }
     if (target.dataset.refresh) {
-      await refreshData({ preserveNotice: false });
+      await refreshData({ preserveNotice: false, force: true });
       renderApp();
       setNotice("Refreshed.", "success");
       return;
@@ -2322,6 +2510,7 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (target.dataset.queueEpisode) {
+      resetEpisodeSupplementalState(target.dataset.queueEpisode);
       await api('/api/episodes/' + encodeURIComponent(target.dataset.queueEpisode) + '/queue', {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2334,6 +2523,7 @@ document.addEventListener("click", async (event) => {
     }
     if (target.dataset.deleteEpisode) {
       if (!confirm("Delete this episode? This cannot be undone.")) return;
+      resetEpisodeSupplementalState(target.dataset.deleteEpisode);
       await api('/api/episodes/' + encodeURIComponent(target.dataset.deleteEpisode), { method: "DELETE" });
       if (state.episodeOverlayId === target.dataset.deleteEpisode) {
         state.episodeOverlayId = null;
@@ -2464,6 +2654,7 @@ document.addEventListener("click", async (event) => {
       const episodeId = target.dataset.retryLanguage;
       const langCode = target.dataset.retryLang;
       const stage = target.dataset.retryStage;
+      resetEpisodeSupplementalState(episodeId);
       await api('/api/episodes/' + encodeURIComponent(episodeId) + '/retry-language', {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2498,12 +2689,14 @@ document.addEventListener("click", async (event) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ consistency_guide, timeline_draft, prompt_list: prompts }),
       });
+      resetEpisodeSupplementalState(episodeId);
       setNotice("Review data saved successfully.", "success");
       return;
     }
     if (target.dataset.finalizeExport) {
       const episodeId = target.dataset.finalizeExport;
       if (!confirm("Finalize and generate export ZIP?")) return;
+      resetEpisodeSupplementalState(episodeId);
       await api('/api/episodes/' + encodeURIComponent(episodeId) + '/finalize-export', { method: "POST" });
       await refreshData();
       renderApp();

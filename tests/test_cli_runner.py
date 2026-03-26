@@ -125,6 +125,52 @@ class CliRunnerTests(unittest.TestCase):
         self.assertIn("Claude limit reached.", str(context.exception))
         self.assertIn("You've hit your limit", str(context.exception))
 
+    def test_probe_uses_short_lived_cache(self) -> None:
+        runner = CliRunner()
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = json.dumps({"loggedIn": True}) if command[:2] == [runner.claude_bin, "auth"] else "logged in"
+            result.stderr = ""
+            return result
+
+        with patch("tool1_dashboard.providers.shutil.which", side_effect=lambda command: f"/fake/{command}"):
+            with patch("tool1_dashboard.providers.subprocess.run", side_effect=fake_run):
+                with patch("tool1_dashboard.providers.time.monotonic", side_effect=[100.0, 100.5, 111.0]):
+                    first = runner.probe()
+                    second = runner.probe()
+                    third = runner.probe()
+
+        self.assertEqual(first["codex"]["available"], second["codex"]["available"])
+        self.assertEqual(first["claude"]["available"], second["claude"]["available"])
+        self.assertEqual(len(calls), 8)
+        self.assertNotEqual(id(first), id(second))
+        self.assertNotEqual(id(first["claude"]), id(second["claude"]))
+        self.assertEqual(third["claude"]["logged_in"], first["claude"]["logged_in"])
+
+    def test_probe_force_bypasses_cache(self) -> None:
+        runner = CliRunner()
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = json.dumps({"loggedIn": True}) if command[:2] == [runner.claude_bin, "auth"] else "logged in"
+            result.stderr = ""
+            return result
+
+        with patch("tool1_dashboard.providers.shutil.which", side_effect=lambda command: f"/fake/{command}"):
+            with patch("tool1_dashboard.providers.subprocess.run", side_effect=fake_run):
+                with patch("tool1_dashboard.providers.time.monotonic", return_value=100.0):
+                    runner.probe()
+                    runner.probe(force=True)
+
+        self.assertEqual(len(calls), 8)
+
 
 if __name__ == "__main__":
     unittest.main()

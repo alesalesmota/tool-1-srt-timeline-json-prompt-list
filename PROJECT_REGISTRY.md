@@ -50,8 +50,12 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - consistency guide, scene planning, and prompt generation now preserve structured stage runs and full failure details
 - **Template/settings reads**
   - template and settings reads are now side-effect free; reads no longer upsert template rows
+- **Interaction responsiveness**
+  - route changes and episode overlay opens now render immediately with explicit loading states instead of waiting for the full refresh cycle
+  - dashboard refreshes now reuse short-lived frontend cache windows for health/settings metadata and skip legacy board fetches unless the board view is active
+  - CLI provider probe calls are now cached briefly inside `CliRunner`, avoiding repeated `codex`/`claude` subprocess checks on every click
 - **AI agent configs** (`config/agents/`) — scene planning, visual bible, video/image prompts (Claude + Codex)
-- **Test suite** — 93 tests passing (chunking, cli_runner, translation, tts, video_pipeline, API/service coverage)
+- **Test suite** — 98 tests passing (chunking, cli_runner, translation, tts, video_pipeline, API/service coverage)
 
 ### What's Being Worked On
 See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase plan.
@@ -65,8 +69,8 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - Fresh Windows environments still need the XTTS runtime installed manually; Coqui TTS may require Microsoft C++ Build Tools before voice cloning can work
 
 ### Git State
-- Branch: `feat/cleanup-and-consolidation` (active)
-- Workflow repair changes committed and pushed
+- Branch: `codex/fix-ui-feedback-latency` (active)
+- Current focus: responsiveness/latency fixes for route changes, overlay opens, and repeated provider health probes
 - Remote: `https://github.com/alesalesmota/tool-1-srt-timeline-json-prompt-list.git`
 
 ## Architecture Decisions
@@ -94,6 +98,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - **2026-03-26**: Episode details should open as an overlay on top of the project board, not force a full navigation away from the workflow
 - **2026-03-26**: Queueing and requeueing should be blocked when setup is incomplete (missing voice profiles, translation profiles, provider login, or languages)
 - **2026-03-26**: Provider failures must remain explicit and controllable; do not add automatic Claude->Codex fallback
+- **2026-03-26**: App feedback feels too slow; clicking pages or any action should respond immediately instead of feeling delayed by background refresh work
 - **2026-03-25**: Lost 10+ phase plan between conversations → created IMPLEMENTATION_PLAN.md + IMPLEMENTATION_CHECKLIST.md in repo + updated CLAUDE.md behavior to always persist plans
 - **2026-03-25**: Standalone tools (TRADUTOR, TTS, SRT chunker, Whisper UI) all duplicated integrated modules → deleted
 - **2026-03-24**: Niche Project hierarchy — each niche has pre-configured languages, voice profiles, translation profiles
@@ -128,6 +133,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-26 | **Interaction latency pass complete**: route changes and episode overlay opens now paint an immediate loading state before background data hydration finishes, refreshes no longer pull every heavyweight endpoint on every interaction, and provider health probes are cached briefly inside `CliRunner` to avoid repeated CLI subprocess checks. Verified with `node --check tool1_dashboard/ui/app.js`, the full `python -m unittest discover -s tests -v` suite (`98` passing), and browser smoke showing the episode overlay loading shell appears instantly on click before the full detail payload arrives. |
 | 2026-03-26 | Added TTS runtime preflight and fail-fast UX: the worker health endpoint now reports missing XTTS dependencies, voice profile creation no longer queues dead latent jobs when the runtime is missing, and voice tests return an actionable error instead of sitting in `queued` forever. Verified with targeted TTS tests and an API smoke call returning `503` plus the startup error payload. |
 | 2026-03-26 | **Project-Scoped Workflow Repair complete**: the project page is now the primary Kanban surface, new episodes stay in Draft until explicitly queued, episode details open as an overlay, queue/requeue is blocked by structured readiness checks, provider-stage failures preserve full actionable logs, and template/settings reads no longer mutate template state. Verified with 93 passing tests, `node --check tool1_dashboard/ui/app.js`, and browser smoke covering project board, draft creation, overlay routing, and blocked queue UI. |
 | 2026-03-26 | **Frontend UI Overhaul Complete**: Executed an 8-phase densification and cleanup of the dashboard. Replaced heavy \`.detail-section\` wrappers with clean \`.surface\` grids. Added collapsible icon sidebar. Widen Kanban columns. Stripped redundant "eyebrows" and helper text. Added tactile micro-animations to cards and buttons. Merged Settings and Niche Project configuration cards into tighter grids. |
