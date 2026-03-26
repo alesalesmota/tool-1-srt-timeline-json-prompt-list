@@ -1,6 +1,6 @@
 // ── Episode pipeline (TTS-first) constants ────────────────────────
 const EPISODE_PIPELINE_COLUMNS = [
-  { id: "draft", label: "Script", short: "Script", copy: "Script submitted, pipeline not started." },
+  { id: "draft", label: "Draft", short: "Draft", copy: "Script saved to the project board and waiting for an explicit queue." },
   { id: "consistency_guide", label: "Consistency Guide", short: "Guide", copy: "Locking characters, style, and continuity rules." },
   { id: "translation", label: "Translation", short: "Translate", copy: "Translating script for each target language." },
   { id: "tts", label: "TTS / Voice", short: "TTS", copy: "Generating narration audio per language." },
@@ -38,10 +38,11 @@ const state = {
   settings: null,
   modelCatalog: DEFAULT_MODEL_CATALOG,
   templates: [],
-  route: { view: "pipeline-board" },
+  route: { view: "niche-projects" },
   theme: "dark",
   notice: { text: "", tone: "neutral" },
   modal: { kind: null },
+  episodeOverlayId: null,
   boardScrollLeft: 0,
   voiceProfiles: [],
   translationProfiles: [],
@@ -72,6 +73,22 @@ function titleCase(value) {
     .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
+function lastOpenProjectId() {
+  return window.localStorage.getItem("tool1-last-open-project");
+}
+
+function rememberLastOpenProject(projectId) {
+  if (!projectId) return;
+  window.localStorage.setItem("tool1-last-open-project", projectId);
+}
+
+function legacyBoardRedirectRoute() {
+  const nicheProjectId = lastOpenProjectId();
+  return nicheProjectId
+    ? { view: "niche-project", nicheProjectId }
+    : { view: "niche-projects" };
+}
+
 function routeToHash(route) {
   if (route.view === "niche-project" && route.nicheProjectId) {
     return `#/niche-projects/${encodeURIComponent(route.nicheProjectId)}`;
@@ -79,12 +96,15 @@ function routeToHash(route) {
   if (route.view === "episode" && route.episodeId) {
     return `#/episodes/${encodeURIComponent(route.episodeId)}`;
   }
-  return `#/${route.view || "pipeline-board"}`;
+  if (route.view === "pipeline-board") {
+    return routeToHash(legacyBoardRedirectRoute());
+  }
+  return `#/${route.view || "niche-projects"}`;
 }
 
 function parseRoute() {
   const hash = window.location.hash.replace(/^#/, "").replace(/^\/+/, "");
-  if (!hash) return { view: "pipeline-board" };
+  if (!hash) return { view: "niche-projects" };
   const parts = hash.split("/").filter(Boolean);
   if (parts[0] === "niche-projects" && parts[1]) {
     return { view: "niche-project", nicheProjectId: decodeURIComponent(parts[1]) };
@@ -96,7 +116,7 @@ function parseRoute() {
     return { view: "episode", episodeId: decodeURIComponent(parts[1]) };
   }
   if (parts[0] === "pipeline-board") {
-    return { view: "pipeline-board" };
+    return legacyBoardRedirectRoute();
   }
   if (parts[0] === "voice-profiles") {
     return { view: "voice-profiles" };
@@ -107,7 +127,7 @@ function parseRoute() {
   if (["settings", "templates"].includes(parts[0])) {
     return { view: parts[0] };
   }
-  return { view: "pipeline-board" };
+  return { view: "niche-projects" };
 }
 
 function applyTheme(theme) {
@@ -226,10 +246,24 @@ function iconContent(name, label, { iconOnly = false } = {}) {
   return `${iconMarkup(name)}${iconOnly ? `<span class="sr-only">${esc(label)}</span>` : `<span class="button-label">${esc(label)}</span>`}`;
 }
 
+function apiErrorMessage(detail) {
+  if (!detail) return "Request failed.";
+  if (typeof detail === "string") return detail;
+  if (typeof detail.message === "string" && detail.message.trim()) return detail.message;
+  if (detail.queue_readiness?.blockers?.length) {
+    return detail.queue_readiness.blockers.map((item) => item.message).join(" ");
+  }
+  return "Request failed.";
+}
+
 async function api(url, options = {}) {
   const response = await fetch(url, options);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || "Request failed.");
+  if (!response.ok) {
+    const error = new Error(apiErrorMessage(data.detail));
+    error.detail = data.detail;
+    throw error;
+  }
   return data;
 }
 
@@ -244,20 +278,20 @@ function latestRunMap(runs) {
 function routeTitle(route) {
   if (route.view === "pipeline-board") {
     return {
-      title: "Pipeline Board",
-      copy: "Episode pipeline board. Each card is one episode moving through planning stages.",
+      title: "Niche Projects",
+      copy: "Legacy board links now redirect to niche projects.",
     };
   }
   if (route.view === "niche-projects" || route.view === "niche-project") {
     return {
       title: "Niche Projects",
-      copy: "Manage niche projects. Each project groups episodes with shared language and provider settings.",
+      copy: "Project boards own the workflow: draft first, then explicit queueing.",
     };
   }
   if (route.view === "episode") {
     return {
-      title: "Episode Detail",
-      copy: "Per-language status, stage runs, and pipeline controls for this episode.",
+      title: "Episode Details",
+      copy: "Episode detail is shown as an overlay on the project board.",
     };
   }
   if (route.view === "voice-profiles") {
@@ -285,13 +319,12 @@ function routeTitle(route) {
     };
   }
   return {
-    title: "Pipeline Board",
-    copy: "Episode pipeline board.",
+    title: "Niche Projects",
+    copy: "Project-scoped workflow.",
   };
 }
 
 function autoRefreshAllowed(route) {
-  if (route.view === "pipeline-board") return true;
   if (route.view === "niche-projects") return true;
   if (route.view === "niche-project") return true;
   if (route.view === "episode") return true;
@@ -301,8 +334,7 @@ function autoRefreshAllowed(route) {
 
 function navIsActive(navView) {
   const v = state.route.view;
-  if (navView === "pipeline-board" && (v === "pipeline-board" || v === "episode")) return true;
-  if (navView === "niche-projects" && (v === "niche-projects" || v === "niche-project")) return true;
+  if (navView === "niche-projects" && (v === "niche-projects" || v === "niche-project" || v === "episode")) return true;
   return v === navView;
 }
 
@@ -310,7 +342,6 @@ function renderSidebar() {
   const providers = state.health?.providers || {};
   const alignment = state.health?.alignment || {};
   const navItems = [
-    { view: "pipeline-board", label: "Pipeline Board", icon: "board", count: state.boardEpisodes.length },
     { view: "niche-projects", label: "Niche Projects", icon: "settings", count: state.nicheProjects.length },
     { view: "voice-profiles", label: "Voice Profiles", icon: "settings", count: state.voiceProfiles.length },
     { view: "translation-profiles", label: "Translation Profiles", icon: "settings", count: state.translationProfiles.length },
@@ -319,15 +350,15 @@ function renderSidebar() {
   ];
 
   $("sidebar").innerHTML = `
-    <section class="sidebar-brand">
+      <section class="sidebar-brand">
       <div class="sidebar-brand-row">
         <button type="button" class="sidebar-toggle" data-sidebar-toggle="true" aria-label="Toggle sidebar" title="Toggle sidebar">
           ${iconSvg("board")}
         </button>
         <div class="brand-title">Tool 1</div>
       </div>
-      <div class="brand-copy">Board-first workflow. Create the card in the Draft column, then use the board to scan the pipeline left to right.</div>
-    </section>
+        <div class="brand-copy">Project-scoped workflow. Create the card in Draft, then queue it explicitly when the project is ready.</div>
+      </section>
 
     <section class="sidebar-section">
       <div class="eyebrow">Navigation</div>
@@ -730,22 +761,51 @@ function langProgressHtml(langStatuses, stage) {
     </div>`;
 }
 
-function renderEpisodeCard(ep) {
+function queueActionLabel(ep) {
+  if ((ep.pipeline_status || "idle") === "failed") return "Requeue";
+  if ((ep.pipeline_status || "idle") === "done") return "Run again";
+  if ((ep.pipeline_status || "idle") === "review") return "Requeue";
+  return "Queue";
+}
+
+function readinessMessages(readiness, limit = 99) {
+  return (readiness?.blockers || []).slice(0, limit).map((item) => item.message).filter(Boolean);
+}
+
+function renderReadinessNotice(readiness, { limit = 2, compact = false } = {}) {
+  const blockers = readinessMessages(readiness, limit);
+  if (!blockers.length) return "";
+  return `<div class="queue-readiness ${compact ? "queue-readiness-compact" : ""}">${blockers.map((message) => `<div class="queue-readiness-item">${esc(message)}</div>`).join("")}</div>`;
+}
+
+function renderReadinessWarning(readiness) {
+  const warning = readiness?.warnings?.[0];
+  if (!warning?.message) return "";
+  return `<div class="queue-warning">${esc(warning.message)}</div>`;
+}
+
+function renderEpisodeCard(ep, options = {}) {
+  const showProjectLabel = Boolean(options.showProjectLabel);
   const currentStage = ep.current_stage || "draft";
   const isPerLang = EPISODE_PER_LANG_STAGES.includes(currentStage);
   const progress = isPerLang ? langProgressHtml(ep.language_statuses, currentStage) : "";
   const tone = pipelineTone(ep.pipeline_status);
   const error = ep.last_error ? `<div class="episode-card-error" title="${esc(ep.last_error)}">${esc(summarizeCardIssue(ep.last_error, 80))}</div>` : "";
-  const nicheLabel = (ep.niche_project_title && state.route.view !== "pipeline-board") ? `<span class="episode-card-niche">${esc(ep.niche_project_title)}</span>` : "";
+  const nicheLabel = (ep.niche_project_title && showProjectLabel) ? `<span class="episode-card-niche">${esc(ep.niche_project_title)}</span>` : "";
   const langCount = (ep.configured_languages || []).length;
   const isRunning = ep.pipeline_status === "running";
   const canQueue = ["idle", "failed", "review", "done"].includes(ep.pipeline_status || "idle");
+  const queueReadiness = ep.queue_readiness || { ok: true, blockers: [], warnings: [] };
+  const queueBlocked = canQueue && queueReadiness.ok === false;
   const elapsedHtml = isRunning && ep.updated_at
     ? `<span class="running-elapsed episode-elapsed" data-started-at="${esc(ep.updated_at)}">${esc(relativeTime(ep.updated_at))}</span>`
     : "";
+  const queueButton = canQueue
+    ? `<button type="button" class="button button-primary button-tiny" data-queue-episode="${esc(ep.id)}" title="${esc(queueBlocked ? readinessMessages(queueReadiness, 1)[0] || queueActionLabel(ep) : queueActionLabel(ep))}" ${queueBlocked ? "disabled" : ""}>${iconContent("play", queueActionLabel(ep), { iconOnly: true })}</button>`
+    : "";
 
   return `
-    <div class="episode-card surface" data-open-episode="${esc(ep.id)}">
+    <div class="episode-card surface" data-open-episode="${esc(ep.id)}" data-project-id="${esc(ep.niche_project_id || options.projectId || "")}">
       <div class="episode-card-head">
         <strong class="episode-card-title">${esc(ep.title || ep.id)}</strong>
         ${nicheLabel}
@@ -758,10 +818,12 @@ function renderEpisodeCard(ep) {
       </div>
       ${progress}
       ${error}
+      ${renderReadinessNotice(queueReadiness, { compact: true })}
+      ${renderReadinessWarning(queueReadiness)}
       <div class="episode-card-footer">
         <span class="helper" style="font-size:0.7rem;opacity:0.5;">${esc(relativeTime(ep.updated_at))}</span>
         <div class="episode-quick-actions" onclick="event.stopPropagation()">
-          ${canQueue ? `<button type="button" class="button button-primary button-tiny" data-queue-episode="${esc(ep.id)}" title="Queue">${iconContent("play", "Queue", { iconOnly: true })}</button>` : ""}
+          ${queueButton}
           <button type="button" class="button button-danger button-tiny" data-delete-episode="${esc(ep.id)}" title="Delete">${iconContent("delete", "Delete", { iconOnly: true })}</button>
         </div>
       </div>
@@ -784,7 +846,7 @@ function renderPipelineBoard() {
       <div id="pipeline-board" class="kanban-board pipeline-board" style="margin-top:0px;">
         ${EPISODE_PIPELINE_COLUMNS.map((col) => {
           const colEpisodes = episodes.filter((ep) => episodeColumnForCard(ep) === col.id);
-          const cards = colEpisodes.map(renderEpisodeCard).join("");
+          const cards = colEpisodes.map((ep) => renderEpisodeCard(ep, { showProjectLabel: true })).join("");
           const empty = !cards ? '<div class="kanban-empty">No episodes at this step.</div>' : "";
           return '<section class="kanban-column">' +
             '<div class="kanban-column-head">' +
@@ -875,7 +937,7 @@ function renderSubmitEpisodeModal() {
     <div class="modal-backdrop" data-modal-backdrop="true">
       <div class="modal-panel">
         <div class="modal-header">
-          <h2>Submit episode script</h2>
+          <h2>Create draft episode</h2>
           <button type="button" class="button button-ghost icon-only" data-close-modal="true">${iconContent("close", "Close", { iconOnly: true })}</button>
         </div>
         <form id="submit-episode-form" class="stack">
@@ -890,8 +952,9 @@ function renderSubmitEpisodeModal() {
             <span class="field-label">Script text</span>
             <textarea id="se-script" rows="10" required placeholder="Paste the full script here..."></textarea>
           </label>
+          <div class="helper">This creates a Draft card only. Queue it explicitly from the board when the project is ready.</div>
           <div class="button-row" style="margin-top:18px;">
-            <button type="submit" class="button button-primary has-icon">${iconContent("add", "Submit & auto-start")}</button>
+            <button type="submit" class="button button-primary has-icon">${iconContent("add", "Create draft")}</button>
             <button type="button" class="button button-ghost" data-close-modal="true">Cancel</button>
           </div>
         </form>
@@ -1029,6 +1092,55 @@ function renderProviderConfigSection(project) {
   `;
 }
 
+function renderQueueReadinessSection(readiness, { title = "Queue readiness", emptyCopy = "Project is ready to queue from Draft." } = {}) {
+  const blockers = readinessMessages(readiness, 99);
+  const warning = readiness?.warnings?.[0]?.message;
+  const tone = readiness?.ok === false ? "error" : "success";
+  const body = blockers.length
+    ? `<div class="queue-readiness-blocks">${blockers.map((message) => `<div class="queue-readiness-row">${esc(message)}</div>`).join("")}</div>`
+    : `<div class="helper">${esc(emptyCopy)}</div>`;
+  return `
+    <div class="project-readiness-panel" data-tone="${esc(tone)}">
+      <div class="project-readiness-head">
+        <span class="badge" data-tone="${esc(tone)}">${esc(readiness?.ok === false ? "Blocked" : "Ready")}</span>
+        <strong>${esc(title)}</strong>
+      </div>
+      ${body}
+      ${warning ? `<div class="queue-warning" style="margin-top:8px;">${esc(warning)}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderProjectBoardKanban(project, episodes) {
+  return `
+    <div id="pipeline-board" class="kanban-board project-kanban-board">
+      ${EPISODE_PIPELINE_COLUMNS.map((col) => {
+        const colEpisodes = episodes.filter((ep) => episodeColumnForCard(ep) === col.id);
+        const cards = colEpisodes.map((ep) => renderEpisodeCard(ep, { projectId: project.id })).join("");
+        const empty = !cards ? '<div class="kanban-empty">No episodes at this step.</div>' : "";
+        const draftAction = col.id === "draft"
+          ? `<button type="button" class="button button-ghost button-small has-icon" data-open-submit-episode="${esc(project.id)}">${iconContent("add", "Add episode")}</button>`
+          : "";
+        return `
+          <section class="kanban-column project-kanban-column">
+            <div class="kanban-column-head">
+              <div>
+                <div class="kanban-column-title">${esc(col.label)}</div>
+                <div class="helper workflow-column-copy">${esc(col.copy)}</div>
+              </div>
+              <div class="project-column-tools">
+                ${draftAction}
+                ${statusBadge(String(colEpisodes.length), episodeColumnTone(col.id, episodes))}
+              </div>
+            </div>
+            <div class="kanban-card-list">${cards}${empty}</div>
+          </section>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
 function renderNicheProjectDetail() {
   const detail = state.nicheProjectDetail;
   if (!detail) {
@@ -1039,65 +1151,55 @@ function renderNicheProjectDetail() {
   const episodes = detail.episodes || [];
   const stats = detail.statistics || {};
   const byStatus = stats.by_status || {};
-  const langs = project.configured_languages || [];
-
   const draftCount = byStatus.idle || 0;
   const failedCount = byStatus.failed || 0;
-
-  const episodeCards = episodes.length
-    ? episodes.map((ep) => {
-        const stage = ep.current_stage || "draft";
-        const tone = pipelineTone(ep.pipeline_status);
-        const canQueue = ["idle", "failed", "done"].includes(ep.pipeline_status || "idle");
-        return '<div class="episode-card-enhanced" data-open-episode="' + esc(ep.id) + '">' +
-          '<div class="episode-card-top">' +
-            '<strong>' + esc(ep.title || ep.id) + '</strong>' +
-            '<div style="display:flex;gap:4px;">' +
-              (canQueue ? '<button type="button" class="button button-ghost button-small icon-only" data-queue-episode="' + esc(ep.id) + '" title="Queue">' + iconContent("play", "Queue", { iconOnly: true }) + '</button>' : '') +
-              '<button type="button" class="button button-danger button-small icon-only" data-delete-episode="' + esc(ep.id) + '" aria-label="Delete">' + iconContent("delete", "Delete", { iconOnly: true }) + '</button>' +
-            '</div>' +
-          '</div>' +
-          '<div class="badge-row" style="margin-top:6px;">' +
-            '<span class="badge" data-tone="' + tone + '">' + esc(EPISODE_STAGE_LABELS[stage] || titleCase(stage)) + '</span>' +
-            '<span class="badge">' + esc(titleCase(ep.pipeline_status || "idle")) + '</span>' +
-            '<span class="lang-dots">' + langMiniDots(ep, langs) + '</span>' +
-          '</div>' +
-        '</div>';
-      }).join("")
-    : '<p class="helper">No episodes yet. Submit a script to start.</p>';
+  const projectReadiness = project.queue_readiness || { ok: true, blockers: [], warnings: [] };
+  const queueBlocked = projectReadiness.ok === false;
+  const batchDisabled = queueBlocked ? "disabled" : "";
 
   $("view").innerHTML = `
-    <div class="detail-section">
-      <div class="eyebrow">Niche Project</div>
-      <h2 style="margin:4px 0 0;">${esc(project.title || project.id)}</h2>
-      <div class="badge-row" style="margin-top:8px;">
-        <span class="badge">Master: ${esc(project.master_language || "en")}</span>
-      </div>
-    </div>
-
-    ${renderProjectStats(detail)}
-
-    ${renderLanguageConfigSection(project, detail.voice_profiles || [], detail.translation_profiles || [])}
-
-    ${renderProviderConfigSection(project)}
-
-    <div class="detail-section">
-      <div class="section-header">
-        <div class="eyebrow">Episodes (${episodes.length})</div>
+    <section class="surface project-board-shell">
+      <div class="section-head project-board-head">
+        <div>
+          <div class="eyebrow">Project Board</div>
+          <h2 class="project-board-title">${esc(project.title || project.id)}</h2>
+          <div class="badge-row" style="margin-top:10px;">
+            <span class="badge">Master: ${esc(project.master_language || "en")}</span>
+            <span class="badge">${episodes.length} episode${episodes.length === 1 ? "" : "s"}</span>
+          </div>
+        </div>
         <div class="button-row">
-          ${draftCount > 0 ? '<button type="button" class="button button-ghost button-small has-icon" data-batch-queue-drafts="' + esc(project.id) + '">' + iconContent("play", "Queue all drafts (" + draftCount + ")") + '</button>' : ''}
-          ${failedCount > 0 ? '<button type="button" class="button button-ghost button-small has-icon" data-batch-queue-failed="' + esc(project.id) + '">' + iconContent("rerun", "Re-run failed (" + failedCount + ")") + '</button>' : ''}
-          <button type="button" class="button button-primary button-small has-icon" data-open-submit-episode="${esc(project.id)}">${iconContent("add", "Submit script")}</button>
+          <button type="button" class="button button-ghost has-icon" data-nav="niche-projects">${iconContent("back", "Back to projects")}</button>
+          <button type="button" class="button button-primary has-icon" data-open-submit-episode="${esc(project.id)}">${iconContent("add", "Create draft")}</button>
         </div>
       </div>
-      <div class="loc-list" style="margin-top:12px;">${episodeCards}</div>
-    </div>
 
-    <div class="detail-section">
-      <button type="button" class="button button-ghost has-icon" data-nav="niche-projects">${iconContent("back", "Back to niche projects")}</button>
-    </div>
+      ${renderProjectStats(detail)}
+      ${renderQueueReadinessSection(projectReadiness)}
+
+      <div class="project-board-toolbar">
+        ${draftCount > 0 ? '<button type="button" class="button button-ghost button-small has-icon" data-batch-queue-drafts="' + esc(project.id) + '" ' + batchDisabled + '>' + iconContent("play", "Queue all drafts (" + draftCount + ")") + '</button>' : ''}
+        ${failedCount > 0 ? '<button type="button" class="button button-ghost button-small has-icon" data-batch-queue-failed="' + esc(project.id) + '" ' + batchDisabled + '>' + iconContent("rerun", "Requeue failed (" + failedCount + ")") + '</button>' : ''}
+        ${queueBlocked ? '<span class="helper">Fix the blockers above before queueing or requeueing episodes.</span>' : '<span class="helper">Draft cards stay idle until you queue them explicitly.</span>'}
+      </div>
+
+      ${renderProjectBoardKanban(project, episodes)}
+    </section>
+
+    <section class="project-config-grid">
+      <details class="surface project-config-disclosure">
+        <summary>Language setup</summary>
+        ${renderLanguageConfigSection(project, detail.voice_profiles || [], detail.translation_profiles || [])}
+      </details>
+      <details class="surface project-config-disclosure">
+        <summary>Provider setup</summary>
+        ${renderProviderConfigSection(project)}
+      </details>
+    </section>
 
     ${state.modal.kind === "submit-episode" ? renderSubmitEpisodeModal() : ""}
+    ${renderEpisodeDetailOverlay()}
+    ${state.modal.kind === "translation-preview" ? renderTranslationPreviewModal() : ""}
   `;
 
   // Sync provider/model selects after render
@@ -1105,6 +1207,148 @@ function renderNicheProjectDetail() {
   syncProviderModelSelect("niche-visual_bible-provider", "niche-visual_bible-model");
   syncProviderModelSelect("niche-video_prompt-provider", "niche-video_prompt-model");
   syncProviderModelSelect("niche-image_prompt-provider", "niche-image_prompt-model");
+  if (state.episodeOverlayId && state.episodeDetail?.episode?.id === state.episodeOverlayId) {
+    loadEpisodeFiles(state.episodeOverlayId);
+    loadReviewData(state.episodeOverlayId);
+  }
+}
+
+function renderEpisodeDetailOverlay() {
+  const detail = state.episodeDetail;
+  if (!state.episodeOverlayId || !detail || detail.episode?.id !== state.episodeOverlayId) return "";
+  const episode = detail.episode;
+  const langStatuses = detail.language_statuses || [];
+  const stageRuns = detail.stage_runs || [];
+  const currentStage = episode.current_stage || "draft";
+  const readiness = episode.queue_readiness || { ok: true, blockers: [], warnings: [] };
+  const queueDisabled = episode.pipeline_status === "running" || readiness.ok === false;
+  const allStages = EPISODE_PIPELINE_COLUMNS.filter((c) => c.id !== "needs_attention");
+  const currentIdx = allStages.findIndex((c) => c.id === currentStage);
+  const progressPct = allStages.length ? Math.max(0, Math.round(((currentIdx < 0 ? 0 : currentIdx + (episode.pipeline_status === "review" || episode.pipeline_status === "done" ? 1 : 0)) / allStages.length) * 100)) : 0;
+  const stageStrip = allStages.map((s, i) => {
+    let st = "pending";
+    if (episode.pipeline_status === "done") st = "done";
+    else if (i < currentIdx) st = "done";
+    else if (i === currentIdx && episode.pipeline_status === "running") st = "active";
+    else if (i === currentIdx && (episode.pipeline_status === "review" || episode.pipeline_status === "done")) st = "done";
+    else if (i === currentIdx && episode.pipeline_status === "failed") st = "failed";
+    return '<div class="stage-strip-item" data-state="' + st + '" title="' + esc(s.label) + '">' + esc(s.short) + '</div>';
+  }).join("");
+  const workerRunning = detail.worker_health?.running;
+  const langRows = langStatuses.map((ls) => {
+    const canRetryTranslation = !["running", "queued"].includes(episode.pipeline_status || "idle") && (ls.translation_status === "failed" || ls.translation_status === "skipped");
+    const canRetryTts = !["running", "queued"].includes(episode.pipeline_status || "idle") && (ls.tts_status === "failed" || ls.tts_status === "skipped");
+    const hasTranslation = ls.translation_status === "done" && ls.language_code !== (episode.master_language || "en");
+    const ttsProgress = ls.tts_job_progress ? ' <span class="helper" style="font-size:0.7rem;">(' + esc(ls.tts_job_progress) + ')</span>' : '';
+    return '<tr>' +
+      '<td><strong>' + esc(ls.language_code) + '</strong></td>' +
+      '<td>' + langStatusBadge(ls.translation_status) +
+        (hasTranslation ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-preview-translation="' + esc(episode.id) + '" data-preview-lang="' + esc(ls.language_code) + '">Preview</button>' : '') +
+        (canRetryTranslation ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="translation">Retry</button>' : '') +
+      '</td>' +
+      '<td>' + langStatusBadge(ls.tts_status) + ttsProgress +
+        (canRetryTts ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="tts">Retry</button>' : '') +
+      '</td>' +
+      '<td>' + langStatusBadge(ls.srt_status) + '</td>' +
+      '<td>' + langStatusBadge(ls.timeline_status) + '</td>' +
+      '<td class="helper" style="font-size:0.75rem;">' + esc(ls.error_message || "") + '</td>' +
+    '</tr>';
+  }).join("");
+  const runsHtml = stageRuns.length ? stageRuns.slice(0, 30).map((r) => {
+    const duration = r.started_at && r.finished_at
+      ? Math.round((new Date(r.finished_at) - new Date(r.started_at)) / 1000) + "s"
+      : r.started_at && !r.finished_at ? "running…" : "";
+    return `<details class="run-detail-card">
+      <summary>
+        <div class="run-detail-head">
+          <span class="badge badge-${toneFromRunStatus(r.status)}">${esc(r.stage || "?")}</span>
+          <span class="badge">${esc(r.status || "?")}</span>
+          ${r.provider ? '<span class="badge badge-small">' + esc(r.provider) + '</span>' : ''}
+          ${duration ? '<span class="helper" style="font-size:0.75rem;">' + esc(duration) + '</span>' : ''}
+          <span class="helper" style="font-size:0.75rem;margin-left:auto;">${esc(relativeTime(r.started_at))}</span>
+        </div>
+      </summary>
+      <div class="run-detail-body">
+        ${r.error_message ? '<div class="notice" data-tone="error" style="margin-top:6px;font-size:0.8rem;">' + esc(r.error_message) + '</div>' : ''}
+        ${r.stdout_preview ? '<pre class="run-output">' + esc(r.stdout_preview) + '</pre>' : ''}
+        ${r.stderr_preview ? '<pre class="run-output">' + esc(r.stderr_preview) + '</pre>' : ''}
+      </div>
+    </details>`;
+  }).join("") : '<p class="helper">No stage runs recorded yet.</p>';
+
+  return `
+    <div class="board-modal-backdrop" data-episode-overlay-backdrop="true">
+      <div class="board-modal-shell" onclick="event.stopPropagation()">
+        <div class="board-modal-head">
+          <div>
+            <h2 style="margin:0;">${esc(episode.title || episode.id)}</h2>
+            <div class="badge-row" style="margin-top:10px;">
+              <span class="badge badge-${pipelineTone(episode.pipeline_status)}">${esc(titleCase(episode.pipeline_status || "idle"))}</span>
+              <span class="badge">${esc(EPISODE_STAGE_LABELS[currentStage] || titleCase(currentStage))}</span>
+              <span class="badge">Master: ${esc(episode.master_language || "en")}</span>
+              ${langStatuses.length ? '<span class="badge badge-small">' + langStatuses.length + ' lang' + (langStatuses.length > 1 ? 's' : '') + '</span>' : ''}
+            </div>
+          </div>
+          <button type="button" class="modal-close-button" data-close-episode-overlay="true">${iconContent("close", "Close", { iconOnly: true })}</button>
+        </div>
+        <div class="board-modal-layout">
+          <div class="board-modal-main">
+            ${episode.last_error ? '<div class="notice" data-tone="error">' + esc(episode.last_error) + '</div>' : ""}
+            ${renderQueueReadinessSection(readiness, { title: "Queue blockers", emptyCopy: "This episode can be queued from the board." })}
+            <div class="board-modal-section">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+                <div class="eyebrow" style="margin:0;">Pipeline progress ${progressPct}%</div>
+                <div class="button-row">
+                  <button type="button" class="button button-primary button-small has-icon" data-queue-episode="${esc(episode.id)}" ${queueDisabled ? "disabled" : ""}>${iconContent("play", queueActionLabel(episode))}</button>
+                  <button type="button" class="button button-danger button-small icon-only" data-delete-episode="${esc(episode.id)}">${iconContent("delete", "Delete episode", { iconOnly: true })}</button>
+                </div>
+              </div>
+              <div class="pipeline-progress-bar" style="margin-top:12px;">
+                <div class="pipeline-progress-fill" style="width:${progressPct}%"></div>
+              </div>
+              <div class="stage-strip" style="margin-top:12px;">${stageStrip}</div>
+            </div>
+            <div class="board-modal-section">
+              <div class="section-header" style="margin-bottom:12px;">
+                <div class="eyebrow" style="margin:0;">Per-language status</div>
+                <div class="badge-row">
+                  <span class="badge" data-tone="${workerRunning ? "success" : "error"}">${esc(workerRunning ? "TTS Worker active" : "TTS Worker offline")}</span>
+                  ${!workerRunning ? '<button type="button" class="button button-ghost button-small" data-worker-action="start">Start Worker</button>' : ''}
+                </div>
+              </div>
+              <table class="lang-table">
+                <thead><tr><th>Lang</th><th>Translation</th><th>TTS</th><th>SRT</th><th>Timeline</th><th>Error</th></tr></thead>
+                <tbody>${langRows || '<tr><td colspan="6" class="helper">No language data.</td></tr>'}</tbody>
+              </table>
+            </div>
+            <div id="episode-review-section" class="board-modal-section"></div>
+            <div class="board-modal-section">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div class="eyebrow">Output files</div>
+                <button type="button" class="button button-ghost button-small" onclick="loadEpisodeFiles('${esc(episode.id)}')">Refresh files</button>
+              </div>
+              <div id="episode-files-list" class="output-files-grid" style="margin-top:10px;">
+                <p class="helper">Loading output files…</p>
+              </div>
+            </div>
+          </div>
+          <aside class="board-modal-side">
+            <div class="board-modal-side-card">
+              <div class="eyebrow">Quick actions</div>
+              <div class="stack">
+                <button type="button" class="button button-primary has-icon" data-queue-episode="${esc(episode.id)}" ${queueDisabled ? "disabled" : ""}>${iconContent("play", queueActionLabel(episode))}</button>
+                <button type="button" class="button button-danger has-icon" data-delete-episode="${esc(episode.id)}">${iconContent("delete", "Delete episode")}</button>
+              </div>
+            </div>
+            <div class="board-modal-side-card">
+              <div class="eyebrow">Stage runs</div>
+              ${runsHtml}
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 // ── Episode detail view ───────────────────────────────────────────
@@ -1265,7 +1509,7 @@ function renderEpisodeDetail() {
       </div>
 
       <div>
-        <button type="button" class="button button-ghost has-icon" data-nav="pipeline-board">${iconContent("back", "Back to board")}</button>
+        <button type="button" class="button button-ghost has-icon" data-open-niche-project="${esc(episode.niche_project_id || "")}">${iconContent("back", "Back to project")}</button>
       </div>
     </div>
     ${state.modal.kind === "translation-preview" ? renderTranslationPreviewModal() : ""}
@@ -1421,7 +1665,7 @@ function captureDashboardScroll() {
 }
 
 function restoreDashboardScroll() {
-  if (state.route.view !== "pipeline-board") return;
+  if (!["pipeline-board", "niche-project", "episode"].includes(state.route.view)) return;
   const board = $("pipeline-board");
   if (!board) return;
   board.scrollLeft = state.boardScrollLeft || 0;
@@ -1618,9 +1862,10 @@ function renderApp() {
   renderSidebar();
   renderTopbar();
   const view = state.route.view;
-  if (view === "pipeline-board") renderPipelineBoard();
+  if (view === "pipeline-board") renderNicheProjects();
   else if (view === "niche-projects") renderNicheProjects();
   else if (view === "niche-project") renderNicheProjectDetail();
+  else if (view === "episode" && state.nicheProjectDetail) renderNicheProjectDetail();
   else if (view === "episode") renderEpisodeDetail();
 
   else if (view === "voice-profiles") renderVoiceProfiles();
@@ -1629,8 +1874,8 @@ function renderApp() {
   else if (view === "settings") renderSettings();
   else if (view === "templates") renderTemplates();
 
-  else renderPipelineBoard();
-  document.body.classList.toggle("modal-open", Boolean(state.modal.kind));
+  else renderNicheProjects();
+  document.body.classList.toggle("modal-open", Boolean(state.modal.kind) || Boolean(state.episodeOverlayId));
   syncAllProviderModelSelects();
   resetElapsedTimer();
   restoreDashboardScroll();
@@ -1654,10 +1899,34 @@ async function refreshData({ preserveNotice = true } = {}) {
     state.boardEpisodes = beRes.episodes || [];
   } catch { state.nicheProjects = []; state.boardEpisodes = []; }
 
-  // Niche project detail
-  if (route.view === "niche-project" && route.nicheProjectId) {
+  const episodeTargetId = route.view === "episode" ? route.episodeId : state.episodeOverlayId;
+
+  if (episodeTargetId) {
     try {
-      state.nicheProjectDetail = await api(`/api/niche-projects/${encodeURIComponent(route.nicheProjectId)}`);
+      state.episodeDetail = await api(`/api/episodes/${encodeURIComponent(episodeTargetId)}`);
+    } catch (error) {
+      state.episodeDetail = null;
+      state.episodeOverlayId = null;
+      if (route.view === "episode") {
+        if (!preserveNotice) throw error;
+        setNotice(error.message, "error");
+        window.location.hash = routeToHash({ view: "niche-projects" });
+        return;
+      }
+    }
+  } else {
+    state.episodeDetail = null;
+  }
+
+  const activeProjectId = route.view === "niche-project"
+    ? route.nicheProjectId
+    : state.episodeDetail?.episode?.niche_project_id;
+
+  // Niche project detail
+  if (activeProjectId) {
+    try {
+      state.nicheProjectDetail = await api(`/api/niche-projects/${encodeURIComponent(activeProjectId)}`);
+      rememberLastOpenProject(activeProjectId);
     } catch (error) {
       state.nicheProjectDetail = null;
       if (!preserveNotice) throw error;
@@ -1669,23 +1938,8 @@ async function refreshData({ preserveNotice = true } = {}) {
     state.nicheProjectDetail = null;
   }
 
-  // Episode detail
-  if (route.view === "episode" && route.episodeId) {
-    try {
-      state.episodeDetail = await api(`/api/episodes/${encodeURIComponent(route.episodeId)}`);
-    } catch (error) {
-      state.episodeDetail = null;
-      if (!preserveNotice) throw error;
-      setNotice(error.message, "error");
-      window.location.hash = routeToHash({ view: "pipeline-board" });
-      return;
-    }
-  } else {
-    state.episodeDetail = null;
-  }
-
   // Fetch target languages + profiles for niche project modals
-  if (route.view === "niche-projects" || route.view === "niche-project") {
+  if (route.view === "niche-projects" || route.view === "niche-project" || Boolean(state.nicheProjectDetail)) {
     try {
       const [tlRes, vpRes, tpRes] = await Promise.all([
         api("/api/target-languages"),
@@ -1751,7 +2005,37 @@ function resetElapsedTimer() {
 
 async function syncRouteAndRender() {
   state.route = parseRoute();
+  if (state.route.view === "episode" && state.route.episodeId) {
+    state.episodeOverlayId = state.route.episodeId;
+  } else if (!["niche-project", "episode"].includes(state.route.view)) {
+    state.episodeOverlayId = null;
+    state.translationPreview = null;
+  }
   await refreshData();
+  renderApp();
+  resetAutoRefresh();
+}
+
+async function openEpisodeOverlay(episodeId, projectId = null) {
+  state.episodeOverlayId = episodeId;
+  if (projectId && state.route.view !== "niche-project") {
+    window.location.hash = routeToHash({ view: "niche-project", nicheProjectId: projectId });
+    return;
+  }
+  await refreshData();
+  renderApp();
+  resetAutoRefresh();
+}
+
+function closeEpisodeOverlay() {
+  const projectId = state.nicheProjectDetail?.project?.id || state.episodeDetail?.episode?.niche_project_id;
+  state.episodeOverlayId = null;
+  state.episodeDetail = null;
+  state.translationPreview = null;
+  if (state.route.view === "episode") {
+    window.location.hash = routeToHash(projectId ? { view: "niche-project", nicheProjectId: projectId } : { view: "niche-projects" });
+    return;
+  }
   renderApp();
   resetAutoRefresh();
 }
@@ -1826,6 +2110,7 @@ async function createNicheProject(event) {
   });
   state.modal = { kind: null };
   setNotice("Niche project created.", "success");
+  rememberLastOpenProject(result.project.id);
   window.location.hash = routeToHash({ view: "niche-project", nicheProjectId: result.project.id });
 }
 
@@ -1841,15 +2126,10 @@ async function submitEpisode(event) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title, script_text: scriptText }),
   });
-  // Auto-queue the episode
-  await api('/api/episodes/' + encodeURIComponent(result.episode.id) + '/queue', {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
-  });
   state.modal = { kind: null };
-  setNotice("Episode submitted and queued.", "success");
-  window.location.hash = routeToHash({ view: "episode", episodeId: result.episode.id });
+  await refreshData();
+  renderApp();
+  setNotice("Draft episode created. Queue it explicitly from the board.", "success");
 }
 
 async function saveSettings(event) {
@@ -1902,18 +2182,28 @@ async function prepareLanguage() {
 document.addEventListener("click", async (event) => {
   if (event.target.matches("[data-modal-backdrop]")) {
     state.modal = { kind: null };
+    state.translationPreview = null;
     renderApp();
     resetAutoRefresh();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
+  if (event.target.matches("[data-episode-overlay-backdrop]")) {
+    closeEpisodeOverlay();
+    return;
+  }
+  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
   if (!target) return;
   event.preventDefault();
   try {
     if (target.dataset.closeModal) {
+      if (state.modal.kind === "translation-preview") state.translationPreview = null;
       state.modal = { kind: null };
       renderApp();
       resetAutoRefresh();
+      return;
+    }
+    if (target.dataset.closeEpisodeOverlay) {
+      closeEpisodeOverlay();
       return;
     }
     if (target.dataset.sidebarToggle) {
@@ -1928,6 +2218,8 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (target.dataset.nav) {
+      state.episodeOverlayId = null;
+      state.translationPreview = null;
       window.location.hash = routeToHash({ view: target.dataset.nav });
       return;
     }
@@ -2006,7 +2298,10 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (target.dataset.openEpisode) {
-      window.location.hash = routeToHash({ view: "episode", episodeId: target.dataset.openEpisode });
+      await openEpisodeOverlay(
+        target.dataset.openEpisode,
+        target.dataset.projectId || state.nicheProjectDetail?.project?.id || null,
+      );
       return;
     }
     if (target.dataset.openSubmitEpisode) {
@@ -2029,8 +2324,13 @@ document.addEventListener("click", async (event) => {
     if (target.dataset.deleteEpisode) {
       if (!confirm("Delete this episode? This cannot be undone.")) return;
       await api('/api/episodes/' + encodeURIComponent(target.dataset.deleteEpisode), { method: "DELETE" });
+      if (state.episodeOverlayId === target.dataset.deleteEpisode) {
+        state.episodeOverlayId = null;
+        state.episodeDetail = null;
+      }
       if (state.route.view === "episode") {
-        window.location.hash = routeToHash({ view: "pipeline-board" });
+        const fallbackProjectId = state.nicheProjectDetail?.project?.id;
+        window.location.hash = routeToHash(fallbackProjectId ? { view: "niche-project", nicheProjectId: fallbackProjectId } : { view: "niche-projects" });
       } else {
         await refreshData();
         renderApp();
@@ -2126,7 +2426,11 @@ document.addEventListener("click", async (event) => {
       });
       await refreshData();
       renderApp();
-      setNotice("Queued " + (result.queued_count || 0) + " draft episode(s).", "success");
+      setNotice(
+        "Queued " + (result.queued_count || 0) + " draft episode(s)." +
+        ((result.blocked_count || 0) ? " " + result.blocked_count + " blocked." : ""),
+        (result.blocked_count || 0) ? "warn" : "success",
+      );
       return;
     }
     if (target.dataset.batchQueueFailed) {
@@ -2138,7 +2442,11 @@ document.addEventListener("click", async (event) => {
       });
       await refreshData();
       renderApp();
-      setNotice("Re-queued " + (result.queued_count || 0) + " failed episode(s).", "success");
+      setNotice(
+        "Re-queued " + (result.queued_count || 0) + " failed episode(s)." +
+        ((result.blocked_count || 0) ? " " + result.blocked_count + " blocked." : ""),
+        (result.blocked_count || 0) ? "warn" : "success",
+      );
       return;
     }
     if (target.dataset.retryLanguage) {
@@ -2244,10 +2552,17 @@ document.addEventListener("change", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && state.modal.kind) {
-    state.modal = { kind: null };
-    renderApp();
-    resetAutoRefresh();
+  if (event.key === "Escape") {
+    if (state.modal.kind) {
+      if (state.modal.kind === "translation-preview") state.translationPreview = null;
+      state.modal = { kind: null };
+      renderApp();
+      resetAutoRefresh();
+      return;
+    }
+    if (state.episodeOverlayId) {
+      closeEpisodeOverlay();
+    }
   }
 });
 
@@ -2268,7 +2583,7 @@ window.addEventListener("DOMContentLoaded", () => {
   bootTheme();
   bootSidebar();
   if (!window.location.hash) {
-    window.location.hash = routeToHash({ view: "pipeline-board" });
+    window.location.hash = routeToHash({ view: "niche-projects" });
     return;
   }
   syncRouteAndRender().catch((error) => setNotice(error.message, "error"));

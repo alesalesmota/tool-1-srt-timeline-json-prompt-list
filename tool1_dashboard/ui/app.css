@@ -425,6 +425,14 @@ body[data-theme="light"] .topbar {
   transition-duration: 0.05s;
 }
 
+.button:disabled,
+.link-button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+  transform: none;
+  border-color: var(--line);
+}
+
 .button.has-icon,
 .link-button.has-icon,
 .tab-link.has-icon {
@@ -1710,6 +1718,34 @@ details.editor-card summary::-webkit-details-marker {
   line-height: 1.3;
 }
 
+.queue-readiness {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(239, 155, 149, 0.18);
+  background: rgba(239, 155, 149, 0.08);
+}
+
+.queue-readiness-compact {
+  padding: 8px 10px;
+}
+
+.queue-readiness-item,
+.queue-readiness-row {
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--error);
+}
+
+.queue-warning {
+  margin-top: 8px;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--warn);
+}
+
 /* ── Language progress bar ───────────────────────────────────── */
 
 .lang-progress {
@@ -2034,6 +2070,100 @@ details.editor-card summary::-webkit-details-marker {
   margin-top: 8px;
 }
 
+.project-board-shell {
+  display: grid;
+  gap: 18px;
+}
+
+.project-board-head {
+  margin-bottom: 0;
+}
+
+.project-board-title {
+  margin: 4px 0 0;
+  font-size: clamp(1.5rem, 2vw, 2rem);
+  letter-spacing: -0.05em;
+}
+
+.project-board-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.project-kanban-board {
+  padding-top: 6px;
+}
+
+.project-kanban-column {
+  min-height: min(76vh, 860px);
+}
+
+.project-column-tools {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.project-readiness-panel {
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+
+.project-readiness-panel[data-tone="error"] {
+  border-color: rgba(239, 155, 149, 0.22);
+}
+
+.project-readiness-panel[data-tone="success"] {
+  border-color: rgba(116, 210, 171, 0.18);
+}
+
+.project-readiness-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.queue-readiness-blocks {
+  display: grid;
+  gap: 6px;
+}
+
+.project-config-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 18px;
+}
+
+.project-config-disclosure {
+  padding: 16px 18px;
+}
+
+.project-config-disclosure summary {
+  cursor: pointer;
+  list-style: none;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.project-config-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.project-config-disclosure[open] summary {
+  margin-bottom: 14px;
+}
+
+.project-config-disclosure .detail-section {
+  margin-bottom: 0;
+}
+
 .episode-card-enhanced {
   background: var(--panel-soft);
   border: 1px solid var(--line);
@@ -2069,6 +2199,21 @@ details.editor-card summary::-webkit-details-marker {
   grid-template-columns: 1fr 1fr;
   gap: 16px;
   margin-top: 12px;
+}
+
+@media (max-width: 980px) {
+  .project-config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .board-modal-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .board-modal-side {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
 }
 
 .translation-preview-col .eyebrow {

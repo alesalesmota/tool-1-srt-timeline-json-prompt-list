@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from tool1_dashboard.database import Tool1Database
 from tool1_dashboard.providers import CliRunner
+from tool1_dashboard.runtime import utc_now
 from tool1_dashboard.service import Tool1Service
 
 
@@ -113,6 +114,53 @@ class FakeCliRunner:
         }
 
 
+class ProbeStateCliRunner(FakeCliRunner):
+    def __init__(self, probe_state: dict[str, object] | None = None) -> None:
+        super().__init__()
+        self._probe_state = probe_state or super().probe()
+
+    def probe(self) -> dict[str, object]:
+        return self._probe_state
+
+
+class FailingProviderCliRunner(ProbeStateCliRunner):
+    def __init__(
+        self,
+        *,
+        fail_provider: str,
+        fail_message: str,
+        probe_state: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(probe_state=probe_state)
+        self.fail_provider = fail_provider
+        self.fail_message = fail_message
+
+    def run_structured(self, *, provider, model, system_prompt, user_prompt, schema, workdir, artifact_dir):
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        self.calls.append({
+            "provider": provider,
+            "model": model,
+            "schema": schema,
+            "workdir": str(workdir),
+            "artifact_dir": str(artifact_dir),
+        })
+        stdout_path = artifact_dir / "stdout.txt"
+        stderr_path = artifact_dir / "stderr.txt"
+        stdout_path.write_text("failing stdout", encoding="utf-8")
+        stderr_path.write_text(self.fail_message, encoding="utf-8")
+        if provider == self.fail_provider:
+            raise RuntimeError(self.fail_message)
+        return super().run_structured(
+            provider=provider,
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=schema,
+            workdir=workdir,
+            artifact_dir=artifact_dir,
+        )
+
+
 def _make_service(temp_path: Path, cli_runner=None) -> Tool1Service:
     return Tool1Service(
         db=Tool1Database(temp_path / "db.sqlite"),
@@ -132,6 +180,70 @@ def _patches(temp_path: Path):
         patch("tool1_dashboard.service.AGENTS_ROOT", temp_path / "config" / "agents"),
         patch("tool1_dashboard.templates.AGENTS_ROOT", temp_path / "config" / "agents"),
     )
+
+
+def _seed_voice_profile(service: Tool1Service, temp_path: Path, profile_id: str, language_code: str) -> str:
+    audio_path = temp_path / f"{profile_id}.wav"
+    audio_path.write_bytes(b"RIFF....WAVEfmt ")
+    now = utc_now()
+    service.db.create_voice_profile({
+        "id": profile_id,
+        "name": f"Voice {language_code}",
+        "language_code": language_code,
+        "audio_file": audio_path.name,
+        "audio_path": str(audio_path),
+        "latents_path": None,
+        "has_latents": 1,
+        "created_at": now,
+        "updated_at": now,
+    })
+    return profile_id
+
+
+def _seed_translation_profile(service: Tool1Service, profile_id: str, language_code: str) -> str:
+    now = utc_now()
+    service.db.create_translation_profile({
+        "id": profile_id,
+        "name": f"Translation {language_code}",
+        "provider": "deepl",
+        "api_key_ref": "fake-key",
+        "model": "deepl-v2",
+        "is_default": 0,
+        "created_at": now,
+        "updated_at": now,
+    })
+    return profile_id
+
+
+def _build_profile_assignments(
+    service: Tool1Service,
+    temp_path: Path,
+    languages: list[str],
+    *,
+    master_language: str = "en",
+    include_voice_for: list[str] | None = None,
+    include_translation_for: list[str] | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    include_voice_for = include_voice_for or list(languages)
+    include_translation_for = include_translation_for or [lang for lang in languages if lang != master_language]
+    voice_profiles: dict[str, str] = {}
+    translation_profiles: dict[str, str] = {}
+    for language_code in include_voice_for:
+        voice_profiles[language_code] = _seed_voice_profile(
+            service,
+            temp_path,
+            f"vp-{language_code.replace('-', '').lower()}",
+            language_code,
+        )
+    for language_code in include_translation_for:
+        if language_code == master_language:
+            continue
+        translation_profiles[language_code] = _seed_translation_profile(
+            service,
+            f"tp-{language_code.replace('-', '').lower()}",
+            language_code,
+        )
+    return voice_profiles, translation_profiles
 
 
 class NicheProjectApiTests(unittest.TestCase):
@@ -234,13 +346,16 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.app_module = importlib.import_module("tool1_dashboard.app")
 
-    def _create_niche_and_episode(self, client, langs=None):
+    def _create_niche_and_episode(self, client, langs=None, project_payload=None):
         langs = langs or ["en", "pt-BR"]
-        resp = client.post("/api/niche-projects", json={
+        payload = {
             "name": "Test Project",
             "master_language": "en",
             "configured_languages": langs,
-        })
+        }
+        if project_payload:
+            payload.update(project_payload)
+        resp = client.post("/api/niche-projects", json=payload)
         project_id = resp.json()["project"]["id"]
         resp = client.post(f"/api/niche-projects/{project_id}/episodes", json={
             "title": "The Story of Moses",
@@ -259,12 +374,15 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     project_id, episode = self._create_niche_and_episode(client)
                     self.assertTrue(episode["id"].startswith("ep-"))
                     self.assertEqual(episode["pipeline_status"], "idle")
+                    self.assertIn("queue_readiness", episode)
+                    self.assertFalse(episode["queue_readiness"]["ok"])
 
                     resp = client.get(f"/api/episodes/{episode['id']}")
                     detail = resp.json()
                     self.assertEqual(len(detail["language_statuses"]), 2)
                     en_status = next(ls for ls in detail["language_statuses"] if ls["language_code"] == "en")
                     self.assertEqual(en_status["translation_status"], "done")
+                    self.assertIn("queue_readiness", detail["episode"])
                 finally:
                     self.app_module.service = original
 
@@ -290,7 +408,11 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                 service = _make_service(temp_path)
                 client, original = _make_client(self.app_module, service)
                 try:
-                    _, episode = self._create_niche_and_episode(client)
+                    voice_profiles, translation_profiles = _build_profile_assignments(service, temp_path, ["en", "pt-BR"])
+                    _, episode = self._create_niche_and_episode(client, project_payload={
+                        "language_voice_profiles": voice_profiles,
+                        "language_translation_profiles": translation_profiles,
+                    })
                     resp = client.post(f"/api/episodes/{episode['id']}/queue", json={})
                     self.assertEqual(resp.status_code, 200)
                     self.assertTrue(resp.json()["queued"])
@@ -305,12 +427,78 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                 service = _make_service(temp_path)
                 client, original = _make_client(self.app_module, service)
                 try:
-                    _, episode = self._create_niche_and_episode(client)
+                    voice_profiles, _ = _build_profile_assignments(service, temp_path, ["en"], include_translation_for=[])
+                    _, episode = self._create_niche_and_episode(client, langs=["en"], project_payload={
+                        "language_voice_profiles": voice_profiles,
+                    })
                     resp = client.post(f"/api/episodes/{episode['id']}/queue", json={
                         "start_stage": "translation",
                     })
                     self.assertEqual(resp.status_code, 200)
                     self.assertEqual(resp.json()["start_stage"], "translation")
+                finally:
+                    self.app_module.service = original
+
+    def test_queue_episode_rejects_when_master_voice_profile_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en"])
+                    resp = client.post(f"/api/episodes/{episode['id']}/queue", json={})
+                    self.assertEqual(resp.status_code, 400)
+                    detail = resp.json()["detail"]
+                    self.assertEqual(detail["code"], "queue_blocked")
+                    blocker_codes = {item["code"] for item in detail["queue_readiness"]["blockers"]}
+                    self.assertIn("missing_voice_profile", blocker_codes)
+                finally:
+                    self.app_module.service = original
+
+    def test_queue_episode_rejects_when_translation_profile_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    voice_profiles, _ = _build_profile_assignments(
+                        service,
+                        temp_path,
+                        ["en", "pt-BR"],
+                        include_translation_for=[],
+                    )
+                    _, episode = self._create_niche_and_episode(client, project_payload={
+                        "language_voice_profiles": voice_profiles,
+                    })
+                    resp = client.post(f"/api/episodes/{episode['id']}/queue", json={})
+                    self.assertEqual(resp.status_code, 400)
+                    blocker_codes = {item["code"] for item in resp.json()["detail"]["queue_readiness"]["blockers"]}
+                    self.assertIn("missing_translation_profile", blocker_codes)
+                finally:
+                    self.app_module.service = original
+
+    def test_queue_episode_rejects_when_provider_not_logged_in(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                runner = ProbeStateCliRunner(probe_state={
+                    "codex": {"available": True, "logged_in": True},
+                    "claude": {"available": True, "logged_in": False},
+                })
+                service = _make_service(temp_path, cli_runner=runner)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    voice_profiles, _ = _build_profile_assignments(service, temp_path, ["en"], include_translation_for=[])
+                    _, episode = self._create_niche_and_episode(client, langs=["en"], project_payload={
+                        "language_voice_profiles": voice_profiles,
+                        "visual_bible_provider": "claude",
+                    })
+                    resp = client.post(f"/api/episodes/{episode['id']}/queue", json={})
+                    self.assertEqual(resp.status_code, 400)
+                    blockers = resp.json()["detail"]["queue_readiness"]["blockers"]
+                    self.assertTrue(any(item["code"] == "provider_login_required" for item in blockers))
                 finally:
                     self.app_module.service = original
 
@@ -375,14 +563,18 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
 class EpisodePipelineServiceTests(unittest.TestCase):
     """Tests for the episode pipeline processing logic at the service layer."""
 
-    def _setup(self, temp_path: Path, runner=None):
+    def _setup(self, temp_path: Path, runner=None, **project_kwargs):
         """Create a service with FakeCliRunner and a niche project + episode."""
         runner = runner or FakeCliRunner()
         service = _make_service(temp_path, cli_runner=runner)
+        payload = {
+            "name": "Test Niche",
+            "master_language": "en",
+            "configured_languages": ["en"],
+        }
+        payload.update(project_kwargs)
         project = service.create_niche_project(
-            name="Test Niche",
-            master_language="en",
-            configured_languages=["en"],
+            **payload,
         )
         return service, project["project"]["id"], runner
 
@@ -413,6 +605,89 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 guide = json.loads(guide_path.read_text(encoding="utf-8"))
                 self.assertIn("world_style", guide)
                 self.assertIn("characters", guide)
+
+    def test_provider_failure_keeps_episode_failed_at_stage_with_stage_run_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                runner = FailingProviderCliRunner(
+                    fail_provider="claude",
+                    fail_message="Claude limit reached. Run /login or switch provider manually.",
+                )
+                voice_profiles, _ = _build_profile_assignments(service := _make_service(temp_path, cli_runner=runner), temp_path, ["en"], include_translation_for=[])
+                project = service.create_niche_project(
+                    name="Provider Failure",
+                    master_language="en",
+                    configured_languages=["en"],
+                    language_voice_profiles=voice_profiles,
+                    visual_bible_provider="claude",
+                    scene_planning_provider="codex",
+                    video_prompt_provider="codex",
+                    image_prompt_provider="codex",
+                )
+                episode_result = service.submit_episode(
+                    project["project"]["id"],
+                    title="Guide Failure",
+                    script_text="One paragraph. Two paragraph.",
+                )
+                episode_id = episode_result["episode"]["id"]
+
+                service.queue_episode(episode_id)
+                service._process_episode(service.db.get_episode(episode_id))
+
+                detail = service.get_episode_detail(episode_id)
+                self.assertEqual(detail["episode"]["pipeline_status"], "failed")
+                self.assertEqual(detail["episode"]["current_stage"], "consistency_guide")
+                self.assertEqual(detail["episode"]["last_error"], "Claude limit reached. Run /login or switch provider manually.")
+                self.assertGreaterEqual(len(detail["stage_runs"]), 1)
+                latest_run = detail["stage_runs"][0]
+                self.assertEqual(latest_run["stage"], "consistency_guide")
+                self.assertEqual(latest_run["status"], "failed")
+                self.assertIn("Claude limit reached", latest_run["error_message"])
+
+    def test_requeue_after_provider_config_change_restarts_from_failed_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                runner = FailingProviderCliRunner(
+                    fail_provider="claude",
+                    fail_message="Claude limit reached. Run /login or switch provider manually.",
+                )
+                service = _make_service(temp_path, cli_runner=runner)
+                voice_profiles, _ = _build_profile_assignments(service, temp_path, ["en"], include_translation_for=[])
+                project = service.create_niche_project(
+                    name="Provider Recovery",
+                    master_language="en",
+                    configured_languages=["en"],
+                    language_voice_profiles=voice_profiles,
+                    visual_bible_provider="claude",
+                    scene_planning_provider="codex",
+                    video_prompt_provider="codex",
+                    image_prompt_provider="codex",
+                )
+                episode_result = service.submit_episode(
+                    project["project"]["id"],
+                    title="Recovery Episode",
+                    script_text="One paragraph. Two paragraph.",
+                )
+                episode_id = episode_result["episode"]["id"]
+
+                service.queue_episode(episode_id)
+                service._process_episode(service.db.get_episode(episode_id))
+                failed_episode = service.db.get_episode(episode_id)
+                self.assertEqual(failed_episode["current_stage"], "consistency_guide")
+                self.assertEqual(failed_episode["pipeline_status"], "failed")
+
+                service.update_niche_project(project["project"]["id"], visual_bible_provider="codex")
+                queue_result = service.queue_episode(episode_id)
+                self.assertEqual(queue_result["start_stage"], "consistency_guide")
+                service._episode_run_consistency_guide(episode_id)
+
+                refreshed_episode = service.db.get_episode(episode_id)
+                self.assertIsNotNone(refreshed_episode["consistency_guide_path"])
+                detail = service.get_episode_detail(episode_id)
+                self.assertEqual(detail["stage_runs"][0]["status"], "completed")
+                self.assertEqual(detail["stage_runs"][0]["provider"], "codex")
 
     def test_translations_skip_without_profiles(self) -> None:
         """Translations skip languages that have no translation profile configured."""
@@ -687,6 +962,16 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertEqual(titles, {"Video A", "Video B"})
                 for v in board:
                     self.assertEqual(len(v["language_statuses"]), 2)
+
+    def test_settings_payload_does_not_upsert_templates_on_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                with patch.object(service.db, "upsert_template", side_effect=AssertionError("settings read should not write templates")):
+                    payload = service.get_settings_payload()
+                self.assertIn("templates", payload)
+                self.assertGreater(len(payload["templates"]), 0)
 
 
 if __name__ == "__main__":

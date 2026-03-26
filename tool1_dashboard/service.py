@@ -68,6 +68,47 @@ from .validators import (
 )
 
 
+QUEUE_PROVIDER_TARGETS = (
+    ("consistency_guide", "Consistency Guide", "visual_bible_provider", "visual_bible_model"),
+    ("scene_planning", "Scene Planning", "scene_planning_provider", "scene_planning_model"),
+    ("video_prompt_generation", "Video Prompt Generation", "video_prompt_provider", "video_prompt_model"),
+    ("image_prompt_generation", "Image Prompt Generation", "image_prompt_provider", "image_prompt_model"),
+)
+
+
+class QueueBlockedError(ValueError):
+    def __init__(
+        self,
+        *,
+        episode_id: str,
+        start_stage: str,
+        queue_readiness: dict[str, Any],
+    ) -> None:
+        self.episode_id = episode_id
+        self.start_stage = start_stage
+        self.queue_readiness = queue_readiness
+        super().__init__(self._build_message())
+
+    def _build_message(self) -> str:
+        blockers = self.queue_readiness.get("blockers") or []
+        if not blockers:
+            return "Episode is not ready to queue."
+        first = blockers[0].get("message") or "Episode is not ready to queue."
+        remaining = len(blockers) - 1
+        if remaining > 0:
+            return f"{first} (+{remaining} more blocker{'s' if remaining != 1 else ''})"
+        return first
+
+    def to_detail(self) -> dict[str, Any]:
+        return {
+            "code": "queue_blocked",
+            "message": str(self),
+            "episode_id": self.episode_id,
+            "start_stage": self.start_stage,
+            "queue_readiness": self.queue_readiness,
+        }
+
+
 class Tool1Service:
     def __init__(self, db: Tool1Database | None = None, cli_runner: CliRunner | None = None) -> None:
         self.db = db or Tool1Database()
@@ -124,6 +165,294 @@ class Tool1Service:
 
     def _global_settings(self) -> dict[str, Any]:
         return {**DEFAULT_SETTINGS, **self.db.get_settings()}
+
+    @staticmethod
+    def _parse_json_list(value: Any) -> list[Any]:
+        if isinstance(value, list):
+            return value
+        if value in (None, ""):
+            return []
+        try:
+            parsed = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    @staticmethod
+    def _parse_json_dict(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if value in (None, ""):
+            return {}
+        try:
+            parsed = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _hydrate_project_record(self, project: dict[str, Any] | None) -> dict[str, Any] | None:
+        if project is None:
+            return None
+        payload = dict(project)
+        payload["master_language"] = str(payload.get("master_language") or "en").strip() or "en"
+        normalized_languages: list[str] = []
+        for language_code in self._parse_json_list(payload.get("configured_languages")):
+            normalized = str(language_code or "").strip()
+            if normalized and normalized not in normalized_languages:
+                normalized_languages.append(normalized)
+        payload["configured_languages"] = normalized_languages
+        payload["language_voice_profiles"] = self._parse_json_dict(payload.get("language_voice_profiles"))
+        payload["language_translation_profiles"] = self._parse_json_dict(payload.get("language_translation_profiles"))
+        return payload
+
+    def _hydrate_episode_record(self, episode: dict[str, Any] | None) -> dict[str, Any] | None:
+        if episode is None:
+            return None
+        payload = dict(episode)
+        normalized_languages: list[str] = []
+        for language_code in self._parse_json_list(payload.get("configured_languages")):
+            normalized = str(language_code or "").strip()
+            if normalized and normalized not in normalized_languages:
+                normalized_languages.append(normalized)
+        payload["configured_languages"] = normalized_languages
+        return payload
+
+    @staticmethod
+    def _queue_issue(
+        code: str,
+        message: str,
+        **details: Any,
+    ) -> dict[str, Any]:
+        payload = {"code": code, "message": message}
+        payload.update({key: value for key, value in details.items() if value is not None})
+        return payload
+
+    def _resolved_project_config(self, project: dict[str, Any]) -> dict[str, Any]:
+        settings = self._global_settings()
+        scene_provider = project.get("scene_planning_provider") or settings["default_scene_planning_provider"]
+        visual_provider = project.get("visual_bible_provider") or settings["default_visual_bible_provider"]
+        video_provider = project.get("video_prompt_provider") or settings["default_video_prompt_provider"]
+        image_provider = project.get("image_prompt_provider") or settings["default_image_prompt_provider"]
+        return {
+            "scene_planning_provider": scene_provider,
+            "visual_bible_provider": visual_provider,
+            "video_prompt_provider": video_provider,
+            "image_prompt_provider": image_provider,
+            "scene_planning_model": self._resolve_model_choice(
+                scene_provider, project.get("scene_planning_model"), settings["default_scene_planning_model"],
+            ),
+            "visual_bible_model": self._resolve_model_choice(
+                visual_provider, project.get("visual_bible_model"), settings["default_visual_bible_model"],
+            ),
+            "video_prompt_model": self._resolve_model_choice(
+                video_provider, project.get("video_prompt_model"), settings["default_video_prompt_model"],
+            ),
+            "image_prompt_model": self._resolve_model_choice(
+                image_provider, project.get("image_prompt_model"), settings["default_image_prompt_model"],
+            ),
+            "leading_video_scene_count": int(
+                project.get("leading_video_scene_count")
+                if project.get("leading_video_scene_count") is not None
+                else settings["leading_video_scene_count"]
+            ),
+        }
+
+    def _build_queue_readiness(
+        self,
+        *,
+        project: dict[str, Any] | None,
+        episode: dict[str, Any] | None = None,
+        provider_health: dict[str, Any] | None = None,
+        voice_profiles: dict[str, dict[str, Any]] | None = None,
+        translation_profiles: dict[str, dict[str, Any]] | None = None,
+        worker_health: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        blockers: list[dict[str, Any]] = []
+        warnings: list[dict[str, Any]] = []
+        hydrated_project = self._hydrate_project_record(project)
+        hydrated_episode = self._hydrate_episode_record(episode)
+
+        if hydrated_project is None:
+            blockers.append(self._queue_issue(
+                "missing_project",
+                "Episode is not attached to a niche project.",
+                episode_id=hydrated_episode.get("id") if hydrated_episode else None,
+            ))
+            return {"ok": False, "blockers": blockers, "warnings": warnings}
+
+        provider_health = provider_health or self.cli_runner.probe()
+        voice_profiles = voice_profiles or {
+            profile["id"]: profile
+            for profile in self.list_voice_profiles()
+        }
+        translation_profiles = translation_profiles or {
+            profile["id"]: profile
+            for profile in self.list_translation_profiles()
+        }
+        worker_health = worker_health or self.get_worker_health()
+
+        project_id = hydrated_project.get("id")
+        master_language = hydrated_project.get("master_language") or hydrated_episode.get("master_language") or "en"
+        configured_languages = list(hydrated_project.get("configured_languages") or hydrated_episode.get("configured_languages") or [])
+        language_voice_profiles = hydrated_project.get("language_voice_profiles") or {}
+        language_translation_profiles = hydrated_project.get("language_translation_profiles") or {}
+
+        if not configured_languages:
+            blockers.append(self._queue_issue(
+                "missing_configured_languages",
+                "Project has no configured languages. Add the master language and any targets before queueing.",
+                project_id=project_id,
+            ))
+        elif master_language not in configured_languages:
+            blockers.append(self._queue_issue(
+                "master_language_not_configured",
+                f"Master language '{master_language}' must be included in configured languages before queueing.",
+                project_id=project_id,
+                language_code=master_language,
+            ))
+
+        for language_code in configured_languages:
+            profile_id = str(language_voice_profiles.get(language_code) or "").strip()
+            profile = voice_profiles.get(profile_id) if profile_id else None
+            if profile is None:
+                message = (
+                    f"Master language '{language_code}' needs a voice profile before queueing."
+                    if language_code == master_language
+                    else f"Language '{language_code}' needs a voice profile before queueing."
+                )
+                blockers.append(self._queue_issue(
+                    "missing_voice_profile",
+                    message,
+                    project_id=project_id,
+                    language_code=language_code,
+                    profile_id=profile_id or None,
+                ))
+            elif profile.get("language_code") and profile.get("language_code") != language_code:
+                warnings.append(self._queue_issue(
+                    "voice_profile_language_mismatch",
+                    f"Voice profile '{profile.get('name') or profile_id}' is assigned to '{language_code}' but is tagged as '{profile.get('language_code')}'.",
+                    project_id=project_id,
+                    language_code=language_code,
+                    profile_id=profile_id,
+                ))
+
+        for language_code in configured_languages:
+            if language_code == master_language:
+                continue
+            profile_id = str(language_translation_profiles.get(language_code) or "").strip()
+            profile = translation_profiles.get(profile_id) if profile_id else None
+            if profile is None:
+                blockers.append(self._queue_issue(
+                    "missing_translation_profile",
+                    f"Language '{language_code}' needs a translation profile before queueing.",
+                    project_id=project_id,
+                    language_code=language_code,
+                    profile_id=profile_id or None,
+                ))
+
+        resolved_config = self._resolved_project_config(hydrated_project)
+        for stage_key, stage_label, provider_field, model_field in QUEUE_PROVIDER_TARGETS:
+            provider = str(resolved_config.get(provider_field) or "").strip()
+            model = str(resolved_config.get(model_field) or "").strip()
+            if not provider:
+                blockers.append(self._queue_issue(
+                    "missing_provider",
+                    f"{stage_label} has no provider selected.",
+                    project_id=project_id,
+                    stage=stage_key,
+                    model=model or None,
+                ))
+                continue
+            health = provider_health.get(provider)
+            if not health or not health.get("available"):
+                blockers.append(self._queue_issue(
+                    "provider_unavailable",
+                    f"{stage_label} is set to '{provider}', but that provider is not available on this machine.",
+                    project_id=project_id,
+                    stage=stage_key,
+                    provider=provider,
+                    model=model or None,
+                ))
+                continue
+            if not health.get("logged_in"):
+                blockers.append(self._queue_issue(
+                    "provider_login_required",
+                    f"{stage_label} is set to '{provider}', but the provider is not logged in.",
+                    project_id=project_id,
+                    stage=stage_key,
+                    provider=provider,
+                    model=model or None,
+                ))
+
+        if not worker_health.get("running"):
+            warnings.append(self._queue_issue(
+                "tts_worker_offline",
+                "TTS worker is offline. Queueing is allowed, but the pipeline will pause at TTS until the worker is available.",
+            ))
+
+        return {
+            "ok": len(blockers) == 0,
+            "blockers": blockers,
+            "warnings": warnings,
+        }
+
+    def _decorate_episode_for_client(
+        self,
+        episode: dict[str, Any],
+        *,
+        project: dict[str, Any] | None = None,
+        provider_health: dict[str, Any] | None = None,
+        voice_profiles: dict[str, dict[str, Any]] | None = None,
+        translation_profiles: dict[str, dict[str, Any]] | None = None,
+        worker_health: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = self._hydrate_episode_record(episode) or {}
+        payload["queue_readiness"] = self._build_queue_readiness(
+            project=project,
+            episode=payload,
+            provider_health=provider_health,
+            voice_profiles=voice_profiles,
+            translation_profiles=translation_profiles,
+            worker_health=worker_health,
+        )
+        return payload
+
+    def _decorate_stage_run_for_client(self, run: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(run)
+        payload["stdout_preview"] = self._read_preview_text(payload.get("stdout_path"))
+        payload["stderr_preview"] = self._read_preview_text(payload.get("stderr_path"))
+        payload["error_message"] = payload.get("error_text") or payload["stderr_preview"] or ""
+        return payload
+
+    def _start_structured_stage_run(
+        self,
+        *,
+        episode_id: str,
+        stage: str,
+        provider: str,
+        template_hash: str | None,
+        workdir: Path,
+        artifact_dir: Path,
+        model: str,
+        schema: dict[str, Any],
+    ) -> int:
+        command_payload = {
+            "provider": provider,
+            "model": model,
+            "stage": stage,
+            "schema_keys": sorted((schema or {}).get("properties", {}).keys()),
+            "artifact_dir": str(artifact_dir),
+        }
+        return self.db.start_stage_run(
+            episode_id=episode_id,
+            stage=stage,
+            provider=provider,
+            template_hash=template_hash,
+            workdir=str(workdir),
+            command_payload=command_payload,
+            stdout_path=None,
+            stderr_path=None,
+        )
 
     @staticmethod
     def _known_models_for_provider(provider: str) -> set[str]:
@@ -770,33 +1099,49 @@ class Tool1Service:
     def list_niche_projects(self) -> list[dict[str, Any]]:
         projects = self.db.list_niche_projects()
         for p in projects:
-            p["configured_languages"] = json.loads(p.get("configured_languages") or "[]")
-            p["language_voice_profiles"] = json.loads(p.get("language_voice_profiles") or "{}")
-            p["language_translation_profiles"] = json.loads(p.get("language_translation_profiles") or "{}")
+            hydrated = self._hydrate_project_record(p) or {}
+            p.update(hydrated)
             p["episode_count"] = len(self.db.list_episodes(p["id"]))
         return projects
 
     def get_niche_project_detail(self, project_id: str) -> dict[str, Any]:
-        project = self.db.get_niche_project(project_id)
+        project = self._hydrate_project_record(self.db.get_niche_project(project_id))
         if project is None:
             raise FileNotFoundError("Niche project not found.")
-        configured_langs = json.loads(project.get("configured_languages") or "[]")
-        project["configured_languages"] = configured_langs
-        project["language_voice_profiles"] = json.loads(project.get("language_voice_profiles") or "{}")
-        project["language_translation_profiles"] = json.loads(project.get("language_translation_profiles") or "{}")
+        configured_langs = project.get("configured_languages") or []
         episodes = self.db.list_episodes(project_id)
+        provider_health = self.cli_runner.probe()
+        voice_profiles = {
+            profile["id"]: profile
+            for profile in self.list_voice_profiles()
+        }
+        translation_profiles = {
+            profile["id"]: profile
+            for profile in self.list_translation_profiles()
+        }
+        worker_health = self.get_worker_health()
 
         # Attach per-episode language statuses
+        hydrated_episodes: list[dict[str, Any]] = []
         for ep in episodes:
-            ep["language_statuses"] = self.db.get_episode_language_statuses(ep["id"])
+            hydrated = self._decorate_episode_for_client(
+                ep,
+                project=project,
+                provider_health=provider_health,
+                voice_profiles=voice_profiles,
+                translation_profiles=translation_profiles,
+                worker_health=worker_health,
+            )
+            hydrated["language_statuses"] = self.db.get_episode_language_statuses(ep["id"])
+            hydrated_episodes.append(hydrated)
 
         # Compute statistics
         by_status: dict[str, int] = {}
-        for ep in episodes:
+        for ep in hydrated_episodes:
             ps = ep.get("pipeline_status") or "idle"
             by_status[ps] = by_status.get(ps, 0) + 1
         done_count = by_status.get("done", 0)
-        total = len(episodes)
+        total = len(hydrated_episodes)
         statistics = {
             "total_episodes": total,
             "by_status": by_status,
@@ -805,15 +1150,22 @@ class Tool1Service:
         }
 
         # Include profiles for dropdowns
-        voice_profiles = self.list_voice_profiles()
-        translation_profiles = self.list_translation_profiles()
+        voice_profile_list = self.list_voice_profiles()
+        translation_profile_list = self.list_translation_profiles()
+        project["queue_readiness"] = self._build_queue_readiness(
+            project=project,
+            provider_health=provider_health,
+            voice_profiles=voice_profiles,
+            translation_profiles=translation_profiles,
+            worker_health=worker_health,
+        )
 
         return {
             "project": project,
-            "episodes": episodes,
+            "episodes": hydrated_episodes,
             "statistics": statistics,
-            "voice_profiles": voice_profiles,
-            "translation_profiles": translation_profiles,
+            "voice_profiles": voice_profile_list,
+            "translation_profiles": translation_profile_list,
         }
 
     def update_niche_project(
@@ -824,6 +1176,17 @@ class Tool1Service:
         project = self.db.get_niche_project(project_id)
         if project is None:
             raise FileNotFoundError("Niche project not found.")
+        if "configured_languages" in fields and fields["configured_languages"] is not None:
+            normalized_languages: list[str] = []
+            for language_code in fields["configured_languages"]:
+                normalized = str(language_code or "").strip()
+                if normalized and normalized not in normalized_languages:
+                    normalized_languages.append(normalized)
+            master_language = str(project.get("master_language") or "en").strip() or "en"
+            if master_language not in normalized_languages:
+                normalized_languages.insert(0, master_language)
+            fields["configured_languages"] = normalized_languages
+
         # Serialize JSON fields
         for key in ("configured_languages", "language_voice_profiles", "language_translation_profiles"):
             if key in fields and not isinstance(fields[key], str):
@@ -849,16 +1212,36 @@ class Tool1Service:
             raise FileNotFoundError("Niche project not found.")
         episodes = self.db.list_episodes(project_id)
         queued_ids: list[str] = []
+        blocked: list[dict[str, Any]] = []
         for ep in episodes:
             ps = ep.get("pipeline_status") or "idle"
             bs = ep.get("board_status") or "Draft"
             if filter_status == "draft" and ps == "idle" and bs == "Draft":
-                self.queue_episode(ep["id"])
-                queued_ids.append(ep["id"])
+                try:
+                    self.queue_episode(ep["id"])
+                    queued_ids.append(ep["id"])
+                except QueueBlockedError as exc:
+                    blocked.append({
+                        "episode_id": ep["id"],
+                        "title": ep.get("title"),
+                        "queue_readiness": exc.queue_readiness,
+                    })
             elif filter_status == "failed" and ps == "failed":
-                self.queue_episode(ep["id"])
-                queued_ids.append(ep["id"])
-        return {"queued_count": len(queued_ids), "episode_ids": queued_ids}
+                try:
+                    self.queue_episode(ep["id"])
+                    queued_ids.append(ep["id"])
+                except QueueBlockedError as exc:
+                    blocked.append({
+                        "episode_id": ep["id"],
+                        "title": ep.get("title"),
+                        "queue_readiness": exc.queue_readiness,
+                    })
+        return {
+            "queued_count": len(queued_ids),
+            "episode_ids": queued_ids,
+            "blocked_count": len(blocked),
+            "blocked": blocked,
+        }
 
     def submit_episode(
         self,
@@ -916,14 +1299,31 @@ class Tool1Service:
                 "updated_at": now,
             })
 
-        return {"episode": self.db.get_episode(episode_id)}
+        episode = self._decorate_episode_for_client(
+            self.db.get_episode(episode_id) or {},
+            project=self._hydrate_project_record(project),
+        )
+        return {"episode": episode}
 
     def get_episode_detail(self, episode_id: str) -> dict[str, Any]:
         episode = self.db.get_episode(episode_id)
         if episode is None:
             raise FileNotFoundError("Episode not found.")
         lang_statuses = self.db.get_episode_language_statuses(episode_id)
-        stage_runs = self.db.list_stage_runs(episode_id)
+        stage_runs = [
+            self._decorate_stage_run_for_client(run)
+            for run in self.db.list_stage_runs(episode_id)
+        ]
+        project = self._hydrate_project_record(self.db.get_niche_project(episode["niche_project_id"]))
+        provider_health = self.cli_runner.probe()
+        voice_profiles = {
+            profile["id"]: profile
+            for profile in self.list_voice_profiles()
+        }
+        translation_profiles = {
+            profile["id"]: profile
+            for profile in self.list_translation_profiles()
+        }
 
         # Attach TTS job progress for each language with an active TTS job
         for ls in lang_statuses:
@@ -936,9 +1336,17 @@ class Tool1Service:
 
         # Include worker health
         worker_health = self.get_worker_health()
+        hydrated_episode = self._decorate_episode_for_client(
+            episode,
+            project=project,
+            provider_health=provider_health,
+            voice_profiles=voice_profiles,
+            translation_profiles=translation_profiles,
+            worker_health=worker_health,
+        )
 
         return {
-            "episode": episode,
+            "episode": hydrated_episode,
             "language_statuses": lang_statuses,
             "stage_runs": stage_runs,
             "worker_health": worker_health,
@@ -951,6 +1359,17 @@ class Tool1Service:
         stage = start_stage or episode.get("queued_from_stage") or "consistency_guide"
         if stage not in EPISODE_RUNNABLE_STAGES:
             raise ValueError(f"Invalid start stage: {stage}")
+        project = self._hydrate_project_record(self.db.get_niche_project(episode["niche_project_id"]))
+        queue_readiness = self._build_queue_readiness(
+            project=project,
+            episode=episode,
+        )
+        if not queue_readiness["ok"]:
+            raise QueueBlockedError(
+                episode_id=episode_id,
+                start_stage=stage,
+                queue_readiness=queue_readiness,
+            )
         self.db.update_episode(
             episode_id,
             board_status="Queued",
@@ -967,10 +1386,33 @@ class Tool1Service:
     def list_all_episodes_for_board(self) -> list[dict[str, Any]]:
         """Return all episodes with niche project title and per-language progress."""
         episodes = self.db.list_all_episodes_for_board()
+        provider_health = self.cli_runner.probe()
+        voice_profiles = {
+            profile["id"]: profile
+            for profile in self.list_voice_profiles()
+        }
+        translation_profiles = {
+            profile["id"]: profile
+            for profile in self.list_translation_profiles()
+        }
+        worker_health = self.get_worker_health()
+        project_cache: dict[str, dict[str, Any] | None] = {}
         for ep in episodes:
-            ep["configured_languages"] = json.loads(ep.get("configured_languages") or "[]")
+            ep["configured_languages"] = self._parse_json_list(ep.get("configured_languages"))
             lang_statuses = self.db.get_episode_language_statuses(ep["id"])
             ep["language_statuses"] = lang_statuses
+            project_id = ep.get("niche_project_id")
+            if project_id not in project_cache:
+                project_cache[project_id] = self._hydrate_project_record(self.db.get_niche_project(project_id))
+            decorated = self._decorate_episode_for_client(
+                ep,
+                project=project_cache[project_id],
+                provider_health=provider_health,
+                voice_profiles=voice_profiles,
+                translation_profiles=translation_profiles,
+                worker_health=worker_health,
+            )
+            ep.update(decorated)
         return episodes
 
     def retry_episode_language(
@@ -1366,7 +1808,7 @@ class Tool1Service:
                 episode_id,
                 board_status="Needs Attention",
                 pipeline_status="failed",
-                last_error=str(exc)[:500],
+                last_error=str(exc),
                 updated_at=utc_now(),
             )
 
@@ -1374,37 +1816,10 @@ class Tool1Service:
 
     def _resolved_episode_config(self, episode: dict[str, Any]) -> dict[str, Any]:
         """Resolve provider/model config for an episode from its niche project."""
-        project = self.db.get_niche_project(episode["niche_project_id"])
+        project = self._hydrate_project_record(self.db.get_niche_project(episode["niche_project_id"]))
         if project is None:
             raise FileNotFoundError("Niche project not found.")
-        settings = self._global_settings()
-        scene_provider = project.get("scene_planning_provider") or settings["default_scene_planning_provider"]
-        visual_provider = project.get("visual_bible_provider") or settings["default_visual_bible_provider"]
-        video_provider = project.get("video_prompt_provider") or settings["default_video_prompt_provider"]
-        image_provider = project.get("image_prompt_provider") or settings["default_image_prompt_provider"]
-        return {
-            "scene_planning_provider": scene_provider,
-            "visual_bible_provider": visual_provider,
-            "video_prompt_provider": video_provider,
-            "image_prompt_provider": image_provider,
-            "scene_planning_model": self._resolve_model_choice(
-                scene_provider, project.get("scene_planning_model"), settings["default_scene_planning_model"],
-            ),
-            "visual_bible_model": self._resolve_model_choice(
-                visual_provider, project.get("visual_bible_model"), settings["default_visual_bible_model"],
-            ),
-            "video_prompt_model": self._resolve_model_choice(
-                video_provider, project.get("video_prompt_model"), settings["default_video_prompt_model"],
-            ),
-            "image_prompt_model": self._resolve_model_choice(
-                image_provider, project.get("image_prompt_model"), settings["default_image_prompt_model"],
-            ),
-            "leading_video_scene_count": int(
-                project.get("leading_video_scene_count")
-                if project.get("leading_video_scene_count") is not None
-                else settings["leading_video_scene_count"]
-            ),
-        }
+        return self._resolved_project_config(project)
 
     def _episode_workspace(self, episode: dict[str, Any]) -> Path:
         return Path(episode["workspace_dir"])
@@ -1439,21 +1854,60 @@ class Tool1Service:
             f"Source script payload:\n{json.dumps(source_script, ensure_ascii=False, indent=2)}"
         )
         artifact_dir = ensure_dir(workspace / "runs" / "consistency_guide")
-        result = self.cli_runner.run_structured(
+        schema = visual_bible_output_schema()
+        run_id = self._start_structured_stage_run(
+            episode_id=episode_id,
+            stage="consistency_guide",
             provider=provider,
-            model=config["visual_bible_model"],
-            system_prompt=template["body"],
-            user_prompt=user_prompt,
-            schema=visual_bible_output_schema(),
+            template_hash=template.get("hash"),
             workdir=workspace,
             artifact_dir=artifact_dir,
+            model=config["visual_bible_model"],
+            schema=schema,
         )
-        normalized, report = normalize_visual_bible(result["parsed"])
-        if report["errors"]:
-            raise ValueError("; ".join(report["errors"]))
-        guide_path = write_json(workspace / "consistency_guide.json", normalized)
-        write_json(workspace / "consistency_guide_validation.json", report)
-        self.db.update_episode(episode_id, consistency_guide_path=str(guide_path), updated_at=utc_now())
+        result: dict[str, Any] | None = None
+        parsed_output_path: str | None = None
+        validation_path: str | None = None
+        try:
+            result = self.cli_runner.run_structured(
+                provider=provider,
+                model=config["visual_bible_model"],
+                system_prompt=template["body"],
+                user_prompt=user_prompt,
+                schema=schema,
+                workdir=workspace,
+                artifact_dir=artifact_dir,
+            )
+            parsed_output_path = str(write_json(artifact_dir / "parsed.json", result["parsed"]))
+            normalized, report = normalize_visual_bible(result["parsed"])
+            validation_path = str(write_json(workspace / "consistency_guide_validation.json", report))
+            if report["errors"]:
+                raise ValueError("; ".join(report["errors"]))
+            guide_path = write_json(workspace / "consistency_guide.json", normalized)
+            self.db.update_episode(episode_id, consistency_guide_path=str(guide_path), updated_at=utc_now())
+            self.db.finish_stage_run(
+                run_id,
+                status="completed",
+                exit_code=0,
+                parsed_output_path=parsed_output_path,
+                validation_path=validation_path,
+                command_payload=result.get("command_payload"),
+                stdout_path=result.get("stdout_path"),
+                stderr_path=result.get("stderr_path"),
+            )
+        except Exception as exc:
+            self.db.finish_stage_run(
+                run_id,
+                status="failed",
+                exit_code=1,
+                parsed_output_path=parsed_output_path,
+                validation_path=validation_path,
+                error_text=str(exc),
+                command_payload=result.get("command_payload") if result else None,
+                stdout_path=result.get("stdout_path") if result else None,
+                stderr_path=result.get("stderr_path") if result else None,
+            )
+            raise
 
     def _episode_run_translations(self, episode_id: str) -> None:
         """Run translation for each non-master language, one at a time."""
@@ -1748,19 +2202,58 @@ class Tool1Service:
                 f"Chunk metadata:\n{json.dumps(chunk_payload | {'episode_id': episode_id}, ensure_ascii=False, indent=2)}"
             )
             chunk_dir = ensure_dir(workspace / "runs" / "scene_planning" / f"chunk-{chunk_id:03d}")
-            result = self.cli_runner.run_structured(
+            schema = scene_output_schema()
+            run_id = self._start_structured_stage_run(
+                episode_id=episode_id,
+                stage="scene_planning",
                 provider=provider,
-                model=config["scene_planning_model"],
-                system_prompt=template["body"],
-                user_prompt=user_prompt,
-                schema=scene_output_schema(),
+                template_hash=template.get("hash"),
                 workdir=workspace,
                 artifact_dir=chunk_dir,
+                model=config["scene_planning_model"],
+                schema=schema,
             )
-            scene_group, group_warnings = normalize_scene_payload(result["parsed"], chunk_id)
-            write_json(chunk_dir / "validated.json", scene_group)
-            all_scene_groups.append(scene_group)
-            warnings.extend(group_warnings)
+            result: dict[str, Any] | None = None
+            parsed_output_path: str | None = None
+            validation_path: str | None = None
+            try:
+                result = self.cli_runner.run_structured(
+                    provider=provider,
+                    model=config["scene_planning_model"],
+                    system_prompt=template["body"],
+                    user_prompt=user_prompt,
+                    schema=schema,
+                    workdir=workspace,
+                    artifact_dir=chunk_dir,
+                )
+                parsed_output_path = str(write_json(chunk_dir / "parsed.json", result["parsed"]))
+                scene_group, group_warnings = normalize_scene_payload(result["parsed"], chunk_id)
+                validation_path = str(write_json(chunk_dir / "validated.json", scene_group))
+                all_scene_groups.append(scene_group)
+                warnings.extend(group_warnings)
+                self.db.finish_stage_run(
+                    run_id,
+                    status="completed",
+                    exit_code=0,
+                    parsed_output_path=parsed_output_path,
+                    validation_path=validation_path,
+                    command_payload=result.get("command_payload"),
+                    stdout_path=result.get("stdout_path"),
+                    stderr_path=result.get("stderr_path"),
+                )
+            except Exception as exc:
+                self.db.finish_stage_run(
+                    run_id,
+                    status="failed",
+                    exit_code=1,
+                    parsed_output_path=parsed_output_path,
+                    validation_path=validation_path,
+                    error_text=str(exc),
+                    command_payload=result.get("command_payload") if result else None,
+                    stdout_path=result.get("stdout_path") if result else None,
+                    stderr_path=result.get("stderr_path") if result else None,
+                )
+                raise
 
         timeline, report = merge_scene_chunks(
             all_scene_groups,
@@ -1848,16 +2341,51 @@ class Tool1Service:
                 f"Batch payload:\n{json.dumps(batch, ensure_ascii=False, indent=2)}"
             )
             batch_dir = ensure_dir(workspace / "runs" / stage / f"batch-{batch['batch_id']:03d}")
-            result = self.cli_runner.run_structured(
+            run_id = self._start_structured_stage_run(
+                episode_id=episode_id,
+                stage="video_prompt_generation" if asset_type == "video" else "image_prompt_generation",
                 provider=provider,
-                model=model,
-                system_prompt=template["body"],
-                user_prompt=user_prompt,
-                schema=schema,
+                template_hash=template.get("hash"),
                 workdir=workspace,
                 artifact_dir=batch_dir,
+                model=model,
+                schema=schema,
             )
-            payloads.append(result["parsed"])
+            result: dict[str, Any] | None = None
+            parsed_output_path: str | None = None
+            try:
+                result = self.cli_runner.run_structured(
+                    provider=provider,
+                    model=model,
+                    system_prompt=template["body"],
+                    user_prompt=user_prompt,
+                    schema=schema,
+                    workdir=workspace,
+                    artifact_dir=batch_dir,
+                )
+                parsed_output_path = str(write_json(batch_dir / "parsed.json", result["parsed"]))
+                payloads.append(result["parsed"])
+                self.db.finish_stage_run(
+                    run_id,
+                    status="completed",
+                    exit_code=0,
+                    parsed_output_path=parsed_output_path,
+                    command_payload=result.get("command_payload"),
+                    stdout_path=result.get("stdout_path"),
+                    stderr_path=result.get("stderr_path"),
+                )
+            except Exception as exc:
+                self.db.finish_stage_run(
+                    run_id,
+                    status="failed",
+                    exit_code=1,
+                    parsed_output_path=parsed_output_path,
+                    error_text=str(exc),
+                    command_payload=result.get("command_payload") if result else None,
+                    stdout_path=result.get("stdout_path") if result else None,
+                    stderr_path=result.get("stderr_path") if result else None,
+                )
+                raise
 
         normalized_entries, _ = normalize_prompt_payloads(scenes, payloads or [{"prompts": []}])
         normalized_entries = self._enrich_prompt_entries(normalized_entries, visual_bible)

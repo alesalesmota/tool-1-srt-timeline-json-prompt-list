@@ -244,17 +244,26 @@ class TemplateStore:
             "hash": template_hash,
         }
 
+    def _template_payload(self, stage: str, provider: str) -> dict[str, Any]:
+        path = self._template_path(stage, provider)
+        body = path.read_text(encoding="utf-8") if path.exists() else DEFAULT_TEMPLATES[(stage, provider)]
+        return {
+            "stage": stage,
+            "provider": provider,
+            "path": str(path),
+            "body": body,
+            "hash": hash_text(body),
+        }
+
     def list_templates(self) -> list[dict[str, Any]]:
         templates: list[dict[str, Any]] = []
         for stage in TEMPLATE_STAGES:
             for provider in PROVIDERS:
-                templates.append(self.get_template(stage, provider))
+                templates.append(self._template_payload(stage, provider))
         return templates
 
     def get_template(self, stage: str, provider: str) -> dict[str, Any]:
-        path = self._template_path(stage, provider)
-        body = path.read_text(encoding="utf-8") if path.exists() else DEFAULT_TEMPLATES[(stage, provider)]
-        return self._sync_record(stage, provider, body)
+        return self._template_payload(stage, provider)
 
     def save_template(self, stage: str, provider: str, body: str) -> dict[str, Any]:
         path = self._template_path(stage, provider)

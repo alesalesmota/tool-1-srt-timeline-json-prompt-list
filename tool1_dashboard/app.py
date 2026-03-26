@@ -17,7 +17,7 @@ from .config import (
     VIDEO_PROMPT_STAGE,
     VISUAL_BIBLE_STAGE,
 )
-from .service import Tool1Service
+from .service import QueueBlockedError, Tool1Service
 
 
 class SettingsRequest(BaseModel):
@@ -324,6 +324,8 @@ async def queue_episode(episode_id: str, payload: EpisodeQueueRequest) -> dict[s
         return service.queue_episode(episode_id, payload.start_stage)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except QueueBlockedError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_detail()) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
