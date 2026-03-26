@@ -115,6 +115,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - **2026-03-26**: The voice-profile card should be much simpler, show less technical information, and use one click to generate a fresh test sample instead of asking for manual test text
 - **2026-03-26**: A manual `Start` button does not make sense for voice cloning/TTS; the app should start and stop the voice engine intelligently based on actual usage
 - **2026-03-26**: `Needs restart` is misleading copy when the user is actively inside the app; normal sleeping/offline engine state should not be presented as a user task
+- **2026-03-26**: Voice rhythm can vary between generations, but production narration needs tighter pacing guardrails; very slow takes feel unreal and retries become too expensive on long workflows
 - **2026-03-25**: Lost 10+ phase plan between conversations → created IMPLEMENTATION_PLAN.md + IMPLEMENTATION_CHECKLIST.md in repo + updated CLAUDE.md behavior to always persist plans
 - **2026-03-25**: Standalone tools (TRADUTOR, TTS, SRT chunker, Whisper UI) all duplicated integrated modules → deleted
 - **2026-03-24**: Niche Project hierarchy — each niche has pre-configured languages, voice profiles, translation profiles
@@ -125,6 +126,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - Add automated browser regression coverage for the project board and episode overlay workflow
 - Trace and eliminate the stray `/api/board` 404 log source if it reappears in future smoke runs
 - Add richer provider health diagnostics so readiness can distinguish login, quota, and binary availability more precisely
+- Add XTTS pacing guardrails for production narration: explicit decoding settings, better chunk/test text design, and optional auto-retry when generated audio falls outside a believable speech-rate band
 - Consider inline stage-run diffing/retry tools in the episode overlay once the current workflow remains stable
 
 ## Phase Plan
