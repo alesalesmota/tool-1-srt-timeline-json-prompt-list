@@ -47,9 +47,10 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 - **TTS runtime guardrails**
   - Voice profile creation now skips latent precompute when XTTS runtime is unavailable instead of queuing dead jobs
   - Voice-test submission now fails fast with an actionable runtime error instead of leaving jobs permanently queued
-  - Worker health now surfaces missing XTTS dependencies directly in the UI
+  - Voice-engine health now surfaces missing XTTS dependencies and failed auto-start attempts directly in the UI
   - Voice profiles are now language-agnostic, create with only name + reference audio, and expose a one-click `Play test` action that generates a fresh inline sample without manual text entry
   - Voice-profile auto-refresh now pauses while a preview clip is actively playing, so inline playback is not interrupted by the 5-second dashboard refresh loop
+  - Voice/TTS worker lifecycle is now automatic: interactive voice-profile actions wake the engine on demand and let it sleep shortly after profile/test work finishes, while pipeline `generate` work keeps the engine warm until the queued TTS batch drains
 - **Stage-run logging for provider stages**
   - consistency guide, scene planning, and prompt generation now preserve structured stage runs and full failure details
 - **Template/settings reads**
@@ -59,7 +60,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - dashboard refreshes now reuse short-lived frontend cache windows for health/settings metadata and skip legacy board fetches unless the board view is active
   - CLI provider probe calls are now cached briefly inside `CliRunner`, avoiding repeated `codex`/`claude` subprocess checks on every click
 - **AI agent configs** (`config/agents/`) — scene planning, visual bible, video/image prompts (Claude + Codex)
-- **Test suite** — 101 tests passing (chunking, cli_runner, translation, tts, video_pipeline, API/service coverage)
+- **Test suite** — 108 tests passing (chunking, cli_runner, translation, tts, video_pipeline, API/service coverage)
 
 ### What's Being Worked On
 See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase plan.
@@ -69,7 +70,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 ### What Is Still Fragile
 - No dedicated frontend test harness yet; browser verification is still manual/smoke based
 - Intermittent `/api/board` 404 noise appeared in local smoke logs, but no current source call was found in `tool1_dashboard/ui/app.js`
-- TTS worker availability remains an operational warning rather than a hard queue blocker
+- XTTS runtime availability still matters operationally, but the UI no longer asks the user to manually start or restart the worker
 - Fresh Windows environments still need the XTTS runtime installed manually; Coqui TTS may require Microsoft C++ Build Tools before voice cloning can work
 
 ### Git State
@@ -95,6 +96,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 | Provider failures stay on the failed stage with full logs | Failures must be actionable; no silent Claude->Codex fallback | 2026-03-26 |
 | Template/settings reads are side-effect free | GET requests should not mutate template state | 2026-03-26 |
 | Voice profiles are language-agnostic | XTTS profiles can be reused across languages, so the UI should not force or validate a language tag | 2026-03-26 |
+| Voice engine lifecycle is automatic and demand-driven | Users should trigger voice actions, not manage worker processes; interactive work can cool down quickly while pipeline TTS stays warm until the queue drains | 2026-03-26 |
 
 ## User Observations & Insights
 
@@ -111,6 +113,8 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - **2026-03-26**: Voice clone/test feedback must stay inside each voice-profile card; the global worker badge alone is too abstract, `stale` is unclear copy, and the user needs an inline way to hear the generated preview clip
 - **2026-03-26**: Voice profile creation should only ask for a name and an audio file; language should not be required because these XTTS voices can handle multiple languages
 - **2026-03-26**: The voice-profile card should be much simpler, show less technical information, and use one click to generate a fresh test sample instead of asking for manual test text
+- **2026-03-26**: A manual `Start` button does not make sense for voice cloning/TTS; the app should start and stop the voice engine intelligently based on actual usage
+- **2026-03-26**: `Needs restart` is misleading copy when the user is actively inside the app; normal sleeping/offline engine state should not be presented as a user task
 - **2026-03-25**: Lost 10+ phase plan between conversations → created IMPLEMENTATION_PLAN.md + IMPLEMENTATION_CHECKLIST.md in repo + updated CLAUDE.md behavior to always persist plans
 - **2026-03-25**: Standalone tools (TRADUTOR, TTS, SRT chunker, Whisper UI) all duplicated integrated modules → deleted
 - **2026-03-24**: Niche Project hierarchy — each niche has pre-configured languages, voice profiles, translation profiles
@@ -145,6 +149,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-26 | **Automatic voice-engine lifecycle shipped**: removed first-party manual worker controls from Voice Profiles and episode TTS views, stopped auto-launching XTTS at app boot, added on-demand auto-start plus stale-worker recovery, and introduced smart idle shutdown with short interactive cooldowns and longer pipeline drain cooldowns. Voice Profiles now show `Starting voice engine` inline only while a user action wakes the engine, while episode views only surface true startup/runtime failures. Verified with `node --check tool1_dashboard/ui/app.js` and `python -m unittest discover -s tests -v` (`108` passing). |
 | 2026-03-26 | **Voice sample playback stabilized**: paused the Voice Profiles auto-refresh loop whenever an inline preview clip is actively playing, preventing the 5-second dashboard rerender from replacing the audio element mid-playback. Verified with `node --check tool1_dashboard/ui/app.js` and `python -m unittest discover -s tests -v` (`101` passing). |
 | 2026-03-26 | **Voice profile flow simplified**: removed language from the create-profile UI, stopped filtering/validating voice profiles by language in project assignment, moved default sample text generation to the backend, and rebuilt the voice-profile card around a one-click `Play test` action with inline fresh-sample playback. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`101` passing), and browser smoke confirming create modal simplification, fresh-test generation state, and project language dropdowns showing the same voice profile for every language. |
 | 2026-03-26 | **TTS Runtime Fixed**: Resolved multiple environment issues preventing `TTS.api` imports and worker startup. Pinned `torch` to `2.3.1`, `transformers` to `4.39.3`, and manually installed missing binary dependencies (`bangla`, `gruut`, `spacy[ja]`, `umap-learn`). Verified worker status as `idle` and healthy on port 8020. |

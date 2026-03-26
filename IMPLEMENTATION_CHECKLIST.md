@@ -129,3 +129,12 @@
 - [x] Replace manual voice-test text entry with a backend-generated default English sample
 - [x] Simplify voice-profile cards to one-click `Play test`, compact state text, and inline sample playback
 - [x] Verify with `node --check`, `python -m unittest discover -s tests -v` (`101` passing), and browser smoke
+
+## Automatic Voice Engine Lifecycle (2026-03-26)
+- [x] Remove first-party manual `Start Worker` / `Stop` controls from Voice Profiles and episode TTS views
+- [x] Stop auto-starting the XTTS worker at app startup
+- [x] Auto-start and auto-recover the voice engine on interactive profile/test actions and pipeline TTS generation
+- [x] Add smart idle shutdown with short interactive cooldowns and longer pipeline drain cooldowns
+- [x] Hide normal sleeping/offline worker state from the UI and only surface runtime/startup failures
+- [x] Extend backend and pipeline tests for sleeping vs unavailable worker states and lifecycle behavior
+- [x] Verify with `node --check`, `python -m unittest discover -s tests -v` (`108` passing)
