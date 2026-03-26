@@ -47,6 +47,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - Voice profile creation now skips latent precompute when XTTS runtime is unavailable instead of queuing dead jobs
   - Voice-test submission now fails fast with an actionable runtime error instead of leaving jobs permanently queued
   - Worker health now surfaces missing XTTS dependencies directly in the UI
+  - Voice profile cards now surface per-profile clone state, latest voice-test state, inline test input, and in-card preview playback/download when a test clip exists
 - **Stage-run logging for provider stages**
   - consistency guide, scene planning, and prompt generation now preserve structured stage runs and full failure details
 - **Template/settings reads**
@@ -56,7 +57,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - dashboard refreshes now reuse short-lived frontend cache windows for health/settings metadata and skip legacy board fetches unless the board view is active
   - CLI provider probe calls are now cached briefly inside `CliRunner`, avoiding repeated `codex`/`claude` subprocess checks on every click
 - **AI agent configs** (`config/agents/`) — scene planning, visual bible, video/image prompts (Claude + Codex)
-- **Test suite** — 98 tests passing (chunking, cli_runner, translation, tts, video_pipeline, API/service coverage)
+- **Test suite** — 99 tests passing (chunking, cli_runner, translation, tts, video_pipeline, API/service coverage)
 
 ### What's Being Worked On
 See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase plan.
@@ -104,6 +105,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - **2026-03-26**: Queueing and requeueing should be blocked when setup is incomplete (missing voice profiles, translation profiles, provider login, or languages)
 - **2026-03-26**: Provider failures must remain explicit and controllable; do not add automatic Claude->Codex fallback
 - **2026-03-26**: App feedback feels too slow; clicking pages or any action should respond immediately instead of feeling delayed by background refresh work
+- **2026-03-26**: Voice clone/test feedback must stay inside each voice-profile card; the global worker badge alone is too abstract, `stale` is unclear copy, and the user needs an inline way to hear the generated preview clip
 - **2026-03-25**: Lost 10+ phase plan between conversations → created IMPLEMENTATION_PLAN.md + IMPLEMENTATION_CHECKLIST.md in repo + updated CLAUDE.md behavior to always persist plans
 - **2026-03-25**: Standalone tools (TRADUTOR, TTS, SRT chunker, Whisper UI) all duplicated integrated modules → deleted
 - **2026-03-24**: Niche Project hierarchy — each niche has pre-configured languages, voice profiles, translation profiles
@@ -138,6 +140,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-26 | **Drawbridge voice-profile UX pass complete**: enriched voice-profile payloads with the latest latent-precompute and voice-test job metadata, moved voice testing into an inline card form, added per-card clone/test status messaging plus preview playback/download, and replaced the raw worker `stale` label with clearer restart guidance. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`99` passing), and browser smoke on `http://127.0.0.1:8765/#/voice-profiles` confirming the inline test form, the new worker/card copy, and only the existing `favicon.ico` 404 in the console. |
 | 2026-03-26 | **Drawbridge hover affordance polish complete**: collapsed the Draft-column add CTA into an icon-only `+` button with a hover tooltip, and moved column guidance copy into hover tooltips on the column titles so the kanban headers stay compact. Verified with `node --check tool1_dashboard/ui/app.js` plus browser smoke on `http://127.0.0.1:8765/#/niche-projects/niche-20260325-215207-audit-project`, including screenshots for the Draft `+` tooltip and the Draft-column title tooltip. |
 | 2026-03-26 | **Drawbridge UI feedback pass complete**: renamed the project-board episode CTA and the create-episode modal copy from `Create draft` to `Create episode` while keeping the Draft-only helper text, and replaced the create-project target-language checkbox wall with a searchable picker that adds selected languages into removable pills below the input. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`98` passing), and browser smoke on `http://127.0.0.1:8031` covering the project-board CTA plus the new create-project language picker flow. |
 | 2026-03-26 | **Interaction latency pass complete**: route changes and episode overlay opens now paint an immediate loading state before background data hydration finishes, refreshes no longer pull every heavyweight endpoint on every interaction, and provider health probes are cached briefly inside `CliRunner` to avoid repeated CLI subprocess checks. Verified with `node --check tool1_dashboard/ui/app.js`, the full `python -m unittest discover -s tests -v` suite (`98` passing), and browser smoke showing the episode overlay loading shell appears instantly on click before the full detail payload arrives. |

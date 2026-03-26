@@ -1703,6 +1703,8 @@ details.editor-card summary::-webkit-details-marker {
   border-radius: var(--radius-sm);
   background: var(--panel);
   border: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
 }
 
 .profile-card-head {
@@ -1717,6 +1719,71 @@ details.editor-card summary::-webkit-details-marker {
   font-weight: 600;
   margin: 0;
   color: var(--heading);
+}
+
+.profile-card-section {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.profile-card-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.profile-card-meta {
+  color: var(--muted-soft);
+  font-size: 0.74rem;
+}
+
+.profile-inline-message {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.profile-inline-message[data-tone="error"] {
+  border-color: var(--badge-error-border, rgba(248, 113, 113, 0.25));
+  background: var(--badge-error-bg, rgba(248, 113, 113, 0.12));
+  color: var(--badge-error-fg, #f87171);
+}
+
+.profile-test-text {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line-soft);
+  color: var(--ink);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.profile-audio-player {
+  width: 100%;
+  min-width: 0;
+}
+
+.profile-audio-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.voice-test-form {
+  margin-top: 4px;
+}
+
+.voice-test-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .worker-badge {

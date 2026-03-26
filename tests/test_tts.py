@@ -479,6 +479,50 @@ class ServiceVoiceRuntimeTests(unittest.TestCase):
         self.assertEqual(profile["runtime_warning"], "TTS runtime unavailable.")
         self.assertEqual(self.service.db.list_active_tts_jobs(), [])
 
+    def test_list_voice_profiles_includes_latest_voice_jobs(self):
+        now = time.time()
+        audio_output = Path(self._tmpdir) / "voice-test.wav"
+        audio_output.write_bytes(b"RIFF....WAVEfmt ")
+
+        self.service.db.create_tts_job({
+            "job_id": "latent-1",
+            "job_type": "latent_precompute",
+            "profile_id": "voice-1",
+            "status": "processing",
+            "progress": "Preparing cache...",
+            "payload_json": json.dumps({"profile_id": "voice-1"}),
+            "meta_json": "{}",
+            "queue_priority": 1,
+            "created_at": now - 10,
+            "updated_at": now - 5,
+        })
+        self.service.db.create_tts_job({
+            "job_id": "test-1",
+            "job_type": "test_voice",
+            "profile_id": "voice-1",
+            "status": "completed",
+            "progress": "Voice test ready.",
+            "result_path": str(audio_output),
+            "filename": "voice_test.wav",
+            "payload_json": json.dumps({"text": "Hello from the cloned voice.", "language": "en"}),
+            "meta_json": "{}",
+            "queue_priority": 0,
+            "created_at": now - 2,
+            "updated_at": now - 1,
+            "finished_at": now,
+        })
+
+        profiles = self.service.list_voice_profiles()
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+
+        self.assertEqual(profile["latest_latent_job"]["job_id"], "latent-1")
+        self.assertEqual(profile["latest_latent_job"]["status"], "processing")
+        self.assertEqual(profile["latest_test_job"]["job_id"], "test-1")
+        self.assertEqual(profile["latest_test_job"]["payload"]["text"], "Hello from the cloned voice.")
+        self.assertTrue(profile["latest_test_job"]["result_available"])
+        self.assertEqual(profile["latest_test_job"]["download_url"], "/api/tts-jobs/test-1/download")
+
 
 class PausedTtsEpisodeTests(unittest.TestCase):
 

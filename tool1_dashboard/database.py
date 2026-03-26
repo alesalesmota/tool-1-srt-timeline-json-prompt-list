@@ -723,3 +723,15 @@ class Tool1Database:
             """,
             (profile_id,),
         )
+
+    def get_latest_test_job_for_profile(self, profile_id: str) -> dict[str, Any] | None:
+        return self._fetchone(
+            """
+            SELECT * FROM tts_jobs
+            WHERE job_type = 'test_voice'
+            AND profile_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (profile_id,),
+        )

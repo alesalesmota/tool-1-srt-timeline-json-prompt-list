@@ -818,14 +818,48 @@ class Tool1Service:
 
     # ── voice profile management ────────────────────────────────────
 
+    @staticmethod
+    def _serialize_tts_job(job: dict[str, Any] | None) -> dict[str, Any] | None:
+        if job is None:
+            return None
+        payload = dict(job)
+        for raw_key, parsed_key in (("payload_json", "payload"), ("meta_json", "meta")):
+            raw_value = payload.get(raw_key, "")
+            try:
+                payload[parsed_key] = json.loads(raw_value) if raw_value else {}
+            except (TypeError, json.JSONDecodeError):
+                payload[parsed_key] = {}
+        result_path = str(payload.get("result_path") or "").strip()
+        result_available = bool(result_path and Path(result_path).exists())
+        payload["result_available"] = result_available
+        payload["download_url"] = f"/api/tts-jobs/{payload['job_id']}/download" if result_available else None
+        return payload
+
+    def _enrich_voice_profile(self, profile: dict[str, Any] | None) -> dict[str, Any] | None:
+        if profile is None:
+            return None
+        payload = dict(profile)
+        profile_id = str(payload.get("id") or "").strip()
+        payload["latest_latent_job"] = self._serialize_tts_job(
+            self.db.get_latest_latent_job_for_profile(profile_id)
+        ) if profile_id else None
+        payload["latest_test_job"] = self._serialize_tts_job(
+            self.db.get_latest_test_job_for_profile(profile_id)
+        ) if profile_id else None
+        return payload
+
     def list_voice_profiles(self) -> list[dict[str, Any]]:
-        return self.db.list_voice_profiles()
+        return [
+            enriched
+            for profile in self.db.list_voice_profiles()
+            if (enriched := self._enrich_voice_profile(profile)) is not None
+        ]
 
     def get_voice_profile(self, profile_id: str) -> dict[str, Any]:
         profile = self.db.get_voice_profile(profile_id)
         if profile is None:
             raise FileNotFoundError("Voice profile not found.")
-        return profile
+        return self._enrich_voice_profile(profile) or {}
 
     # ── translation profile management ──────────────────────────────
 
