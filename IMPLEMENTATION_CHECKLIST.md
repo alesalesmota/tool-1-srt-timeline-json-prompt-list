@@ -138,3 +138,14 @@
 - [x] Hide normal sleeping/offline worker state from the UI and only surface runtime/startup failures
 - [x] Extend backend and pipeline tests for sleeping vs unavailable worker states and lifecycle behavior
 - [x] Verify with `node --check`, `python -m unittest discover -s tests -v` (`108` passing)
+
+## Per-Voice TTS Pacing Control (2026-03-26)
+- [x] Add `tts_config_json` to voice profiles and resolve it into typed per-profile `tts_config` payloads
+- [x] Seed new and legacy voice profiles with the `natural_stable` preset automatically
+- [x] Snapshot resolved `tts_config` into queued `generate` and `test_voice` jobs
+- [x] Make the repo TTS chunker the authoritative narration split layer for production and tests
+- [x] Disable XTTS internal `enable_text_splitting` and pass explicit decoding controls (`do_sample`, `num_beams`, `temperature`, `top_p`, `top_k`, `speed`)
+- [x] Add compact per-profile `Tuning` modal with presets, collapsed advanced controls, `Save`, and `Save and play test`
+- [x] Keep the voice-profile card minimal while exposing tuning as a secondary action
+- [x] Extend backend, worker, UI, and pipeline tests for tuning persistence, chunked payloads, and explicit XTTS kwargs
+- [x] Verify with `node --check`, `python -m unittest discover -s tests -v` (`115` passing), and browser smoke for preset switching plus `Save and play test`

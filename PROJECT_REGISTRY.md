@@ -51,6 +51,8 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - Voice profiles are now language-agnostic, create with only name + reference audio, and expose a one-click `Play test` action that generates a fresh inline sample without manual text entry
   - Voice-profile auto-refresh now pauses while a preview clip is actively playing, so inline playback is not interrupted by the 5-second dashboard refresh loop
   - Voice/TTS worker lifecycle is now automatic: interactive voice-profile actions wake the engine on demand and let it sleep shortly after profile/test work finishes, while pipeline `generate` work keeps the engine warm until the queued TTS batch drains
+  - TTS pacing is now configured per voice profile with saved presets plus advanced controls, and both `Play test` and production narration use the same resolved config path
+  - The repo TTS chunker is now the authoritative narration split layer; queued `generate` and `test_voice` jobs carry explicit chunk text plus a frozen `tts_config` snapshot, and XTTS internal `enable_text_splitting` is disabled
 - **Stage-run logging for provider stages**
   - consistency guide, scene planning, and prompt generation now preserve structured stage runs and full failure details
 - **Template/settings reads**
@@ -60,12 +62,12 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - dashboard refreshes now reuse short-lived frontend cache windows for health/settings metadata and skip legacy board fetches unless the board view is active
   - CLI provider probe calls are now cached briefly inside `CliRunner`, avoiding repeated `codex`/`claude` subprocess checks on every click
 - **AI agent configs** (`config/agents/`) — scene planning, visual bible, video/image prompts (Claude + Codex)
-- **Test suite** — 108 tests passing (chunking, cli_runner, translation, tts, video_pipeline, API/service coverage)
+- **Test suite** — 115 tests passing (chunking, cli_runner, translation, tts, video_pipeline, API/service coverage)
 
 ### What's Being Worked On
 See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase plan.
 
-**Currently:** Phases 1-10 are complete, the 2026-03-26 workflow repair is complete, and the Drawbridge feedback pass is complete. The Tool 1 pipeline is now aligned with the intended project-board-first episode workflow.
+**Currently:** Phases 1-10 are complete, the 2026-03-26 workflow repair is complete, the Drawbridge feedback pass is complete, and per-voice TTS pacing control is now shipped. The Tool 1 pipeline is aligned with the intended project-board-first episode workflow and long-form narration now uses explicit app-side TTS chunking plus per-profile pacing presets.
 
 ### What Is Still Fragile
 - No dedicated frontend test harness yet; browser verification is still manual/smoke based
@@ -97,6 +99,8 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 | Template/settings reads are side-effect free | GET requests should not mutate template state | 2026-03-26 |
 | Voice profiles are language-agnostic | XTTS profiles can be reused across languages, so the UI should not force or validate a language tag | 2026-03-26 |
 | Voice engine lifecycle is automatic and demand-driven | Users should trigger voice actions, not manage worker processes; interactive work can cool down quickly while pipeline TTS stays warm until the queue drains | 2026-03-26 |
+| Narration pacing is tuned per voice profile and snapped into each TTS job | Different voices need different stability/variation bands, and queued jobs must stay reproducible even if the profile is edited later | 2026-03-26 |
+| App-side TTS chunking is authoritative; XTTS internal splitting stays off | Long-form narration must be resumable and predictable, so the repo controls chunk boundaries instead of leaving them to model-side splitting | 2026-03-26 |
 
 ## User Observations & Insights
 
@@ -117,6 +121,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - **2026-03-26**: `Needs restart` is misleading copy when the user is actively inside the app; normal sleeping/offline engine state should not be presented as a user task
 - **2026-03-26**: Voice rhythm can vary between generations, but production narration needs tighter pacing guardrails; very slow takes feel unreal and retries become too expensive on long workflows
 - **2026-03-26**: Automatic quality retries are not desirable for long-form narration because they add too much runtime; the system should keep natural variation but constrain it to a believable rhythm band and expose manual tuning when presets are not enough
+- **2026-03-26**: Long-form narration should not rely on XTTS internal text splitting; explicit app-side TTS chunking should stay in control so resumability and pacing are predictable, and voice tuning should live on each voice profile rather than in global settings
 - **2026-03-25**: Lost 10+ phase plan between conversations → created IMPLEMENTATION_PLAN.md + IMPLEMENTATION_CHECKLIST.md in repo + updated CLAUDE.md behavior to always persist plans
 - **2026-03-25**: Standalone tools (TRADUTOR, TTS, SRT chunker, Whisper UI) all duplicated integrated modules → deleted
 - **2026-03-24**: Niche Project hierarchy — each niche has pre-configured languages, voice profiles, translation profiles
@@ -127,8 +132,8 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - Add automated browser regression coverage for the project board and episode overlay workflow
 - Trace and eliminate the stray `/api/board` 404 log source if it reappears in future smoke runs
 - Add richer provider health diagnostics so readiness can distinguish login, quota, and binary availability more precisely
-- Add XTTS pacing guardrails for production narration: explicit decoding settings, better chunk/test text design, and optional auto-retry when generated audio falls outside a believable speech-rate band
-- Replace any planned automatic pacing retry with deterministic pacing controls plus advanced TTS tuning options that the user can adjust when presets are not enough
+- Add chunk-level narration diagnostics so long-form TTS can report pacing anomalies and per-chunk timings without introducing automatic retries
+- Add a clearer “production safe” vs “more expressive” explanation in the tuning modal so preset choice is more obvious before users touch the advanced controls
 - Consider inline stage-run diffing/retry tools in the episode overlay once the current workflow remains stable
 
 ## Phase Plan
@@ -153,6 +158,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-26 | **Per-voice TTS pacing control shipped**: added saved per-profile `tts_config` presets plus advanced tuning, exposed a compact `Tuning` modal on voice-profile cards, made the repo TTS chunker the single authoritative split layer for both `Play test` and production narration, disabled XTTS internal text splitting, and snapshotted the resolved tuning into queued TTS jobs so live jobs are stable across later profile edits. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`115` passing), and browser smoke on `http://127.0.0.1:8765/#/voice-profiles` covering preset switching, advanced-value rewriting, and `Save and play test` driving the inline `Generating sample` state. |
 | 2026-03-26 | **Automatic voice-engine lifecycle shipped**: removed first-party manual worker controls from Voice Profiles and episode TTS views, stopped auto-launching XTTS at app boot, added on-demand auto-start plus stale-worker recovery, and introduced smart idle shutdown with short interactive cooldowns and longer pipeline drain cooldowns. Voice Profiles now show `Starting voice engine` inline only while a user action wakes the engine, while episode views only surface true startup/runtime failures. Verified with `node --check tool1_dashboard/ui/app.js` and `python -m unittest discover -s tests -v` (`108` passing). |
 | 2026-03-26 | **Voice sample playback stabilized**: paused the Voice Profiles auto-refresh loop whenever an inline preview clip is actively playing, preventing the 5-second dashboard rerender from replacing the audio element mid-playback. Verified with `node --check tool1_dashboard/ui/app.js` and `python -m unittest discover -s tests -v` (`101` passing). |
 | 2026-03-26 | **Voice profile flow simplified**: removed language from the create-profile UI, stopped filtering/validating voice profiles by language in project assignment, moved default sample text generation to the backend, and rebuilt the voice-profile card around a one-click `Play test` action with inline fresh-sample playback. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`101` passing), and browser smoke confirming create modal simplification, fresh-test generation state, and project language dropdowns showing the same voice profile for every language. |

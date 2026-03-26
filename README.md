@@ -53,7 +53,14 @@ Voice cloning and voice-test jobs require the XTTS runtime in the same Python en
 - `torchaudio`
 - `TTS` (Coqui XTTS)
 
-The voice engine now auto-starts on demand for voice-profile prep/tests and pipeline TTS generation, then auto-stops after idle based on usage. If the XTTS runtime is missing or the engine cannot start, the UI shows a clear voice-engine warning and voice tests fail fast with the exact startup error instead of sitting in the queue forever. Voice profiles are language-agnostic, and `Play test` generates a fresh default sample on demand without asking for manual test text.
+The voice engine now auto-starts on demand for voice-profile prep/tests and pipeline TTS generation, then auto-stops after idle based on usage. If the XTTS runtime is missing or the engine cannot start, the UI shows a clear voice-engine warning and voice tests fail fast with the exact startup error instead of sitting in the queue forever.
+
+Voice profiles are language-agnostic, `Play test` generates a fresh default sample on demand without asking for manual test text, and each profile now carries its own narration pacing config:
+
+- presets: `natural_stable`, `balanced`, `expressive`
+- advanced controls: `temperature`, `top_p`, `top_k`, `speed`, `chunk_max_chars`, `silence_gap_seconds`
+- `Play test` and production narration use the same resolved per-profile tuning path
+- the repo TTS chunker is the authoritative narration split layer; XTTS internal text splitting is disabled
 
 Windows note: installing `TTS` may also require Microsoft C++ Build Tools.
 
@@ -74,4 +81,4 @@ Windows note: installing `TTS` may also require Microsoft C++ Build Tools.
 python -m unittest discover -s tests -v
 ```
 
-Current baseline: `108` passing tests.
+Current baseline: `115` passing tests.

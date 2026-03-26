@@ -163,7 +163,50 @@ The intended flow is now:
   - project board rendering
   - draft episode creation
   - direct episode route opening the overlay over the board
-  - blocked queue actions showing readiness blockers
+- blocked queue actions showing readiness blockers
+
+---
+
+## 2026-03-26 Per-Voice TTS Pacing Control Addendum
+
+This addendum captures the narration-stability pass that followed the voice-profile UX simplification and automatic voice-engine lifecycle work.
+
+### Goals
+
+- keep natural voice variation while reducing obviously slow or unrealistic narration takes
+- make the app-owned TTS chunker the single authoritative split layer for long-form narration
+- expose pacing controls per voice profile so preview behavior matches production behavior
+- avoid automatic quality retries, which are too expensive for hour-long narration workflows
+
+### Implemented shape
+
+- Voice profiles now store a resolved `tts_config` seeded from the `natural_stable` preset and editable per profile
+- The Voice Profiles UI keeps the card minimal and exposes pacing controls through a compact `Tuning` modal with presets plus advanced fields
+- `Play test` and production `generate` jobs both snapshot the same per-profile `tts_config` at queue time
+- Production narration is pre-chunked with the repo TTS chunker before queueing, and XTTS internal text splitting is disabled
+- XTTS inference is now called with explicit sampling controls (`do_sample=True`, `num_beams=1`, `temperature`, `top_p`, `top_k`, `speed`)
+- Job payloads now preserve explicit chunk text plus the original filename needed for resumable long-form output assembly
+
+### Preset baseline
+
+- `natural_stable`: safe default narration band
+- `balanced`: modestly looser variation
+- `expressive`: widest allowed variation in the first pass
+
+### Guardrails
+
+- Per-profile tuning stays within constrained narration-safe ranges for sampling, speed, chunk size, and inter-chunk silence
+- No automatic pacing retry is introduced in this pass
+- Scene chunking remains separate; TTS chunking controls narration generation before downstream planning/alignment stages
+
+### Verification baseline
+
+- `python -m unittest discover -s tests -v` -> 115 passing tests
+- `node --check tool1_dashboard/ui/app.js`
+- Browser smoke for:
+  - opening the `Tuning` modal from a voice-profile card
+  - switching presets and seeing advanced controls rewrite to preset values
+  - `Save and play test` closing the modal and moving the card into inline `Generating sample`
 
 ---
 
