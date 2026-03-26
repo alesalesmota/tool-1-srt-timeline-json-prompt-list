@@ -70,7 +70,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 ### Git State
 - Branch: `codex/fix-ui-feedback-latency` (active)
-- Current focus: responsiveness/latency fixes for route changes, overlay opens, and repeated provider health probes
+- Responsiveness/latency fixes for route changes, overlay opens, and repeated provider health probes are committed and pushed on the active fix branch
 - Remote: `https://github.com/alesalesmota/tool-1-srt-timeline-json-prompt-list.git`
 
 ## Architecture Decisions
