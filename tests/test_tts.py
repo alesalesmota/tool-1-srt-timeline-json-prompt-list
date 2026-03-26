@@ -18,6 +18,8 @@ from tool1_dashboard.tts.audio import generate_silence_wav, merge_wav_chunks_str
 from tool1_dashboard.tts.chunker import TTSChunk, chunk_text_for_tts
 from tool1_dashboard.tts.constants import (
     CHUNK_MAX_CHARS,
+    INTERACTIVE_IDLE_SHUTDOWN_SECONDS,
+    WORKER_IDLE_RECHECK_SECONDS,
     XTTS_LANG_MAP,
     map_language_code,
 )
@@ -405,8 +407,9 @@ class ManagerJobSubmissionTests(unittest.TestCase):
         ):
             health = mgr.get_worker_health()
         self.assertFalse(health.running)
-        self.assertEqual(health.status, "unknown")
-        self.assertTrue(health.is_stale)
+        self.assertEqual(health.status, "sleeping")
+        self.assertEqual(health.lifecycle_state, "sleeping")
+        self.assertFalse(health.is_stale)
 
     def test_worker_health_surfaces_runtime_error(self):
         from tool1_dashboard.tts.manager import TTSManager, WorkerRuntimeStatus
@@ -423,8 +426,81 @@ class ManagerJobSubmissionTests(unittest.TestCase):
         ):
             health = mgr.get_worker_health()
         self.assertEqual(health.status, "unavailable")
+        self.assertEqual(health.lifecycle_state, "unavailable")
         self.assertEqual(health.startup_error, "TTS runtime unavailable.")
         self.assertEqual(health.missing_dependencies, ["Coqui TTS"])
+
+    def test_ensure_worker_ready_restarts_stale_worker(self):
+        from tool1_dashboard.tts.manager import TTSManager, WorkerHealth, WorkerRuntimeStatus
+
+        mgr = TTSManager(self.db)
+        with patch.object(
+            mgr,
+            "get_runtime_status",
+            return_value=WorkerRuntimeStatus(
+                available=True,
+                missing_dependencies=[],
+                error=None,
+            ),
+        ), patch.object(
+            mgr,
+            "get_worker_health",
+            return_value=WorkerHealth(
+                running=True,
+                worker_id="stale-worker",
+                status="idle",
+                current_job_id=None,
+                last_heartbeat=time.time() - 300,
+                is_stale=True,
+                pid=1234,
+                startup_error=None,
+                missing_dependencies=[],
+                lifecycle_state="sleeping",
+            ),
+        ), patch.object(mgr, "is_worker_alive", return_value=True), patch.object(
+            mgr, "stop_worker"
+        ) as stop_mock, patch.object(
+            mgr, "start_worker"
+        ) as start_mock, patch.object(
+            mgr, "_schedule_shutdown_check"
+        ) as schedule_mock:
+            mgr.ensure_worker_ready(intent="interactive")
+
+        stop_mock.assert_called_once()
+        start_mock.assert_called_once()
+        schedule_mock.assert_called_once()
+
+    def test_interactive_shutdown_stops_when_idle(self):
+        from tool1_dashboard.tts.manager import TTSManager
+
+        mgr = TTSManager(self.db)
+        mgr._lifecycle_intent = "interactive"
+        mgr._last_activity_at = time.time() - (INTERACTIVE_IDLE_SHUTDOWN_SECONDS + 1)
+
+        with patch.object(mgr, "is_worker_alive", return_value=True), patch.object(
+            mgr, "stop_worker"
+        ) as stop_mock:
+            mgr._evaluate_worker_shutdown()
+
+        stop_mock.assert_called_once()
+
+    def test_pipeline_shutdown_waits_for_active_generate_jobs(self):
+        from tool1_dashboard.tts.manager import TTSManager
+
+        mgr = TTSManager(self.db)
+        mgr._lifecycle_intent = "interactive"
+        with patch.object(mgr, "is_worker_alive", return_value=True), patch.object(
+            mgr._db,
+            "list_active_tts_jobs",
+            return_value=[{"job_type": "generate", "job_id": "job-1"}],
+        ), patch.object(mgr, "_schedule_shutdown_check") as schedule_mock, patch.object(
+            mgr, "stop_worker"
+        ) as stop_mock:
+            mgr._evaluate_worker_shutdown()
+
+        stop_mock.assert_not_called()
+        schedule_mock.assert_called_once_with(WORKER_IDLE_RECHECK_SECONDS)
+        self.assertEqual(mgr._lifecycle_intent, "pipeline")
 
 
 class ServiceVoiceRuntimeTests(unittest.TestCase):
@@ -479,14 +555,41 @@ class ServiceVoiceRuntimeTests(unittest.TestCase):
         self.assertEqual(profile["language_code"], "")
         self.assertEqual(self.service.db.list_active_tts_jobs(), [])
 
+    def test_create_voice_profile_auto_starts_interactive_latent_prep(self):
+        from tool1_dashboard.tts.manager import WorkerRuntimeStatus
+
+        with patch.object(
+            self.service.tts_manager,
+            "get_runtime_status",
+            return_value=WorkerRuntimeStatus(
+                available=True,
+                missing_dependencies=[],
+                error=None,
+            ),
+        ), patch.object(self.service.tts_manager, "ensure_worker_ready") as ensure_mock, patch.object(
+            self.service.tts_manager,
+            "submit_tts_job",
+            return_value="latent-123",
+        ) as submit_mock:
+            profile = self.service.create_voice_profile(
+                name="Fresh Voice",
+                audio_bytes=b"RIFF....WAVEfmt ",
+                audio_filename="fresh.wav",
+            )
+
+        ensure_mock.assert_called_once_with(intent="interactive")
+        self.assertEqual(submit_mock.call_args.kwargs["job_type"], "latent_precompute")
+        self.assertEqual(profile["latent_job_id"], "latent-123")
+
     def test_submit_voice_test_uses_default_sample_when_text_missing(self):
-        with patch.object(self.service.tts_manager, "ensure_worker_ready"), patch.object(
+        with patch.object(self.service.tts_manager, "ensure_worker_ready") as ensure_mock, patch.object(
             self.service.tts_manager,
             "submit_tts_job",
             return_value="job-123",
         ) as submit_mock:
             result = self.service.submit_voice_test("voice-1", None)
 
+        ensure_mock.assert_called_once_with(intent="interactive")
         payload = submit_mock.call_args.kwargs["payload"]
         self.assertEqual(result["job_id"], "job-123")
         self.assertEqual(result["status"], "queued")
@@ -541,6 +644,21 @@ class ServiceVoiceRuntimeTests(unittest.TestCase):
         self.assertEqual(profile["latest_test_job"]["payload"]["text"], "Hello from the cloned voice.")
         self.assertTrue(profile["latest_test_job"]["result_available"])
         self.assertEqual(profile["latest_test_job"]["download_url"], "/api/tts-jobs/test-1/download")
+
+
+class VoiceProfileUiCopyTests(unittest.TestCase):
+
+    def test_voice_profile_ui_hides_manual_worker_controls(self):
+        app_js = (
+            Path(__file__).resolve().parents[1]
+            / "tool1_dashboard"
+            / "ui"
+            / "app.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("Needs restart", app_js)
+        self.assertNotIn("Start Worker", app_js)
+        self.assertIn("Starting voice engine", app_js)
 
 
 class PausedTtsEpisodeTests(unittest.TestCase):

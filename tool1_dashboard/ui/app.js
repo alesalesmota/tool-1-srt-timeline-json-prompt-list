@@ -739,37 +739,19 @@ function describeWorkerHealth(wh = {}) {
   const lastHeartbeat = wh.last_heartbeat ? `Last heartbeat ${relativeTime(wh.last_heartbeat)}.` : "";
   if (wh.startup_error) {
     return {
-      status: "stopped",
-      label: "Unavailable",
+      visible: true,
+      status: "unavailable",
+      label: "Voice engine unavailable",
       copy: wh.startup_error,
       meta: lastHeartbeat || "Install the XTTS runtime before cloning or testing voices.",
     };
   }
-  if (wh.running) {
-    return {
-      status: "running",
-      label: wh.current_job_id ? "Busy" : "Ready",
-      copy: wh.current_job_id
-        ? "The worker is online and processing a voice job."
-        : "The worker is online and ready for clone prep and voice tests.",
-      meta: wh.status
-        ? `Status: ${titleCase(wh.status)}${wh.current_job_id ? ` · Job ${wh.current_job_id}` : ""}`
-        : lastHeartbeat,
-    };
-  }
-  if (wh.is_stale) {
-    return {
-      status: "stale",
-      label: "Needs restart",
-      copy: "The worker stopped sending heartbeats. Start it again before preparing clones or running voice tests.",
-      meta: lastHeartbeat || "No recent heartbeat recorded.",
-    };
-  }
   return {
-    status: "stopped",
-    label: "Stopped",
-    copy: "Start the worker to prepare latents and generate voice tests.",
-    meta: wh.status ? `Status: ${titleCase(wh.status)}` : "",
+    visible: false,
+    status: wh.lifecycle_state || "sleeping",
+    label: "",
+    copy: "",
+    meta: lastHeartbeat,
   };
 }
 
@@ -781,10 +763,18 @@ function voiceProfileLatestReadyJob(profile) {
   return null;
 }
 
+function voiceProfileIsStarting(profile) {
+  const job = profile.latest_test_job;
+  return (
+    state.submittingVoiceTestProfileId === profile.id &&
+    job?.status !== "processing" &&
+    job?.status !== "queued"
+  );
+}
+
 function voiceProfileIsGenerating(profile) {
   const job = profile.latest_test_job;
   return (
-    state.submittingVoiceTestProfileId === profile.id ||
     job?.status === "processing" ||
     job?.status === "queued"
   );
@@ -794,12 +784,27 @@ function voiceProfileCardState(profile, workerHealth = {}) {
   const latentJob = profile.latest_latent_job;
   const latestTestJob = profile.latest_test_job;
   const latestReadyJob = voiceProfileLatestReadyJob(profile);
+  const workerState = workerHealth.lifecycle_state || "sleeping";
+
+  if (voiceProfileIsStarting(profile)) {
+    return {
+      label: "Starting voice engine",
+      tone: "warn",
+      copy: "Waking the voice engine and queueing a fresh sample.",
+      error: "",
+    };
+  }
 
   if (voiceProfileIsGenerating(profile)) {
+    const queuedWhileStarting =
+      latestTestJob?.status === "queued" &&
+      workerState === "starting";
     return {
       label: "Generating sample",
       tone: latestTestJob?.status === "processing" ? "active" : "warn",
-      copy: latestTestJob?.progress || "Generating a fresh sample for this voice.",
+      copy: queuedWhileStarting
+        ? "Starting the voice engine and queueing a fresh sample."
+        : latestTestJob?.progress || "Generating a fresh sample for this voice.",
       error: "",
     };
   }
@@ -828,10 +833,15 @@ function voiceProfileCardState(profile, workerHealth = {}) {
     };
   }
   if (latentJob?.status === "processing" || latentJob?.status === "queued") {
+    const queuedWhileStarting =
+      latentJob.status === "queued" &&
+      workerState === "starting";
     return {
       label: "Preparing",
       tone: latentJob.status === "processing" ? "active" : "warn",
-      copy: latentJob.progress || "Saving the voice and preparing the cache in the background.",
+      copy: queuedWhileStarting
+        ? "Starting the voice engine and preparing the cache in the background."
+        : latentJob.progress || "Saving the voice and preparing the cache in the background.",
       error: "",
     };
   }
@@ -839,7 +849,7 @@ function voiceProfileCardState(profile, workerHealth = {}) {
     return {
       label: "Needs attention",
       tone: "error",
-      copy: "The reference audio is saved, but the XTTS runtime is unavailable on this machine.",
+      copy: "The reference audio is saved, but the voice engine is unavailable on this machine.",
       error: "",
     };
   }
@@ -907,13 +917,15 @@ function renderVoiceProfiles() {
   const profiles = state.voiceProfiles || [];
   const wh = state.workerHealth || {};
   const workerInfo = describeWorkerHealth(wh);
-  const showWorkerBanner = workerInfo.status !== "running" || Boolean(wh.current_job_id);
+  const showWorkerBanner = Boolean(workerInfo.visible);
 
   const cards = profiles
     .map((p) => {
       const cardState = voiceProfileCardState(p, wh);
       const latestReadyJob = voiceProfileLatestReadyJob(p);
+      const starting = voiceProfileIsStarting(p);
       const generating = voiceProfileIsGenerating(p);
+      const actionBusy = starting || generating;
       return `
       <div class="profile-card">
         <div class="profile-card-head">
@@ -923,8 +935,8 @@ function renderVoiceProfiles() {
               type="button"
               class="button button-primary button-small has-icon"
               data-test-voice="${esc(p.id)}"
-              ${generating ? "disabled" : ""}
-            >${iconContent("play", generating ? "Generating..." : "Play test")}</button>
+              ${actionBusy ? "disabled" : ""}
+            >${iconContent("play", actionBusy ? (starting ? "Starting..." : "Generating...") : "Play test")}</button>
             <button type="button" class="button button-danger button-small icon-only" data-delete-voice-profile="${esc(p.id)}" aria-label="Delete" title="Delete">${iconContent("delete", "Delete", { iconOnly: true })}</button>
           </div>
         </div>
@@ -954,11 +966,8 @@ function renderVoiceProfiles() {
         <div class="voice-worker-banner-copy">
           <span class="worker-badge" data-status="${workerInfo.status}">${esc(workerInfo.label)}</span>
           <p class="helper">${esc(workerInfo.copy)}</p>
-          ${workerInfo.meta && workerInfo.status !== "running" ? `<p class="helper voice-worker-meta">${esc(workerInfo.meta)}</p>` : ""}
+          ${workerInfo.meta ? `<p class="helper voice-worker-meta">${esc(workerInfo.meta)}</p>` : ""}
         </div>
-        ${wh.running
-          ? `<button type="button" class="button button-danger button-small" data-worker-action="stop">Stop</button>`
-          : `<button type="button" class="button button-primary button-small" data-worker-action="start">Start</button>`}
       </div>
     ` : ""}
 
@@ -1630,7 +1639,11 @@ function renderEpisodeDetailOverlay() {
     else if (i === currentIdx && episode.pipeline_status === "failed") st = "failed";
     return '<div class="stage-strip-item" data-state="' + st + '" title="' + esc(s.label) + '">' + esc(s.short) + '</div>';
   }).join("");
-  const workerRunning = detail.worker_health?.running;
+  const workerIssueMarkup = detail.worker_health?.startup_error
+    ? '<div class="profile-inline-message" data-tone="error" style="margin-bottom:12px;">'
+      + esc(`Voice engine unavailable. TTS work will stay queued until it can start again. ${detail.worker_health.startup_error}`)
+      + "</div>"
+    : "";
   const langRows = langStatuses.map((ls) => {
     const canRetryTranslation = !["running", "queued"].includes(episode.pipeline_status || "idle") && (ls.translation_status === "failed" || ls.translation_status === "skipped");
     const canRetryTts = !["running", "queued"].includes(episode.pipeline_status || "idle") && (ls.tts_status === "failed" || ls.tts_status === "skipped");
@@ -1707,11 +1720,8 @@ function renderEpisodeDetailOverlay() {
             <div class="board-modal-section">
               <div class="section-header" style="margin-bottom:12px;">
                 <div class="eyebrow" style="margin:0;">Per-language status</div>
-                <div class="badge-row">
-                  <span class="badge" data-tone="${workerRunning ? "success" : "error"}">${esc(workerRunning ? "TTS Worker active" : "TTS Worker offline")}</span>
-                  ${!workerRunning ? '<button type="button" class="button button-ghost button-small" data-worker-action="start">Start Worker</button>' : ''}
-                </div>
               </div>
+              ${workerIssueMarkup}
               <table class="lang-table">
                 <thead><tr><th>Lang</th><th>Translation</th><th>TTS</th><th>SRT</th><th>Timeline</th><th>Error</th></tr></thead>
                 <tbody>${langRows || '<tr><td colspan="6" class="helper">No language data.</td></tr>'}</tbody>
@@ -1785,9 +1795,11 @@ function renderEpisodeDetail() {
 
   // Worker health
   const wh = detail.worker_health || {};
-  const workerRunning = wh.running;
-  const workerTone = workerRunning ? (wh.is_stale ? "warn" : "success") : "error";
-  const workerLabel = workerRunning ? (wh.is_stale ? "TTS Worker stale" : "TTS Worker active") : "TTS Worker offline";
+  const workerIssueMarkup = wh.startup_error
+    ? '<div class="profile-inline-message" data-tone="error" style="margin-bottom:12px;">'
+      + esc(`Voice engine unavailable. TTS work will stay queued until it can start again. ${wh.startup_error}`)
+      + "</div>"
+    : "";
 
   // Per-language table
   const isPipelineIdle = !["running", "queued"].includes(episode.pipeline_status || "idle");
@@ -1889,11 +1901,8 @@ function renderEpisodeDetail() {
       <div class="surface" style="padding:16px;">
         <div class="section-header" style="margin-bottom:12px;">
           <div class="eyebrow" style="margin:0;">Per-language status</div>
-          <div class="badge-row">
-            <span class="badge" data-tone="${workerTone}">${esc(workerLabel)}</span>
-            ${!workerRunning ? '<button type="button" class="button button-ghost button-small" data-worker-action="start">Start Worker</button>' : ''}
-          </div>
         </div>
+        ${workerIssueMarkup}
         ${langTable}
       </div>
 
@@ -2700,7 +2709,7 @@ document.addEventListener("click", async (event) => {
     closeEpisodeOverlay();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
+  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
   if (!target) return;
   event.preventDefault();
   try {
@@ -2746,18 +2755,6 @@ document.addEventListener("click", async (event) => {
     }
     if (target.dataset.prepareLanguage) {
       await prepareLanguage();
-      return;
-    }
-    if (target.dataset.workerAction) {
-      const action = target.dataset.workerAction;
-      await api(`/api/worker/${action}`, { method: "POST" });
-      await refreshData();
-      renderApp();
-      if (action === "start" && !state.workerHealth?.running) {
-        setNotice(state.workerHealth?.startup_error || "Worker did not start.", "error");
-        return;
-      }
-      setNotice(action === "start" ? "Worker started." : "Worker stopped.", "success");
       return;
     }
     if (target.dataset.deleteVoiceProfile) {

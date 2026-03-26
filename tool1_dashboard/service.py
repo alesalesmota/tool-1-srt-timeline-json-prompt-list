@@ -376,10 +376,10 @@ class Tool1Service:
                     model=model or None,
                 ))
 
-        if not worker_health.get("running"):
+        if worker_health.get("startup_error"):
             warnings.append(self._queue_issue(
-                "tts_worker_offline",
-                "TTS worker is offline. Queueing is allowed, but the pipeline will pause at TTS until the worker is available.",
+                "tts_worker_unavailable",
+                "Voice engine unavailable. Queueing is allowed, but TTS will pause until it can start again.",
             ))
 
         return {
@@ -948,20 +948,28 @@ class Tool1Service:
         })
 
         job_id: str | None = None
+        runtime_warning: str | None = None
         runtime = self.tts_manager.get_runtime_status()
         if runtime.available:
-            # Queue latent precompute only when XTTS runtime is actually available.
-            job_id = self.tts_manager.submit_tts_job(
-                job_type="latent_precompute",
-                profile_id=profile_id,
-                payload={"profile_id": profile_id, "audio_path": str(audio_path)},
-                queue_priority=LATENT_PRIORITY,
-            )
+            try:
+                self.tts_manager.ensure_worker_ready(intent="interactive")
+            except RuntimeError as exc:
+                runtime_warning = str(exc)
+            else:
+                # Queue latent precompute only when XTTS runtime is actually available.
+                job_id = self.tts_manager.submit_tts_job(
+                    job_type="latent_precompute",
+                    profile_id=profile_id,
+                    payload={"profile_id": profile_id, "audio_path": str(audio_path)},
+                    queue_priority=LATENT_PRIORITY,
+                )
+        else:
+            runtime_warning = runtime.error
 
         profile = self.db.get_voice_profile(profile_id) or {}
         profile["latent_job_id"] = job_id
-        if runtime.error:
-            profile["runtime_warning"] = runtime.error
+        if runtime_warning:
+            profile["runtime_warning"] = runtime_warning
         return profile
 
     def update_voice_profile(self, profile_id: str, **fields: Any) -> dict[str, Any]:
@@ -1050,7 +1058,7 @@ class Tool1Service:
             "language": xtts_lang,
         }
 
-        self.tts_manager.ensure_worker_ready()
+        self.tts_manager.ensure_worker_ready(intent="interactive")
         job_id = self.tts_manager.submit_tts_job(
             job_type="test_voice",
             profile_id=profile_id,
@@ -1081,10 +1089,6 @@ class Tool1Service:
         if not self.tts_manager.set_job_control(job_id, "stop"):
             raise FileNotFoundError("TTS job not found.")
         return {"job_id": job_id, "control_action": "stop"}
-
-    def get_worker_health(self) -> dict[str, Any]:
-        from dataclasses import asdict
-        return asdict(self.tts_manager.get_worker_health())
 
     # ── Niche project + Episode pipeline ────────────────────────────────
 
@@ -1583,7 +1587,7 @@ class Tool1Service:
         self.db.update_episode_language_status(episode_id, lang, tts_status="running")
         from .tts.manager import TTSManager
         tts_mgr = TTSManager(self.db)
-        tts_mgr.ensure_worker_ready()
+        tts_mgr.ensure_worker_ready(intent="pipeline")
         job_id = tts_mgr.submit_tts_job(
             job_type="generate",
             profile_id=profile_id,
@@ -1627,6 +1631,7 @@ class Tool1Service:
         return {
             "running": health.running,
             "status": health.status,
+            "lifecycle_state": health.lifecycle_state,
             "worker_id": health.worker_id,
             "current_job_id": health.current_job_id,
             "last_heartbeat": health.last_heartbeat,
@@ -2088,7 +2093,7 @@ class Tool1Service:
             # Submit TTS job
             from .tts.manager import TTSManager
             tts_mgr = TTSManager(self.db)
-            tts_mgr.ensure_worker_ready()
+            tts_mgr.ensure_worker_ready(intent="pipeline")
             job_id = tts_mgr.submit_tts_job(
                 job_type="generate",
                 profile_id=profile_id,

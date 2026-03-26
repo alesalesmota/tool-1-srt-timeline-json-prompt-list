@@ -82,6 +82,9 @@ GENERATE_PRIORITY = 20
 HEARTBEAT_INTERVAL = 5  # seconds between heartbeats
 HEARTBEAT_STALE_TIMEOUT = 120  # seconds before a worker is considered stale
 WORKER_POLL_INTERVAL = 0.5  # seconds between queue polls
+WORKER_IDLE_RECHECK_SECONDS = 2  # seconds between manager-side idle checks
+INTERACTIVE_IDLE_SHUTDOWN_SECONDS = 20  # stop shortly after profile/test usage ends
+PIPELINE_IDLE_SHUTDOWN_SECONDS = 60  # stay warm until the TTS pipeline fully drains
 CHUNK_RETRY_ATTEMPTS = 3
 STALE_PROCESSING_SECONDS = 90  # requeue jobs stuck longer than this
 

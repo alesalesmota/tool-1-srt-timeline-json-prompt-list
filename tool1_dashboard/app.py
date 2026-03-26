@@ -158,9 +158,6 @@ async def disable_ui_caching(request: Request, call_next) -> Response:
 @app.on_event("startup")
 async def startup() -> None:
     service.start_worker()
-    settings = service.get_settings_payload()
-    if settings.get("tts_auto_start_worker"):
-        service.tts_manager.start_worker()
 
 
 @app.on_event("shutdown")
@@ -648,11 +645,16 @@ async def worker_health() -> dict[str, Any]:
 
 @app.post("/api/worker/start")
 async def start_tts_worker() -> dict[str, Any]:
-    started = service.tts_manager.start_worker()
-    return {"started": started, "health": service.get_worker_health()}
+    # Deprecated compatibility route. The first-party UI now auto-starts on demand.
+    try:
+        service.tts_manager.ensure_worker_ready(intent="interactive")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"started": True, "health": service.get_worker_health()}
 
 
 @app.post("/api/worker/stop")
 async def stop_tts_worker() -> dict[str, Any]:
+    # Deprecated compatibility route. The first-party UI no longer exposes manual worker control.
     service.tts_manager.stop_worker()
     return {"stopped": True}

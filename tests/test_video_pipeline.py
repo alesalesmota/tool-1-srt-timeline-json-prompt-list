@@ -482,6 +482,90 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                 finally:
                     self.app_module.service = original
 
+    def test_queue_readiness_ignores_sleeping_voice_engine(self) -> None:
+        from tool1_dashboard.tts.manager import WorkerHealth
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    voice_profiles, translation_profiles = _build_profile_assignments(service, temp_path, ["en", "pt-BR"])
+                    _, episode = self._create_niche_and_episode(client, project_payload={
+                        "language_voice_profiles": voice_profiles,
+                        "language_translation_profiles": translation_profiles,
+                    })
+
+                    with patch.object(
+                        service.tts_manager,
+                        "get_worker_health",
+                        return_value=WorkerHealth(
+                            running=False,
+                            worker_id=None,
+                            status="sleeping",
+                            current_job_id=None,
+                            last_heartbeat=None,
+                            is_stale=False,
+                            pid=None,
+                            startup_error=None,
+                            missing_dependencies=[],
+                            lifecycle_state="sleeping",
+                        ),
+                    ):
+                        detail = client.get(f"/api/episodes/{episode['id']}")
+                        self.assertEqual(detail.status_code, 200)
+                        warnings = detail.json()["episode"]["queue_readiness"]["warnings"]
+                        self.assertFalse(any(item["code"] == "tts_worker_unavailable" for item in warnings))
+
+                        resp = client.post(f"/api/episodes/{episode['id']}/queue", json={})
+                        self.assertEqual(resp.status_code, 200)
+                        self.assertTrue(resp.json()["queued"])
+                finally:
+                    self.app_module.service = original
+
+    def test_queue_readiness_warns_when_voice_engine_cannot_start(self) -> None:
+        from tool1_dashboard.tts.manager import WorkerHealth
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    voice_profiles, translation_profiles = _build_profile_assignments(service, temp_path, ["en", "pt-BR"])
+                    _, episode = self._create_niche_and_episode(client, project_payload={
+                        "language_voice_profiles": voice_profiles,
+                        "language_translation_profiles": translation_profiles,
+                    })
+
+                    with patch.object(
+                        service.tts_manager,
+                        "get_worker_health",
+                        return_value=WorkerHealth(
+                            running=False,
+                            worker_id=None,
+                            status="unavailable",
+                            current_job_id=None,
+                            last_heartbeat=None,
+                            is_stale=False,
+                            pid=None,
+                            startup_error="TTS worker failed to start.",
+                            missing_dependencies=[],
+                            lifecycle_state="unavailable",
+                        ),
+                    ):
+                        detail = client.get(f"/api/episodes/{episode['id']}")
+                        self.assertEqual(detail.status_code, 200)
+                        warnings = detail.json()["episode"]["queue_readiness"]["warnings"]
+                        self.assertTrue(any(item["code"] == "tts_worker_unavailable" for item in warnings))
+
+                        resp = client.post(f"/api/episodes/{episode['id']}/queue", json={})
+                        self.assertEqual(resp.status_code, 200)
+                        self.assertTrue(resp.json()["queued"])
+                finally:
+                    self.app_module.service = original
+
     def test_queue_episode_rejects_when_master_voice_profile_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
