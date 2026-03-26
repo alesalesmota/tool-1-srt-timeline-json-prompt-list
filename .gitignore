@@ -10,3 +10,9 @@ venv/
 tool1_dashboard/alignment_tool/logs/
 tool1_dashboard/alignment_tool/output/
 tool1_dashboard/alignment_tool/temp/
+
+# Moat task system
+.moat/
+
+# Claude Code configuration
+.claude/

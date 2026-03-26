@@ -34,8 +34,9 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - Views: Niche Projects, project board/detail, episode overlay/direct episode route, Voice Profiles, Translation Profiles, Settings, Templates
   - Legacy Jobs and Projects/Builds models have been fully removed; the old global Pipeline Board is no longer a primary workflow surface.
   - Drawbridge feedback repair on 2026-03-26: the project-board CTA now says `Create episode`, the Draft column add action is a compact `+` with hover copy, column helper text moved into title hover tooltips, and the create-project modal now uses a searchable target-language picker instead of a checkbox wall
-- **Translation module** (`tool1_dashboard/translation/`) — adapter, chunker, prompts, service
 - **TTS module** (`tool1_dashboard/tts/`) — audio, chunker, constants, manager, worker (XTTS-v2)
+  - **Runtime Fixed (2026-03-26)**: Resolved compatibility issues with `torch 2.6.0` and `transformers 5.x`. Environment now pinned to `torch 2.3.1` and `transformers 4.39.3`. Missing dependencies (`bangla`, `gruut`, `spacy[ja]`, `umap-learn`) manually restored.
+- **Translation module** (`tool1_dashboard/translation/`) — adapter, chunker, prompts, service
 - **Alignment tool** (`tool1_dashboard/alignment_tool/`)
 - **SRT chunker** (`tool1_dashboard/srt_chunker/`)
 - **Episode pipeline** — all 10 stages implemented in `_process_episode()` (service.py)
@@ -140,6 +141,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-26 | **TTS Runtime Fixed**: Resolved multiple environment issues preventing `TTS.api` imports and worker startup. Pinned `torch` to `2.3.1`, `transformers` to `4.39.3`, and manually installed missing binary dependencies (`bangla`, `gruut`, `spacy[ja]`, `umap-learn`). Verified worker status as `idle` and healthy on port 8020. |
 | 2026-03-26 | **Drawbridge voice-profile UX pass complete**: enriched voice-profile payloads with the latest latent-precompute and voice-test job metadata, moved voice testing into an inline card form, added per-card clone/test status messaging plus preview playback/download, and replaced the raw worker `stale` label with clearer restart guidance. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`99` passing), and browser smoke on `http://127.0.0.1:8765/#/voice-profiles` confirming the inline test form, the new worker/card copy, and only the existing `favicon.ico` 404 in the console. |
 | 2026-03-26 | **Drawbridge hover affordance polish complete**: collapsed the Draft-column add CTA into an icon-only `+` button with a hover tooltip, and moved column guidance copy into hover tooltips on the column titles so the kanban headers stay compact. Verified with `node --check tool1_dashboard/ui/app.js` plus browser smoke on `http://127.0.0.1:8765/#/niche-projects/niche-20260325-215207-audit-project`, including screenshots for the Draft `+` tooltip and the Draft-column title tooltip. |
 | 2026-03-26 | **Drawbridge UI feedback pass complete**: renamed the project-board episode CTA and the create-episode modal copy from `Create draft` to `Create episode` while keeping the Draft-only helper text, and replaced the create-project target-language checkbox wall with a searchable picker that adds selected languages into removable pills below the input. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`98` passing), and browser smoke on `http://127.0.0.1:8031` covering the project-board CTA plus the new create-project language picker flow. |

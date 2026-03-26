@@ -7,3 +7,13 @@ faster-whisper==1.2.1
 whisperx==3.8.2
 numpy>=1.23.5
 setuptools<81
+# TTS Runtime Dependencies (Fixed for compatibility)
+torch==2.3.1
+torchaudio==2.3.1
+transformers==4.39.3
+TTS==0.22.0
+cython>=0.29.30
+gruut[de,es,fr]==2.2.3
+spacy[ja]>=3.0.0
+umap-learn>=0.5.1
+bangla==0.0.5
