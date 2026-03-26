@@ -896,6 +896,13 @@ function syncVoiceProfileAudioAutoplay() {
   }
 }
 
+function voiceProfileAudioIsPlaying() {
+  if (state.route.view !== "voice-profiles") return false;
+  return Array.from(document.querySelectorAll(".profile-audio-player")).some(
+    (audio) => audio && !audio.paused && !audio.ended && audio.currentTime > 0
+  );
+}
+
 function renderVoiceProfiles() {
   const profiles = state.voiceProfiles || [];
   const wh = state.workerHealth || {};
@@ -2457,7 +2464,7 @@ function resetAutoRefresh() {
   if (refreshTimer) window.clearInterval(refreshTimer);
   if (!autoRefreshAllowed(state.route)) return;
   refreshTimer = window.setInterval(() => {
-    if (state.modal.kind || state.isLoadingRoute || state.isRefreshingData) return;
+    if (state.modal.kind || state.isLoadingRoute || state.isRefreshingData || voiceProfileAudioIsPlaying()) return;
     refreshData().then(renderApp).catch(() => {});
   }, REFRESH_INTERVAL_MS);
 }

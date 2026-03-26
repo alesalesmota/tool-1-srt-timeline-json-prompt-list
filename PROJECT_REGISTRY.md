@@ -49,6 +49,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - Voice-test submission now fails fast with an actionable runtime error instead of leaving jobs permanently queued
   - Worker health now surfaces missing XTTS dependencies directly in the UI
   - Voice profiles are now language-agnostic, create with only name + reference audio, and expose a one-click `Play test` action that generates a fresh inline sample without manual text entry
+  - Voice-profile auto-refresh now pauses while a preview clip is actively playing, so inline playback is not interrupted by the 5-second dashboard refresh loop
 - **Stage-run logging for provider stages**
   - consistency guide, scene planning, and prompt generation now preserve structured stage runs and full failure details
 - **Template/settings reads**
@@ -144,6 +145,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-26 | **Voice sample playback stabilized**: paused the Voice Profiles auto-refresh loop whenever an inline preview clip is actively playing, preventing the 5-second dashboard rerender from replacing the audio element mid-playback. Verified with `node --check tool1_dashboard/ui/app.js` and `python -m unittest discover -s tests -v` (`101` passing). |
 | 2026-03-26 | **Voice profile flow simplified**: removed language from the create-profile UI, stopped filtering/validating voice profiles by language in project assignment, moved default sample text generation to the backend, and rebuilt the voice-profile card around a one-click `Play test` action with inline fresh-sample playback. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`101` passing), and browser smoke confirming create modal simplification, fresh-test generation state, and project language dropdowns showing the same voice profile for every language. |
 | 2026-03-26 | **TTS Runtime Fixed**: Resolved multiple environment issues preventing `TTS.api` imports and worker startup. Pinned `torch` to `2.3.1`, `transformers` to `4.39.3`, and manually installed missing binary dependencies (`bangla`, `gruut`, `spacy[ja]`, `umap-learn`). Verified worker status as `idle` and healthy on port 8020. |
 | 2026-03-26 | **Drawbridge voice-profile UX pass complete**: enriched voice-profile payloads with the latest latent-precompute and voice-test job metadata, moved voice testing into an inline card form, added per-card clone/test status messaging plus preview playback/download, and replaced the raw worker `stale` label with clearer restart guidance. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`99` passing), and browser smoke on `http://127.0.0.1:8765/#/voice-profiles` confirming the inline test form, the new worker/card copy, and only the existing `favicon.ico` 404 in the console. |
