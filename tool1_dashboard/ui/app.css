@@ -78,6 +78,11 @@ a {
 .shell {
   min-height: 100vh;
   display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  transition: grid-template-columns 200ms ease;
+}
+
+body.sidebar-expanded .shell {
   grid-template-columns: 300px minmax(0, 1fr);
 }
 
@@ -85,22 +90,69 @@ a {
   position: sticky;
   top: 0;
   height: 100vh;
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   gap: 18px;
-  padding: 28px 22px;
+  padding: 28px 12px;
   background: linear-gradient(180deg, rgba(11, 12, 15, 0.88), rgba(11, 12, 15, 0.66));
   border-right: 1px solid var(--line);
   backdrop-filter: blur(16px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
 }
 
 body[data-theme="light"] .sidebar {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(250, 252, 255, 0.88));
 }
 
+body.sidebar-expanded .sidebar {
+  padding: 28px 22px;
+}
+
 .sidebar-brand {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+body.sidebar-expanded .sidebar-brand {
+  align-items: flex-start;
+}
+
+.sidebar-brand-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.sidebar-toggle {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+}
+
+.sidebar-toggle:hover {
+  background: var(--line);
+  color: var(--ink);
+}
+
+.brand-title,
+.brand-copy,
+.sidebar .eyebrow,
+.nav-label span:not(.button-icon),
+.nav-count,
+.system-health-section {
+  display: none;
 }
 
 .eyebrow {
@@ -110,7 +162,8 @@ body[data-theme="light"] .sidebar {
   color: var(--muted);
 }
 
-.brand-title {
+body.sidebar-expanded .brand-title {
+  display: block;
   font-size: 26px;
   font-weight: 700;
   letter-spacing: -0.04em;
@@ -122,9 +175,14 @@ body[data-theme="light"] .sidebar {
   color: var(--muted);
 }
 
-.brand-copy,
-.helper {
+body.sidebar-expanded .brand-copy,
+body.sidebar-expanded .helper {
+  display: block;
   line-height: 1.55;
+}
+
+body.sidebar-expanded .sidebar .eyebrow {
+  display: block;
 }
 
 .tiny {
@@ -147,6 +205,10 @@ body[data-theme="light"] .sidebar {
 }
 
 .sidebar-section {
+  padding: 8px 0;
+}
+
+body.sidebar-expanded .sidebar-section {
   padding: 16px;
 }
 
@@ -172,10 +234,26 @@ body[data-theme="light"] .sidebar {
 .nav-link {
   width: 100%;
   display: flex;
-  justify-content: space-between;
+  justify-content: center;
   align-items: center;
-  padding: 12px 14px;
+  padding: 12px;
   border-radius: 16px;
+  position: relative;
+}
+
+.nav-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+body.sidebar-expanded .nav-label span:not(.button-icon) {
+  display: inline;
+}
+
+body.sidebar-expanded .nav-link {
+  justify-content: space-between;
+  padding: 12px 14px;
 }
 
 .nav-link:hover,
@@ -185,7 +263,8 @@ body[data-theme="light"] .sidebar {
   color: var(--ink);
 }
 
-.nav-count {
+body.sidebar-expanded .nav-count {
+  display: block;
   padding: 4px 8px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.06);
@@ -338,6 +417,12 @@ body[data-theme="light"] .topbar {
 .link-button:hover {
   border-color: var(--line-strong);
   transform: translateY(-1px);
+}
+
+.button:active,
+.link-button:active {
+  transform: translateY(0) scale(0.97);
+  transition-duration: 0.05s;
 }
 
 .button.has-icon,
@@ -543,8 +628,8 @@ body[data-theme="light"] .topbar {
 .kanban-board {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(296px, 320px);
-  gap: 16px;
+  grid-auto-columns: minmax(320px, 350px);
+  gap: 12px;
   align-items: start;
   max-width: 100%;
   overflow-x: auto;
@@ -571,9 +656,9 @@ body[data-theme="light"] .topbar {
   min-width: 0;
   display: grid;
   grid-template-rows: auto 1fr;
-  gap: 12px;
+  gap: 10px;
   align-content: start;
-  padding: 14px;
+  padding: 10px;
   border-radius: 20px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background:
@@ -619,16 +704,22 @@ body[data-theme="light"] .kanban-column {
 }
 
 .kanban-card {
-  padding: 14px;
+  padding: 12px;
   min-width: 0;
   max-width: 100%;
   display: grid;
-  gap: 12px;
+  gap: 10px;
   border-radius: 16px;
   border: 1px solid var(--line);
   background: var(--panel-strong);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.16);
   overflow: hidden;
+  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.kanban-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.24);
 }
 
 body[data-theme="light"] .kanban-card {
@@ -640,7 +731,7 @@ body[data-theme="light"] .kanban-card {
 }
 
 .kanban-card h3 {
-  font-size: 16px;
+  font-size: 15px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -851,25 +942,32 @@ body[data-theme="light"] .board-modal-side {
 
 .workflow-setup-grid {
   display: grid;
-  gap: 14px;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }
 
 .workflow-setup-grid-compact {
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
 .setup-card {
   display: grid;
-  gap: 14px;
+  gap: 10px;
   align-content: start;
-  padding: 16px;
-  border-radius: 20px;
+  padding: 12px;
+  border-radius: 16px;
   border: 1px solid var(--line);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.012)),
     var(--panel-soft);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.setup-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+  border-color: var(--line-strong);
 }
 
 .setup-card[data-tone="active"] {
@@ -1677,7 +1775,6 @@ details.editor-card summary::-webkit-details-marker {
   .profiles-grid { grid-template-columns: 1fr; }
   .loc-list { grid-template-columns: 1fr; }
   .modal-panel { width: 95vw; padding: 16px; }
-  .pipeline-board { grid-template-columns: repeat(13, minmax(140px, 1fr)); }
 }
 
 /* ── Phase 6: Episode Board Enhancements ─────────────────────── */
@@ -1837,28 +1934,28 @@ details.editor-card summary::-webkit-details-marker {
 
 .stats-bar {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .stat-card {
   background: var(--panel-soft);
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm, 14px);
-  padding: 10px 16px;
-  min-width: 90px;
+  border-radius: var(--radius-sm, 12px);
+  padding: 8px 14px;
+  min-width: 80px;
   text-align: center;
 }
 
 .stat-card-value {
-  font-size: 1.4rem;
+  font-size: 1.25rem;
   font-weight: 700;
   line-height: 1.2;
 }
 
 .stat-card-label {
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   color: var(--muted);
   margin-top: 2px;
 }

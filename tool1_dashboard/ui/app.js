@@ -320,8 +320,12 @@ function renderSidebar() {
 
   $("sidebar").innerHTML = `
     <section class="sidebar-brand">
-      <div class="eyebrow">CLI-first workspace</div>
-      <div class="brand-title">Tool 1</div>
+      <div class="sidebar-brand-row">
+        <button type="button" class="sidebar-toggle" data-sidebar-toggle="true" aria-label="Toggle sidebar" title="Toggle sidebar">
+          ${iconSvg("board")}
+        </button>
+        <div class="brand-title">Tool 1</div>
+      </div>
       <div class="brand-copy">Board-first workflow. Create the card in the Draft column, then use the board to scan the pipeline left to right.</div>
     </section>
 
@@ -331,7 +335,7 @@ function renderSidebar() {
         ${navItems
           .map(
             (item) => `
-            <button type="button" class="nav-link" data-nav="${item.view}" aria-current="${navIsActive(item.view) ? "page" : "false"}">
+            <button type="button" class="nav-link" data-nav="${item.view}" aria-current="${navIsActive(item.view) ? "page" : "false"}" title="${esc(item.label)}">
               <span class="nav-label">${iconMarkup(item.icon)}<span>${esc(item.label)}</span></span>
               ${item.count !== "" ? `<span class="nav-count">${esc(item.count)}</span>` : ""}
             </button>`
@@ -340,7 +344,7 @@ function renderSidebar() {
       </div>
     </section>
 
-    <section class="sidebar-section">
+    <section class="sidebar-section system-health-section">
       <div class="eyebrow">System health</div>
       <div class="badge-row" style="margin-top:10px;">
         ${healthBadge(`Codex ${providers.codex?.available ? (providers.codex?.logged_in ? "ready" : "login") : "missing"}`, providers.codex?.available ? (providers.codex?.logged_in ? true : "warn") : false)}
@@ -356,9 +360,7 @@ function renderTopbar() {
   const current = routeTitle(state.route);
   $("topbar").innerHTML = `
     <div class="topbar-head">
-      <div class="eyebrow">${esc(state.route.view === "job" ? `Job workspace / ${state.route.tab || "overview"}` : state.route.view)}</div>
       <h1 class="topbar-title">${esc(current.title)}</h1>
-      <div class="helper section-copy">${esc(current.copy)}</div>
       ${state.notice.text ? `<div class="notice" data-tone="${esc(state.notice.tone)}">${esc(state.notice.text)}</div>` : ""}
     </div>
     <div class="topbar-actions">
@@ -733,8 +735,8 @@ function renderEpisodeCard(ep) {
   const isPerLang = EPISODE_PER_LANG_STAGES.includes(currentStage);
   const progress = isPerLang ? langProgressHtml(ep.language_statuses, currentStage) : "";
   const tone = pipelineTone(ep.pipeline_status);
-  const error = ep.last_error ? `<div class="episode-card-error">${esc(summarizeCardIssue(ep.last_error, 80))}</div>` : "";
-  const nicheLabel = ep.niche_project_title ? `<span class="episode-card-niche">${esc(ep.niche_project_title)}</span>` : "";
+  const error = ep.last_error ? `<div class="episode-card-error" title="${esc(ep.last_error)}">${esc(summarizeCardIssue(ep.last_error, 80))}</div>` : "";
+  const nicheLabel = (ep.niche_project_title && state.route.view !== "pipeline-board") ? `<span class="episode-card-niche">${esc(ep.niche_project_title)}</span>` : "";
   const langCount = (ep.configured_languages || []).length;
   const isRunning = ep.pipeline_status === "running";
   const canQueue = ["idle", "failed", "review", "done"].includes(ep.pipeline_status || "idle");
@@ -759,7 +761,7 @@ function renderEpisodeCard(ep) {
       <div class="episode-card-footer">
         <span class="helper" style="font-size:0.7rem;opacity:0.5;">${esc(relativeTime(ep.updated_at))}</span>
         <div class="episode-quick-actions" onclick="event.stopPropagation()">
-          ${canQueue ? `<button type="button" class="button button-primary button-tiny" data-queue-episode="${esc(ep.id)}" title="Queue">${iconContent("play", "Queue")}</button>` : ""}
+          ${canQueue ? `<button type="button" class="button button-primary button-tiny" data-queue-episode="${esc(ep.id)}" title="Queue">${iconContent("play", "Queue", { iconOnly: true })}</button>` : ""}
           <button type="button" class="button button-danger button-tiny" data-delete-episode="${esc(ep.id)}" title="Delete">${iconContent("delete", "Delete", { iconOnly: true })}</button>
         </div>
       </div>
@@ -771,31 +773,22 @@ function renderPipelineBoard() {
 
   $("view").innerHTML = `
     <section class="surface board-surface">
-      <div class="section-head">
-        <div>
-          <div class="eyebrow">Pipeline</div>
-          <h2 class="section-title">Episode pipeline board</h2>
+      <div class="section-head" style="margin-bottom: 12px; justify-content: flex-end;">
+        <div class="badge-row">
+          ${statusBadge('Total episodes: ' + episodes.length, "active")}
         </div>
         <div class="button-row">
           <button type="button" class="button button-primary has-icon" data-nav="niche-projects">${iconContent("settings", "Niche Projects")}</button>
         </div>
       </div>
-      <div class="helper section-copy">Each card is one episode (script submission). Per-language progress is shown inside the card. Columns represent pipeline stages from left to right.</div>
-      <div class="badge-row" style="margin-top:12px;">
-        ${statusBadge('Total episodes: ' + episodes.length, "active")}
-      </div>
-      <div id="pipeline-board" class="kanban-board pipeline-board" style="margin-top:18px;">
+      <div id="pipeline-board" class="kanban-board pipeline-board" style="margin-top:0px;">
         ${EPISODE_PIPELINE_COLUMNS.map((col) => {
           const colEpisodes = episodes.filter((ep) => episodeColumnForCard(ep) === col.id);
           const cards = colEpisodes.map(renderEpisodeCard).join("");
           const empty = !cards ? '<div class="kanban-empty">No episodes at this step.</div>' : "";
           return '<section class="kanban-column">' +
             '<div class="kanban-column-head">' +
-              '<div>' +
-                '<div class="kanban-column-title">' + esc(col.label) + '</div>' +
-                '<div class="tiny workflow-column-copy">' + esc(col.copy) + '</div>' +
-                '<div class="tiny">' + colEpisodes.length + ' card(s)</div>' +
-              '</div>' +
+              '<div class="kanban-column-title">' + esc(col.label) + '</div>' +
               statusBadge(String(colEpisodes.length), episodeColumnTone(col.id, episodes)) +
             '</div>' +
             '<div class="kanban-card-list">' + cards + empty + '</div>' +
@@ -1224,55 +1217,57 @@ function renderEpisodeDetail() {
   const reviewSection = '<div id="episode-review-section" class="detail-section"></div>';
 
   $("view").innerHTML = `
-    <div class="detail-section">
-      <div class="eyebrow">Episode</div>
-      <h2 style="margin:4px 0 0;">${esc(episode.title || episode.id)}</h2>
-      <div class="badge-row" style="margin-top:8px;">
-        <span class="badge badge-${pipelineTone(episode.pipeline_status)}">${esc(titleCase(episode.pipeline_status || "idle"))}</span>
-        <span class="badge">${esc(EPISODE_STAGE_LABELS[currentStage] || titleCase(currentStage))}</span>
-        <span class="badge">Master: ${esc(episode.master_language || "en")}</span>
-        ${langStatuses.length ? '<span class="badge badge-small">' + langStatuses.length + ' lang' + (langStatuses.length > 1 ? 's' : '') + '</span>' : ''}
-        ${isRunning ? '<span class="running-elapsed" data-started-at="' + esc(episode.updated_at) + '">…</span>' : ''}
-      </div>
-      ${episode.last_error ? '<div class="notice" data-tone="error" style="margin-top:8px;">' + esc(episode.last_error) + '</div>' : ""}
-    </div>
-
-    <div class="detail-section">
-      <div class="eyebrow">Pipeline progress — ${progressPct}%</div>
-      <div class="pipeline-progress-bar" style="margin-top:8px;">
-        <div class="pipeline-progress-fill" style="width:${progressPct}%"></div>
-      </div>
-      <div class="stage-strip" style="margin-top:10px;">${stageStrip}</div>
-      <div class="button-row" style="margin-top:12px;">
-        <button type="button" class="button button-primary has-icon" data-queue-episode="${esc(episode.id)}" ${queueDisabled}>${iconContent("play", "Queue / Rerun")}</button>
-        <button type="button" class="button button-danger has-icon" data-delete-episode="${esc(episode.id)}">${iconContent("delete", "Delete episode")}</button>
-      </div>
-    </div>
-
-    <div class="detail-section">
-      <div class="section-header">
-        <div class="eyebrow">Per-language status</div>
-        <div class="badge-row">
-          <span class="badge" data-tone="${workerTone}">${esc(workerLabel)}</span>
-          ${!workerRunning ? '<button type="button" class="button button-ghost button-small" data-worker-action="start">Start Worker</button>' : ''}
+    <div class="episode-detail-layout" style="display:grid; gap:24px; padding:8px 0;">
+      <div>
+        <h2 style="margin:0; font-size:1.6rem;">${esc(episode.title || episode.id)}</h2>
+        <div class="badge-row" style="margin-top:10px;">
+          <span class="badge badge-${pipelineTone(episode.pipeline_status)}">${esc(titleCase(episode.pipeline_status || "idle"))}</span>
+          <span class="badge">${esc(EPISODE_STAGE_LABELS[currentStage] || titleCase(currentStage))}</span>
+          <span class="badge">Master: ${esc(episode.master_language || "en")}</span>
+          ${langStatuses.length ? '<span class="badge badge-small">' + langStatuses.length + ' lang' + (langStatuses.length > 1 ? 's' : '') + '</span>' : ''}
+          ${isRunning ? '<span class="running-elapsed" data-started-at="' + esc(episode.updated_at) + '">…</span>' : ''}
         </div>
+        ${episode.last_error ? '<div class="notice" data-tone="error" style="margin-top:12px;">' + esc(episode.last_error) + '</div>' : ""}
       </div>
-      ${langTable}
+
+      <div class="surface" style="padding:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div class="eyebrow">Pipeline progress — ${progressPct}%</div>
+          <div class="button-row">
+            <button type="button" class="button button-primary button-small has-icon" data-queue-episode="${esc(episode.id)}" ${queueDisabled}>${iconContent("play", "Queue / Rerun")}</button>
+            <button type="button" class="button button-danger button-small icon-only" title="Delete episode" data-delete-episode="${esc(episode.id)}">${iconContent("delete", "Delete episode", { iconOnly: true })}</button>
+          </div>
+        </div>
+        <div class="pipeline-progress-bar" style="margin-top:12px;">
+          <div class="pipeline-progress-fill" style="width:${progressPct}%"></div>
+        </div>
+        <div class="stage-strip" style="margin-top:12px;">${stageStrip}</div>
+      </div>
+
+      <div class="surface" style="padding:16px;">
+        <div class="section-header" style="margin-bottom:12px;">
+          <div class="eyebrow" style="margin:0;">Per-language status</div>
+          <div class="badge-row">
+            <span class="badge" data-tone="${workerTone}">${esc(workerLabel)}</span>
+            ${!workerRunning ? '<button type="button" class="button button-ghost button-small" data-worker-action="start">Start Worker</button>' : ''}
+          </div>
+        </div>
+        ${langTable}
+      </div>
+
+      ${reviewSection}
+
+      ${filesSection.replace('class="detail-section"', 'class="surface" style="padding:16px;"')}
+
+      <div class="surface" style="padding:16px;">
+        <div class="eyebrow" style="margin-bottom:12px;">Stage runs (${stageRuns.length})</div>
+        ${runsHtml}
+      </div>
+
+      <div>
+        <button type="button" class="button button-ghost has-icon" data-nav="pipeline-board">${iconContent("back", "Back to board")}</button>
+      </div>
     </div>
-
-    ${reviewSection}
-
-    ${filesSection}
-
-    <div class="detail-section">
-      <div class="eyebrow">Stage runs (${stageRuns.length})</div>
-      ${runsHtml}
-    </div>
-
-    <div class="detail-section">
-      <button type="button" class="button button-ghost has-icon" data-nav="pipeline-board">${iconContent("back", "Back to board")}</button>
-    </div>
-
     ${state.modal.kind === "translation-preview" ? renderTranslationPreviewModal() : ""}
   `;
 
@@ -1911,7 +1906,7 @@ document.addEventListener("click", async (event) => {
     resetAutoRefresh();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
+  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
   if (!target) return;
   event.preventDefault();
   try {
@@ -1919,6 +1914,17 @@ document.addEventListener("click", async (event) => {
       state.modal = { kind: null };
       renderApp();
       resetAutoRefresh();
+      return;
+    }
+    if (target.dataset.sidebarToggle) {
+      const isExpanded = document.body.classList.contains("sidebar-expanded");
+      if (isExpanded) {
+        document.body.classList.remove("sidebar-expanded");
+        window.localStorage.setItem("tool1-sidebar", "collapsed");
+      } else {
+        document.body.classList.add("sidebar-expanded");
+        window.localStorage.setItem("tool1-sidebar", "expanded");
+      }
       return;
     }
     if (target.dataset.nav) {
@@ -2249,8 +2255,18 @@ window.addEventListener("hashchange", () => {
   syncRouteAndRender().catch((error) => setNotice(error.message, "error"));
 });
 
+function bootSidebar() {
+  const stored = window.localStorage.getItem("tool1-sidebar");
+  if (stored === "expanded") {
+    document.body.classList.add("sidebar-expanded");
+  } else {
+    document.body.classList.remove("sidebar-expanded");
+  }
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   bootTheme();
+  bootSidebar();
   if (!window.location.hash) {
     window.location.hash = routeToHash({ view: "pipeline-board" });
     return;

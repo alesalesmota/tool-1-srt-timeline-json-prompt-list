@@ -92,6 +92,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-26 | **Frontend UI Overhaul Complete**: Executed an 8-phase densification and cleanup of the dashboard. Replaced heavy \`.detail-section\` wrappers with clean \`.surface\` grids. Added collapsible icon sidebar. Widen Kanban columns. Stripped redundant "eyebrows" and helper text. Added tactile micro-animations to cards and buttons. Merged Settings and Niche Project configuration cards into tighter grids. |
 | 2026-03-25 | Phase 10 complete: Final Cleanup & Documentation — verified agent configs and dependencies, removed all remaining references to legacy architecture, all tests pass. Tool 1 is fully transitioned to the episode-first pipeline. |
 | 2026-03-25 | Phase 9 complete: Review & Export Phase — timeline editor, consistency guide editor, prompt list editor, per-language timeline read-only view, and fully wired UI handlers for saving review data and finalizing/downloading export zip. |
 | 2026-03-25 | Phase 8 complete: TTS & translation polish — per-language retry (translation/TTS), translation preview (side-by-side), TTS worker health indicator, TTS job progress in episode detail, retry buttons on failed languages. 87 tests passing. |

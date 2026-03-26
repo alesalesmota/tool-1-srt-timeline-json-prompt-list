@@ -98,3 +98,13 @@
 - [x] Clean up `requirements.txt`
 - [x] Full test suite pass
 - [x] E2E test: submit → all stages → export
+
+## Frontend UI Overhaul (2026-03-26)
+- [x] Phase 1: Collapsible Icon Sidebar (implemented toggle rail, localstorage persistence)
+- [x] Phase 2: Streamline Pipeline Board (removed redundant helper text, badging moved to header)
+- [x] Phase 3: Widen Kanban Columns (set explicitly to min 320px for better data density, fixed media query squash bug)
+- [x] Phase 4: Clean Episode Cards (compact cards, icon-only buttons, hidden niche label on the main board)
+- [x] Phase 5: Reduce Topbar Text Noise (removed sub-headers and eyebrows for cleaner pages)
+- [x] Phase 6: Improve Episode Detail Layout (removed heavy boxes, unified grid layout, cleaner language table)
+- [x] Phase 7: Polish Niche Project & Settings (densified stats bar and setup form cards into a cleaner view)
+- [x] Phase 8: Micro-animations & Polish (added hover lift on cards and tactile click down-states on buttons)
