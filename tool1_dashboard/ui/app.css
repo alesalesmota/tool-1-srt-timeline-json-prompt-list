@@ -1843,15 +1843,84 @@ details.editor-card summary::-webkit-details-marker {
   white-space: nowrap;
 }
 
-/* ── Language checkbox grid (niche project modal) ────────────── */
+/* ── Create niche language picker ─────────────────────────────── */
 
-.lang-checkbox-grid {
+.niche-language-picker {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 6px 16px;
+  gap: 10px;
   margin-top: 8px;
-  max-height: 280px;
-  overflow-y: auto;
+}
+
+.niche-language-picker-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.niche-language-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.niche-language-pill-list {
+  min-height: 56px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.niche-language-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(144, 179, 255, 0.22);
+  background: rgba(144, 179, 255, 0.12);
+}
+
+.niche-language-pill-label {
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.niche-language-pill-remove {
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.niche-language-pill-remove:hover {
+  background: rgba(255, 255, 255, 0.16);
+  transform: scale(1.04);
+}
+
+.niche-language-pill-remove .button-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.niche-language-empty {
+  margin: 0;
 }
 
 /* ── Language status table (video detail) ────────────────────── */
@@ -1881,6 +1950,7 @@ details.editor-card summary::-webkit-details-marker {
   .profiles-grid { grid-template-columns: 1fr; }
   .loc-list { grid-template-columns: 1fr; }
   .modal-panel { width: 95vw; padding: 16px; }
+  .niche-language-search-row { grid-template-columns: 1fr; }
 }
 
 /* ── Phase 6: Episode Board Enhancements ─────────────────────── */

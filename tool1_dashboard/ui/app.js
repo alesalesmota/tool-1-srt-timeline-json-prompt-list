@@ -476,6 +476,109 @@ function languageOptions(selected) {
     .join("");
 }
 
+function languageCatalog() {
+  return state.targetLanguages?.length ? state.targetLanguages : state.health?.languages || [];
+}
+
+function languageLabel(code) {
+  return languageCatalog().find((language) => language.code === code)?.label || code;
+}
+
+function renderSelectedNicheLanguages(selectedCodes = []) {
+  const container = $("niche-target-language-list");
+  if (!container) return;
+  container.innerHTML = selectedCodes.length
+    ? selectedCodes.map((code) => {
+        const label = languageLabel(code);
+        return `
+          <div class="niche-language-pill">
+            <span class="niche-language-pill-label">${esc(label)}</span>
+            <button
+              type="button"
+              class="niche-language-pill-remove"
+              data-remove-niche-language="${esc(code)}"
+              aria-label="${esc(`Remove ${label}`)}"
+              title="${esc(`Remove ${label}`)}"
+            >
+              ${iconContent("close", `Remove ${label}`, { iconOnly: true })}
+            </button>
+            <input type="hidden" name="niche-target-language" value="${esc(code)}" />
+          </div>
+        `;
+      }).join("")
+    : '<div class="helper niche-language-empty">No target languages added yet.</div>';
+}
+
+function readSelectedNicheLanguages() {
+  return Array.from(document.querySelectorAll('input[name="niche-target-language"]'))
+    .map((input) => input.value)
+    .filter(Boolean);
+}
+
+function syncCreateNicheLanguagePicker() {
+  const options = $("niche-lang-options");
+  if (!options) return;
+
+  const masterLang = $("niche-master-lang")?.value || "en";
+  const selectedCodes = [...new Set(readSelectedNicheLanguages().filter((code) => code !== masterLang))];
+  const available = languageCatalog().filter(
+    (language) => language.code !== masterLang && !selectedCodes.includes(language.code)
+  );
+
+  renderSelectedNicheLanguages(selectedCodes);
+  options.innerHTML = available
+    .map((language) => `<option value="${esc(language.label)}" label="${esc(language.code)}"></option>`)
+    .join("");
+
+  const searchInput = $("niche-lang-search");
+  if (searchInput) {
+    searchInput.disabled = available.length === 0;
+    searchInput.placeholder = available.length ? "Type a language or code" : "All languages already added";
+  }
+
+  const addButton = document.querySelector("[data-add-niche-language]");
+  if (addButton) addButton.disabled = available.length === 0;
+}
+
+function resolveNicheLanguageQuery(query, { masterLang = "", selectedCodes = [] } = {}) {
+  const normalized = String(query || "").trim().toLowerCase();
+  if (!normalized) return null;
+  return languageCatalog().find(
+    (language) =>
+      language.code !== masterLang &&
+      !selectedCodes.includes(language.code) &&
+      (language.code.toLowerCase() === normalized || language.label.toLowerCase() === normalized)
+  ) || null;
+}
+
+function addCreateNicheLanguage(query = "", { silent = false } = {}) {
+  const searchInput = $("niche-lang-search");
+  const masterLang = $("niche-master-lang")?.value || "en";
+  const selectedCodes = readSelectedNicheLanguages();
+  const rawQuery = query || searchInput?.value || "";
+  const match = resolveNicheLanguageQuery(rawQuery, { masterLang, selectedCodes });
+
+  if (!match) {
+    if (!silent && rawQuery.trim()) {
+      setNotice("Choose a language from the suggestions or type its code exactly.", "warn");
+    }
+    return false;
+  }
+
+  renderSelectedNicheLanguages([...new Set([...selectedCodes, match.code])]);
+  if (searchInput) {
+    searchInput.value = "";
+    searchInput.focus();
+  }
+  syncCreateNicheLanguagePicker();
+  return true;
+}
+
+function removeCreateNicheLanguage(code) {
+  renderSelectedNicheLanguages(readSelectedNicheLanguages().filter((value) => value !== code));
+  syncCreateNicheLanguagePicker();
+}
+
 function providerOptions(selected) {
   return PROVIDERS.map(
     (provider) =>
@@ -957,11 +1060,6 @@ function renderNicheProjects() {
 }
 
 function renderCreateNicheModal() {
-  const langs = state.targetLanguages || [];
-  const langCheckboxes = langs.map((l) =>
-    '<label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" class="niche-lang-cb" value="' + esc(l.code) + '" /> ' + esc(l.label) + '</label>'
-  ).join("");
-
   return `
     <div class="modal-backdrop" data-modal-backdrop="true">
       <div class="modal-panel">
@@ -981,8 +1079,26 @@ function renderCreateNicheModal() {
             </label>
           </div>
           <div class="field" style="margin-top:12px;">
-            <span class="field-label">Target languages</span>
-            <div class="lang-checkbox-grid">${langCheckboxes}</div>
+            <div class="niche-language-picker-head">
+              <span class="field-label">Target languages</span>
+              <span class="tiny">Master language is included automatically.</span>
+            </div>
+            <div class="niche-language-picker">
+              <div class="niche-language-search-row">
+                <input
+                  id="niche-lang-search"
+                  list="niche-lang-options"
+                  placeholder="Type a language or code"
+                  autocomplete="off"
+                />
+                <datalist id="niche-lang-options"></datalist>
+                <button type="button" class="button button-ghost button-inline has-icon" data-add-niche-language="true">
+                  ${iconContent("add", "Add")}
+                </button>
+              </div>
+              <div class="helper">Pick a language from the suggestions and it will be added to the list below.</div>
+              <div id="niche-target-language-list" class="niche-language-pill-list"></div>
+            </div>
           </div>
           <div class="button-row" style="margin-top:18px;">
             <button type="submit" class="button button-primary has-icon">${iconContent("add", "Create")}</button>
@@ -1000,7 +1116,7 @@ function renderSubmitEpisodeModal() {
     <div class="modal-backdrop" data-modal-backdrop="true">
       <div class="modal-panel">
         <div class="modal-header">
-          <h2>Create draft episode</h2>
+          <h2>Create episode</h2>
           <button type="button" class="button button-ghost icon-only" data-close-modal="true">${iconContent("close", "Close", { iconOnly: true })}</button>
         </div>
         <form id="submit-episode-form" class="stack">
@@ -1017,7 +1133,7 @@ function renderSubmitEpisodeModal() {
           </label>
           <div class="helper">This creates a Draft card only. Queue it explicitly from the board when the project is ready.</div>
           <div class="button-row" style="margin-top:18px;">
-            <button type="submit" class="button button-primary has-icon">${iconContent("add", "Create draft")}</button>
+            <button type="submit" class="button button-primary has-icon">${iconContent("add", "Create episode")}</button>
             <button type="button" class="button button-ghost" data-close-modal="true">Cancel</button>
           </div>
         </form>
@@ -1235,7 +1351,7 @@ function renderNicheProjectDetail() {
         </div>
         <div class="button-row">
           <button type="button" class="button button-ghost has-icon" data-nav="niche-projects">${iconContent("back", "Back to projects")}</button>
-          <button type="button" class="button button-primary has-icon" data-open-submit-episode="${esc(project.id)}">${iconContent("add", "Create draft")}</button>
+          <button type="button" class="button button-primary has-icon" data-open-submit-episode="${esc(project.id)}">${iconContent("add", "Create episode")}</button>
         </div>
       </div>
 
@@ -1960,6 +2076,7 @@ function renderApp() {
 
   else renderNicheProjects();
   document.body.classList.toggle("modal-open", Boolean(state.modal.kind) || Boolean(state.episodeOverlayId));
+  if (state.modal.kind === "create-niche") syncCreateNicheLanguagePicker();
   syncAllProviderModelSelects();
   resetElapsedTimer();
   restoreDashboardScroll();
@@ -2288,9 +2405,10 @@ async function createNicheProject(event) {
   event.preventDefault();
   const name = $("niche-name").value.trim();
   const masterLang = $("niche-master-lang").value;
-  const langCbs = document.querySelectorAll(".niche-lang-cb:checked");
-  const langs = Array.from(langCbs).map((cb) => cb.value);
-  if (!langs.includes(masterLang)) langs.unshift(masterLang);
+  const langs = [
+    masterLang,
+    ...readSelectedNicheLanguages().filter((code) => code && code !== masterLang),
+  ];
 
   const result = await api("/api/niche-projects", {
     method: "POST",
@@ -2322,7 +2440,7 @@ async function submitEpisode(event) {
   state.modal = { kind: null };
   await refreshData();
   renderApp();
-  setNotice("Draft episode created. Queue it explicitly from the board.", "success");
+  setNotice("Episode created in Draft. Queue it explicitly from the board.", "success");
 }
 
 async function saveSettings(event) {
@@ -2384,7 +2502,7 @@ document.addEventListener("click", async (event) => {
     closeEpisodeOverlay();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
+  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-worker-action], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
   if (!target) return;
   event.preventDefault();
   try {
@@ -2486,6 +2604,14 @@ document.addEventListener("click", async (event) => {
       state.modal = { kind: "create-niche" };
       renderApp();
       resetAutoRefresh();
+      return;
+    }
+    if (target.dataset.addNicheLanguage) {
+      addCreateNicheLanguage();
+      return;
+    }
+    if (target.dataset.removeNicheLanguage) {
+      removeCreateNicheLanguage(target.dataset.removeNicheLanguage);
       return;
     }
     if (target.dataset.deleteNicheProject) {
@@ -2730,6 +2856,14 @@ document.addEventListener("submit", async (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  if (event.target.id === "niche-master-lang") {
+    syncCreateNicheLanguagePicker();
+    return;
+  }
+  if (event.target.id === "niche-lang-search") {
+    addCreateNicheLanguage(event.target.value, { silent: true });
+    return;
+  }
   if (event.target.id === "template-stage" || event.target.id === "template-provider") {
     state.route = {
       view: "templates",
@@ -2756,6 +2890,11 @@ document.addEventListener("change", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && event.target.id === "niche-lang-search") {
+    event.preventDefault();
+    addCreateNicheLanguage(event.target.value);
+    return;
+  }
   if (event.key === "Escape") {
     if (state.modal.kind) {
       if (state.modal.kind === "translation-preview") state.translationPreview = null;

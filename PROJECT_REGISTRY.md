@@ -33,6 +33,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - Primary workflow is now project-scoped: `Niche Projects -> Project board -> Draft episode -> Episode overlay -> explicit queue`
   - Views: Niche Projects, project board/detail, episode overlay/direct episode route, Voice Profiles, Translation Profiles, Settings, Templates
   - Legacy Jobs and Projects/Builds models have been fully removed; the old global Pipeline Board is no longer a primary workflow surface.
+  - Drawbridge feedback repair on 2026-03-26: the project-board CTA now says `Create episode`, while the modal helper still explains that creation lands in Draft, and the create-project modal now uses a searchable target-language picker instead of a checkbox wall
 - **Translation module** (`tool1_dashboard/translation/`) — adapter, chunker, prompts, service
 - **TTS module** (`tool1_dashboard/tts/`) — audio, chunker, constants, manager, worker (XTTS-v2)
 - **Alignment tool** (`tool1_dashboard/alignment_tool/`)
@@ -60,7 +61,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 ### What's Being Worked On
 See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase plan.
 
-**Currently:** Phases 1-10 are complete, and the 2026-03-26 workflow repair is complete. The Tool 1 pipeline is now aligned with the intended project-board-first episode workflow.
+**Currently:** Phases 1-10 are complete, the 2026-03-26 workflow repair is complete, and the Drawbridge feedback pass is complete. The Tool 1 pipeline is now aligned with the intended project-board-first episode workflow.
 
 ### What Is Still Fragile
 - No dedicated frontend test harness yet; browser verification is still manual/smoke based
@@ -95,6 +96,8 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 - **2026-03-26**: The project page should be the real workspace: project Kanban first, not a flat episode list and not a global board
 - **2026-03-26**: Adding an episode should leave it in Draft; queueing must be explicit instead of automatic
+- **2026-03-26**: The primary project CTA should say `Create episode`; the Draft state is secondary detail and should be explained in helper copy instead of the main button label
+- **2026-03-26**: Target-language selection in the create-project modal should be a searchable picker that adds languages into a list below, not a large checkbox grid
 - **2026-03-26**: Episode details should open as an overlay on top of the project board, not force a full navigation away from the workflow
 - **2026-03-26**: Queueing and requeueing should be blocked when setup is incomplete (missing voice profiles, translation profiles, provider login, or languages)
 - **2026-03-26**: Provider failures must remain explicit and controllable; do not add automatic Claude->Codex fallback
@@ -133,6 +136,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-26 | **Drawbridge UI feedback pass complete**: renamed the project-board episode CTA and the create-episode modal copy from `Create draft` to `Create episode` while keeping the Draft-only helper text, and replaced the create-project target-language checkbox wall with a searchable picker that adds selected languages into removable pills below the input. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`98` passing), and browser smoke on `http://127.0.0.1:8031` covering the project-board CTA plus the new create-project language picker flow. |
 | 2026-03-26 | **Interaction latency pass complete**: route changes and episode overlay opens now paint an immediate loading state before background data hydration finishes, refreshes no longer pull every heavyweight endpoint on every interaction, and provider health probes are cached briefly inside `CliRunner` to avoid repeated CLI subprocess checks. Verified with `node --check tool1_dashboard/ui/app.js`, the full `python -m unittest discover -s tests -v` suite (`98` passing), and browser smoke showing the episode overlay loading shell appears instantly on click before the full detail payload arrives. |
 | 2026-03-26 | Added TTS runtime preflight and fail-fast UX: the worker health endpoint now reports missing XTTS dependencies, voice profile creation no longer queues dead latent jobs when the runtime is missing, and voice tests return an actionable error instead of sitting in `queued` forever. Verified with targeted TTS tests and an API smoke call returning `503` plus the startup error payload. |
 | 2026-03-26 | **Project-Scoped Workflow Repair complete**: the project page is now the primary Kanban surface, new episodes stay in Draft until explicitly queued, episode details open as an overlay, queue/requeue is blocked by structured readiness checks, provider-stage failures preserve full actionable logs, and template/settings reads no longer mutate template state. Verified with 93 passing tests, `node --check tool1_dashboard/ui/app.js`, and browser smoke covering project board, draft creation, overlay routing, and blocked queue UI. |
