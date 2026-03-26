@@ -24,30 +24,44 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 - **Tool 1** (this project) — Planning & pre-generation: translation → TTS → alignment → scene planning → timeline → prompts
 - **Tool 2** (separate) — Final video assembly: takes Tool 1 outputs + shared assets → produces final localized videos
 
-## Current State (as of 2026-03-25)
+## Current State (as of 2026-03-26)
 
 ### What Exists & Works
 - **Dashboard app** (`tool1_dashboard/`) — FastAPI-based, Kanban-style pipeline UI
   - Unified backend with service layer + SQLite
   - Dark/light theme, responsive layout
-  - Views: Pipeline Board, Niche Projects, Episodes, Voice Profiles, Translation Profiles, Settings, Templates
-  - All legacy views and logic (Jobs, Projects/Builds) have been fully removed.
+  - Primary workflow is now project-scoped: `Niche Projects -> Project board -> Draft episode -> Episode overlay -> explicit queue`
+  - Views: Niche Projects, project board/detail, episode overlay/direct episode route, Voice Profiles, Translation Profiles, Settings, Templates
+  - Legacy Jobs and Projects/Builds models have been fully removed; the old global Pipeline Board is no longer a primary workflow surface.
 - **Translation module** (`tool1_dashboard/translation/`) — adapter, chunker, prompts, service
 - **TTS module** (`tool1_dashboard/tts/`) — audio, chunker, constants, manager, worker (XTTS-v2)
 - **Alignment tool** (`tool1_dashboard/alignment_tool/`)
 - **SRT chunker** (`tool1_dashboard/srt_chunker/`)
 - **Episode pipeline** — all 10 stages implemented in `_process_episode()` (service.py)
+- **Queue readiness guardrails**
+  - Queue/requeue is blocked when the project is not runnable
+  - Episodes and project detail payloads now include structured `queue_readiness`
+  - Queue blockers are surfaced on project cards and inside the episode overlay
+- **Stage-run logging for provider stages**
+  - consistency guide, scene planning, and prompt generation now preserve structured stage runs and full failure details
+- **Template/settings reads**
+  - template and settings reads are now side-effect free; reads no longer upsert template rows
 - **AI agent configs** (`config/agents/`) — scene planning, visual bible, video/image prompts (Claude + Codex)
-- **Test suite** — 119 tests passing (api, chunking, cli_runner, pipeline, build, translation, tts, video_pipeline)
+- **Test suite** — 93 tests passing (chunking, cli_runner, translation, tts, video_pipeline, API/service coverage)
 
 ### What's Being Worked On
 See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase plan.
 
-**Currently:** Phases 1-10 complete. The Tool 1 pipeline consolidation is finished.
+**Currently:** Phases 1-10 are complete, and the 2026-03-26 workflow repair is complete. The Tool 1 pipeline is now aligned with the intended project-board-first episode workflow.
+
+### What Is Still Fragile
+- No dedicated frontend test harness yet; browser verification is still manual/smoke based
+- Intermittent `/api/board` 404 noise appeared in local smoke logs, but no current source call was found in `tool1_dashboard/ui/app.js`
+- TTS worker availability remains an operational warning rather than a hard queue blocker
 
 ### Git State
 - Branch: `feat/cleanup-and-consolidation` (active)
-- All code committed and pushed
+- Workflow repair changes committed and pushed
 - Remote: `https://github.com/alesalesmota/tool-1-srt-timeline-json-prompt-list.git`
 
 ## Architecture Decisions
@@ -62,13 +76,30 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 | Consistency guide per-episode (not per-niche) | More flexibility per episode | 2026-03-25 |
 | Remove all legacy code (Jobs, Projects/Builds) | Episodes is the final model, legacy is ~4000 lines of dead weight | 2026-03-25 |
 | Archive outdated docs instead of deleting | Preserves reference material | 2026-03-25 |
+| Project board is the primary workflow surface | The user works project-first, not from a global board | 2026-03-26 |
+| Creating an episode only creates a Draft card | Queueing must be explicit and user-controlled | 2026-03-26 |
+| Queue/requeue is blocked by server-side readiness checks | Missing voices, translations, provider auth, or languages must fail fast before work starts | 2026-03-26 |
+| Provider failures stay on the failed stage with full logs | Failures must be actionable; no silent Claude->Codex fallback | 2026-03-26 |
+| Template/settings reads are side-effect free | GET requests should not mutate template state | 2026-03-26 |
 
 ## User Observations & Insights
 
+- **2026-03-26**: The project page should be the real workspace: project Kanban first, not a flat episode list and not a global board
+- **2026-03-26**: Adding an episode should leave it in Draft; queueing must be explicit instead of automatic
+- **2026-03-26**: Episode details should open as an overlay on top of the project board, not force a full navigation away from the workflow
+- **2026-03-26**: Queueing and requeueing should be blocked when setup is incomplete (missing voice profiles, translation profiles, provider login, or languages)
+- **2026-03-26**: Provider failures must remain explicit and controllable; do not add automatic Claude->Codex fallback
 - **2026-03-25**: Lost 10+ phase plan between conversations → created IMPLEMENTATION_PLAN.md + IMPLEMENTATION_CHECKLIST.md in repo + updated CLAUDE.md behavior to always persist plans
 - **2026-03-25**: Standalone tools (TRADUTOR, TTS, SRT chunker, Whisper UI) all duplicated integrated modules → deleted
 - **2026-03-24**: Niche Project hierarchy — each niche has pre-configured languages, voice profiles, translation profiles
 - **2026-03-24**: Future: multiple Niche Projects (Religion, Sports, etc.)
+
+## Future Improvements
+
+- Add automated browser regression coverage for the project board and episode overlay workflow
+- Trace and eliminate the stray `/api/board` 404 log source if it reappears in future smoke runs
+- Add richer provider health diagnostics so readiness can distinguish login, quota, and binary availability more precisely
+- Consider inline stage-run diffing/retry tools in the episode overlay once the current workflow remains stable
 
 ## Phase Plan
 
@@ -92,6 +123,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-26 | **Project-Scoped Workflow Repair complete**: the project page is now the primary Kanban surface, new episodes stay in Draft until explicitly queued, episode details open as an overlay, queue/requeue is blocked by structured readiness checks, provider-stage failures preserve full actionable logs, and template/settings reads no longer mutate template state. Verified with 93 passing tests, `node --check tool1_dashboard/ui/app.js`, and browser smoke covering project board, draft creation, overlay routing, and blocked queue UI. |
 | 2026-03-26 | **Frontend UI Overhaul Complete**: Executed an 8-phase densification and cleanup of the dashboard. Replaced heavy \`.detail-section\` wrappers with clean \`.surface\` grids. Added collapsible icon sidebar. Widen Kanban columns. Stripped redundant "eyebrows" and helper text. Added tactile micro-animations to cards and buttons. Merged Settings and Niche Project configuration cards into tighter grids. |
 | 2026-03-25 | Phase 10 complete: Final Cleanup & Documentation — verified agent configs and dependencies, removed all remaining references to legacy architecture, all tests pass. Tool 1 is fully transitioned to the episode-first pipeline. |
 | 2026-03-25 | Phase 9 complete: Review & Export Phase — timeline editor, consistency guide editor, prompt list editor, per-language timeline read-only view, and fully wired UI handlers for saving review data and finalizing/downloading export zip. |

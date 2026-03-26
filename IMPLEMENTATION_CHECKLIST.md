@@ -108,3 +108,17 @@
 - [x] Phase 6: Improve Episode Detail Layout (removed heavy boxes, unified grid layout, cleaner language table)
 - [x] Phase 7: Polish Niche Project & Settings (densified stats bar and setup form cards into a cleaner view)
 - [x] Phase 8: Micro-animations & Polish (added hover lift on cards and tactile click down-states on buttons)
+
+## Workflow Repair (2026-03-26)
+- [x] Make `#/niche-projects` the landing flow and `#/niche-projects/:id` the main workspace
+- [x] Redirect legacy `#/pipeline-board` usage into the project-scoped workflow
+- [x] Replace the flat project episode list with a true project Kanban
+- [x] Rename the first column to `Draft`
+- [x] Move episode creation into the Draft column and stop auto-queueing new episodes
+- [x] Open episode details as an overlay on top of the project board
+- [x] Add shared queue-readiness validation for queue and requeue
+- [x] Return structured readiness blockers in project/episode payloads and queue 400 responses
+- [x] Disable blocked queue actions in the UI and render blocker/warning details
+- [x] Preserve provider-stage failure logs and keep failures explicit without provider fallback
+- [x] Make template/settings reads side-effect free
+- [x] Verify with 93 passing tests, JS syntax check, and browser smoke

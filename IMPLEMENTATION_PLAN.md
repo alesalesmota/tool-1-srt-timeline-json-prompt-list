@@ -1,5 +1,5 @@
 # Tool 1 Creator Studio — Reconstruction Plan
-> Last updated: 2026-03-25
+> Last updated: 2026-03-26
 
 ## Context
 
@@ -7,7 +7,7 @@ Tool 1 is the multilingual video planning pipeline for Creator Studio. The user 
 
 **The problem:** A previous comprehensive implementation plan was lost between conversations. The project has accumulated three overlapping workflow models (legacy Jobs, legacy Projects/Builds, and the target Episodes model), standalone tools that duplicate integrated modules, and uncommitted work across the entire codebase. We need to clean up, consolidate, and finish what was started.
 
-**Intended outcome:** A clean, episode-first pipeline where submitting one script to a Niche Project automatically produces all assets needed for multilingual video creation — with a transparent Kanban board showing every stage.
+**Intended outcome:** A clean, episode-first pipeline where submitting a script to a Niche Project creates a Draft episode on the project board, queueing is explicit, failures are visible, and the Kanban shows every stage without hiding provider/configuration problems.
 
 ---
 
@@ -128,6 +128,42 @@ See `IMPLEMENTATION_CHECKLIST.md` for progress tracking.
 
 ### Phase 10: Final Cleanup & Documentation
 **Goal:** Final polish, full test pass, E2E validation
+
+---
+
+## 2026-03-26 Workflow Repair Addendum
+
+This addendum supersedes the remaining board/queue UX assumptions from the original reconstruction plan.
+
+### Workflow shape
+
+The intended flow is now:
+
+`Niche Projects -> Project Kanban -> Draft episode -> Episode Details overlay -> explicit queue`
+
+### Completed repair items
+
+- Made `#/niche-projects` the landing flow and `#/niche-projects/:id` the primary workspace
+- Redirected legacy `#/pipeline-board` access back into the project-scoped flow
+- Replaced the flat per-project episode list with a real project Kanban grouped by pipeline stage
+- Renamed the first column to `Draft` and moved episode creation into that column
+- Removed frontend auto-queueing from draft submission
+- Switched episode details to an overlay on top of the project board, while keeping direct `#/episodes/:id` routing working
+- Added shared queue readiness validation for queue and requeue
+- Blocked queueing when languages, voice profiles, translation profiles, or provider auth/config are missing
+- Returned structured `queue_readiness` in project and episode payloads and structured 400 errors from queue attempts
+- Preserved full provider-stage failure logs without adding automatic Claude-to-Codex fallback
+- Made template/settings reads side-effect free
+
+### Verification baseline
+
+- `python -m unittest discover -s tests -v` -> 93 passing tests
+- `node --check tool1_dashboard/ui/app.js`
+- Browser smoke for:
+  - project board rendering
+  - draft episode creation
+  - direct episode route opening the overlay over the board
+  - blocked queue actions showing readiness blockers
 
 ---
 

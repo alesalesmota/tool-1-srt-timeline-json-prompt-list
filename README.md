@@ -1,23 +1,37 @@
-# Tool 1 CLI-First Dashboard
+# Tool 1 Creator Studio Dashboard
 
-Local browser dashboard for Tool 1 of the Creator Studio workflow.
+Tool 1 is the multilingual planning pipeline for Creator Studio. The dashboard is now centered on the project-scoped workflow:
 
-It takes:
-- narration audio
-- script text
+`Niche Projects -> Project Kanban -> Draft Episode -> Episode Details Overlay -> Explicit Queue`
 
-It produces:
-- `final.srt`
-- `timeline.json`
-- `prompt_list.txt`
+The app takes a script-only episode draft inside a Niche Project and produces the planning assets needed for downstream video generation:
+
+- per-language translated scripts
+- per-language TTS narration audio
+- per-language `final.srt`
+- per-language `timeline.json`
+- prompt lists for asset generation
+- export bundles for Tool 2 handoff
+
+## Workflow
+
+1. Open `#/niche-projects`
+2. Open a project board
+3. Create a Draft episode from the Draft column
+4. Configure languages, voice profiles, translation profiles, provider, and model on the same project page
+5. Queue the episode explicitly from the card or the episode overlay
+6. If a provider stage fails, inspect the error in the overlay, fix the configuration, and requeue from the failed stage
+
+`#/pipeline-board` is now a legacy route and redirects back into the project-scoped flow.
 
 ## What It Uses
 
-- the existing alignment pipeline for subtitle timing
-- repo-local prompt templates for scene planning and prompt generation
-- `claude` CLI and `codex` CLI as supervised AI workers
-- SQLite for board state and run history
-- repo-local job folders under `workspace/videos/`
+- FastAPI for the local API and dashboard host
+- SQLite for projects, episodes, stage runs, templates, and settings
+- repo-local prompt templates in `config/agents/`
+- `claude` CLI and `codex` CLI as supervised LLM workers
+- integrated translation, TTS, alignment, chunking, planning, timeline, and export stages
+- workspace artifact folders under `workspace/`
 
 ## Run It
 
@@ -33,15 +47,19 @@ Run Tool 1 Dashboard.bat
 
 ## Main Areas
 
-- `tool1_dashboard/app.py`: FastAPI app
-- `tool1_dashboard/service.py`: job orchestration and worker loop
-- `tool1_dashboard/providers.py`: Codex/Claude CLI runner
-- `tool1_dashboard/ui/index.html`: kanban dashboard UI
-- `config/agents/`: editable stage templates
-- `workspace/videos/`: job artifacts and exports
+- `tool1_dashboard/app.py`: FastAPI routes and API error shaping
+- `tool1_dashboard/service.py`: episode orchestration, queue readiness, worker loop, stage-run logging
+- `tool1_dashboard/templates.py`: template storage without read-side effects
+- `tool1_dashboard/providers.py`: Codex/Claude CLI execution
+- `tool1_dashboard/ui/index.html`: dashboard shell
+- `tool1_dashboard/ui/app.js`: project-first Kanban UI and overlay workflow
+- `tool1_dashboard/ui/app.css`: board, overlay, and readiness styles
+- `tests/test_video_pipeline.py`: episode API and pipeline regression coverage
 
 ## Tests
 
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+Current baseline: `93` passing tests.
