@@ -584,6 +584,8 @@ async def test_voice(profile_id: str, payload: VoiceTestRequest) -> dict[str, An
         return service.submit_voice_test(profile_id, payload.text, payload.language)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -647,7 +649,7 @@ async def worker_health() -> dict[str, Any]:
 @app.post("/api/worker/start")
 async def start_tts_worker() -> dict[str, Any]:
     started = service.tts_manager.start_worker()
-    return {"started": started}
+    return {"started": started, "health": service.get_worker_health()}
 
 
 @app.post("/api/worker/stop")

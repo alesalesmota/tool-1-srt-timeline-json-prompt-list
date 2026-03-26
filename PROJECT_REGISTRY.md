@@ -42,6 +42,10 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - Queue/requeue is blocked when the project is not runnable
   - Episodes and project detail payloads now include structured `queue_readiness`
   - Queue blockers are surfaced on project cards and inside the episode overlay
+- **TTS runtime guardrails**
+  - Voice profile creation now skips latent precompute when XTTS runtime is unavailable instead of queuing dead jobs
+  - Voice-test submission now fails fast with an actionable runtime error instead of leaving jobs permanently queued
+  - Worker health now surfaces missing XTTS dependencies directly in the UI
 - **Stage-run logging for provider stages**
   - consistency guide, scene planning, and prompt generation now preserve structured stage runs and full failure details
 - **Template/settings reads**
@@ -58,6 +62,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - No dedicated frontend test harness yet; browser verification is still manual/smoke based
 - Intermittent `/api/board` 404 noise appeared in local smoke logs, but no current source call was found in `tool1_dashboard/ui/app.js`
 - TTS worker availability remains an operational warning rather than a hard queue blocker
+- Fresh Windows environments still need the XTTS runtime installed manually; Coqui TTS may require Microsoft C++ Build Tools before voice cloning can work
 
 ### Git State
 - Branch: `feat/cleanup-and-consolidation` (active)
@@ -123,6 +128,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-26 | Added TTS runtime preflight and fail-fast UX: the worker health endpoint now reports missing XTTS dependencies, voice profile creation no longer queues dead latent jobs when the runtime is missing, and voice tests return an actionable error instead of sitting in `queued` forever. Verified with targeted TTS tests and an API smoke call returning `503` plus the startup error payload. |
 | 2026-03-26 | **Project-Scoped Workflow Repair complete**: the project page is now the primary Kanban surface, new episodes stay in Draft until explicitly queued, episode details open as an overlay, queue/requeue is blocked by structured readiness checks, provider-stage failures preserve full actionable logs, and template/settings reads no longer mutate template state. Verified with 93 passing tests, `node --check tool1_dashboard/ui/app.js`, and browser smoke covering project board, draft creation, overlay routing, and blocked queue UI. |
 | 2026-03-26 | **Frontend UI Overhaul Complete**: Executed an 8-phase densification and cleanup of the dashboard. Replaced heavy \`.detail-section\` wrappers with clean \`.surface\` grids. Added collapsible icon sidebar. Widen Kanban columns. Stripped redundant "eyebrows" and helper text. Added tactile micro-animations to cards and buttons. Merged Settings and Niche Project configuration cards into tighter grids. |
 | 2026-03-25 | Phase 10 complete: Final Cleanup & Documentation — verified agent configs and dependencies, removed all remaining references to legacy architecture, all tests pass. Tool 1 is fully transitioned to the episode-first pipeline. |

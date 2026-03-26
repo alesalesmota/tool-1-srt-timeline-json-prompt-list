@@ -5,6 +5,7 @@ Manages the TTS worker subprocess lifecycle and job submission.
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -31,6 +32,15 @@ class WorkerHealth:
     last_heartbeat: float | None
     is_stale: bool
     pid: int | None
+    startup_error: str | None
+    missing_dependencies: list[str]
+
+
+@dataclass
+class WorkerRuntimeStatus:
+    available: bool
+    missing_dependencies: list[str]
+    error: str | None
 
 
 class TTSManager:
@@ -41,6 +51,60 @@ class TTSManager:
         self._process: subprocess.Popen | None = None
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _runtime_dependency_labels() -> tuple[tuple[str, str], ...]:
+        return (
+            ("torch", "torch"),
+            ("torchaudio", "torchaudio"),
+            ("TTS.api", "Coqui TTS"),
+        )
+
+    def get_runtime_status(self) -> WorkerRuntimeStatus:
+        missing: list[str] = []
+        details: list[str] = []
+        for module_name, label in self._runtime_dependency_labels():
+            try:
+                importlib.import_module(module_name)
+            except Exception as exc:  # pragma: no cover - host-specific import errors vary
+                missing.append(label)
+                details.append(f"{label}: {exc}")
+        if not missing:
+            return WorkerRuntimeStatus(available=True, missing_dependencies=[], error=None)
+
+        message_parts = [
+            f"TTS runtime unavailable. Missing dependencies: {', '.join(missing)}.",
+        ]
+        if sys.platform.startswith("win") and "Coqui TTS" in missing:
+            message_parts.append(
+                "On Windows, installing Coqui TTS may also require Microsoft C++ Build Tools."
+            )
+        if details:
+            message_parts.append(f"Details: {'; '.join(details)}")
+        return WorkerRuntimeStatus(
+            available=False,
+            missing_dependencies=missing,
+            error=" ".join(message_parts),
+        )
+
+    def ensure_worker_ready(self, startup_wait_seconds: float = 0.75) -> None:
+        runtime = self.get_runtime_status()
+        if not runtime.available:
+            raise RuntimeError(runtime.error or "TTS runtime unavailable.")
+
+        if self.is_worker_alive():
+            return
+
+        self.start_worker()
+        if self.is_worker_alive():
+            return
+
+        time.sleep(startup_wait_seconds)
+        if self.is_worker_alive():
+            return
+        raise RuntimeError(
+            "TTS worker failed to start. Check workspace/tts/worker.log for the startup traceback."
+        )
+
     # ── worker lifecycle ─────────────────────────────────────────────
 
     def start_worker(self) -> bool:
@@ -48,6 +112,11 @@ class TTSManager:
         with self._lock:
             if self._process is not None and self._process.poll() is None:
                 return False  # already running
+
+            runtime = self.get_runtime_status()
+            if not runtime.available:
+                log.error(runtime.error or "TTS runtime unavailable.")
+                return False
 
             from ..config import (
                 DATABASE_PATH,
@@ -126,16 +195,20 @@ class TTSManager:
     def get_worker_health(self) -> WorkerHealth:
         heartbeat = self._db.get_latest_worker_heartbeat()
         running = self.is_worker_alive()
+        runtime = self.get_runtime_status()
+        startup_error = None if runtime.available else runtime.error
 
         if heartbeat is None:
             return WorkerHealth(
                 running=running,
                 worker_id=None,
-                status="unknown",
+                status="unavailable" if startup_error else "unknown",
                 current_job_id=None,
                 last_heartbeat=None,
                 is_stale=not running,
                 pid=self._process.pid if self._process and running else None,
+                startup_error=startup_error,
+                missing_dependencies=runtime.missing_dependencies,
             )
 
         hb_time = heartbeat.get("heartbeat_at", 0)
@@ -148,6 +221,8 @@ class TTSManager:
             last_heartbeat=hb_time,
             is_stale=is_stale,
             pid=heartbeat.get("pid"),
+            startup_error=startup_error,
+            missing_dependencies=runtime.missing_dependencies,
         )
 
     # ── job submission ───────────────────────────────────────────────

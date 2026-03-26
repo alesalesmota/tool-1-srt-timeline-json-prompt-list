@@ -921,16 +921,21 @@ class Tool1Service:
             "updated_at": now,
         })
 
-        # Queue latent precompute job
-        job_id = self.tts_manager.submit_tts_job(
-            job_type="latent_precompute",
-            profile_id=profile_id,
-            payload={"profile_id": profile_id, "audio_path": str(audio_path)},
-            queue_priority=LATENT_PRIORITY,
-        )
+        job_id: str | None = None
+        runtime = self.tts_manager.get_runtime_status()
+        if runtime.available:
+            # Queue latent precompute only when XTTS runtime is actually available.
+            job_id = self.tts_manager.submit_tts_job(
+                job_type="latent_precompute",
+                profile_id=profile_id,
+                payload={"profile_id": profile_id, "audio_path": str(audio_path)},
+                queue_priority=LATENT_PRIORITY,
+            )
 
         profile = self.db.get_voice_profile(profile_id) or {}
         profile["latent_job_id"] = job_id
+        if runtime.error:
+            profile["runtime_warning"] = runtime.error
         return profile
 
     def update_voice_profile(self, profile_id: str, **fields: Any) -> dict[str, Any]:
@@ -1010,7 +1015,7 @@ class Tool1Service:
             "language": xtts_lang,
         }
 
-        self.tts_manager.ensure_worker()
+        self.tts_manager.ensure_worker_ready()
         job_id = self.tts_manager.submit_tts_job(
             job_type="test_voice",
             profile_id=profile_id,
@@ -1543,6 +1548,7 @@ class Tool1Service:
         self.db.update_episode_language_status(episode_id, lang, tts_status="running")
         from .tts.manager import TTSManager
         tts_mgr = TTSManager(self.db)
+        tts_mgr.ensure_worker_ready()
         job_id = tts_mgr.submit_tts_job(
             job_type="generate",
             profile_id=profile_id,
@@ -1591,6 +1597,8 @@ class Tool1Service:
             "last_heartbeat": health.last_heartbeat,
             "is_stale": health.is_stale,
             "pid": health.pid,
+            "startup_error": health.startup_error,
+            "missing_dependencies": list(health.missing_dependencies or []),
         }
 
     def get_review_data(self, episode_id: str) -> dict[str, Any]:
@@ -2045,6 +2053,7 @@ class Tool1Service:
             # Submit TTS job
             from .tts.manager import TTSManager
             tts_mgr = TTSManager(self.db)
+            tts_mgr.ensure_worker_ready()
             job_id = tts_mgr.submit_tts_job(
                 job_type="generate",
                 profile_id=profile_id,

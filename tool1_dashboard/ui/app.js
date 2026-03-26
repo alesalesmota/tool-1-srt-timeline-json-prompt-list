@@ -541,6 +541,7 @@ function renderVoiceProfiles() {
   const profiles = state.voiceProfiles || [];
   const wh = state.workerHealth || {};
   const workerStatus = wh.running ? "running" : wh.is_stale ? "stale" : "stopped";
+  const workerError = wh.startup_error || "";
 
   const cards = profiles
     .map(
@@ -575,6 +576,7 @@ function renderVoiceProfiles() {
         </div>
       </div>
       ${wh.status ? `<p class="helper" style="margin-top:6px;">Status: ${esc(wh.status)} ${wh.current_job_id ? `· Job: ${esc(wh.current_job_id)}` : ""}</p>` : ""}
+      ${workerError ? `<div class="notice" data-tone="error" style="margin-top:10px;">${esc(workerError)}</div>` : ""}
     </div>
 
     <div class="detail-section">
@@ -2048,11 +2050,15 @@ async function createVoiceProfile(event) {
   fd.append("name", $("vp-name").value.trim());
   fd.append("language_code", $("vp-language").value);
   fd.append("audio_file", audioFile);
-  await api("/api/voice-profiles", { method: "POST", body: fd });
+  const created = await api("/api/voice-profiles", { method: "POST", body: fd });
   state.modal = { kind: null };
-  setNotice("Voice profile created.", "success");
   await refreshData();
   renderApp();
+  if (created.runtime_warning) {
+    setNotice(`Voice profile created. ${created.runtime_warning}`, "warn");
+    return;
+  }
+  setNotice("Voice profile created.", "success");
 }
 
 async function testVoiceProfile(event) {
@@ -2239,10 +2245,15 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (target.dataset.workerAction) {
-      await api(`/api/worker/${target.dataset.workerAction}`, { method: "POST" });
+      const action = target.dataset.workerAction;
+      await api(`/api/worker/${action}`, { method: "POST" });
       await refreshData();
       renderApp();
-      setNotice(`Worker ${target.dataset.workerAction}.`, "success");
+      if (action === "start" && !state.workerHealth?.running) {
+        setNotice(state.workerHealth?.startup_error || "Worker did not start.", "error");
+        return;
+      }
+      setNotice(action === "start" ? "Worker started." : "Worker stopped.", "success");
       return;
     }
     if (target.dataset.deleteVoiceProfile) {

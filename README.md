@@ -45,6 +45,18 @@ On Windows you can also run:
 Run Tool 1 Dashboard.bat
 ```
 
+## TTS Runtime
+
+Voice cloning and voice-test jobs require the XTTS runtime in the same Python environment as the dashboard.
+
+- `torch`
+- `torchaudio`
+- `TTS` (Coqui XTTS)
+
+If the TTS runtime is missing, the Voice Profiles page now shows the worker as unavailable and voice tests fail fast with the exact startup error instead of sitting in the queue forever.
+
+Windows note: installing `TTS` may also require Microsoft C++ Build Tools.
+
 ## Main Areas
 
 - `tool1_dashboard/app.py`: FastAPI routes and API error shaping

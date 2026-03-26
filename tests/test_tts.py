@@ -12,6 +12,8 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from tool1_dashboard.database import Tool1Database
+from tool1_dashboard.runtime import utc_now
+from tool1_dashboard.service import Tool1Service
 from tool1_dashboard.tts.audio import generate_silence_wav, merge_wav_chunks_streaming
 from tool1_dashboard.tts.chunker import TTSChunk, chunk_text_for_tts
 from tool1_dashboard.tts.constants import (
@@ -389,13 +391,93 @@ class ManagerJobSubmissionTests(unittest.TestCase):
         self.assertEqual(status["meta"]["total_chunks"], 2)
 
     def test_worker_health_no_heartbeat(self):
-        from tool1_dashboard.tts.manager import TTSManager
+        from tool1_dashboard.tts.manager import TTSManager, WorkerRuntimeStatus
 
         mgr = TTSManager(self.db)
-        health = mgr.get_worker_health()
+        with patch.object(
+            mgr,
+            "get_runtime_status",
+            return_value=WorkerRuntimeStatus(
+                available=True,
+                missing_dependencies=[],
+                error=None,
+            ),
+        ):
+            health = mgr.get_worker_health()
         self.assertFalse(health.running)
         self.assertEqual(health.status, "unknown")
         self.assertTrue(health.is_stale)
+
+    def test_worker_health_surfaces_runtime_error(self):
+        from tool1_dashboard.tts.manager import TTSManager, WorkerRuntimeStatus
+
+        mgr = TTSManager(self.db)
+        with patch.object(
+            mgr,
+            "get_runtime_status",
+            return_value=WorkerRuntimeStatus(
+                available=False,
+                missing_dependencies=["Coqui TTS"],
+                error="TTS runtime unavailable.",
+            ),
+        ):
+            health = mgr.get_worker_health()
+        self.assertEqual(health.status, "unavailable")
+        self.assertEqual(health.startup_error, "TTS runtime unavailable.")
+        self.assertEqual(health.missing_dependencies, ["Coqui TTS"])
+
+
+class ServiceVoiceRuntimeTests(unittest.TestCase):
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self.service = Tool1Service(db=Tool1Database(Path(self._tmpdir) / "test.db"))
+        audio_path = Path(self._tmpdir) / "voice.wav"
+        audio_path.write_bytes(b"RIFF....WAVEfmt ")
+        now = utc_now()
+        self.service.db.create_voice_profile({
+            "id": "voice-1",
+            "name": "Voice One",
+            "language_code": "en",
+            "audio_file": audio_path.name,
+            "audio_path": str(audio_path),
+            "latents_path": None,
+            "has_latents": 0,
+            "created_at": now,
+            "updated_at": now,
+        })
+
+    def test_submit_voice_test_fails_fast_when_runtime_unavailable(self):
+        with patch.object(
+            self.service.tts_manager,
+            "ensure_worker_ready",
+            side_effect=RuntimeError("TTS runtime unavailable."),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "TTS runtime unavailable"):
+                self.service.submit_voice_test("voice-1", "hello world")
+        self.assertEqual(self.service.db.list_active_tts_jobs(), [])
+
+    def test_create_voice_profile_skips_latent_job_when_runtime_unavailable(self):
+        from tool1_dashboard.tts.manager import WorkerRuntimeStatus
+
+        with patch.object(
+            self.service.tts_manager,
+            "get_runtime_status",
+            return_value=WorkerRuntimeStatus(
+                available=False,
+                missing_dependencies=["Coqui TTS"],
+                error="TTS runtime unavailable.",
+            ),
+        ):
+            profile = self.service.create_voice_profile(
+                name="Fresh Voice",
+                language_code="pt-BR",
+                audio_bytes=b"RIFF....WAVEfmt ",
+                audio_filename="fresh.wav",
+            )
+        self.assertIsNone(profile["latent_job_id"])
+        self.assertEqual(profile["runtime_warning"], "TTS runtime unavailable.")
+        self.assertEqual(self.service.db.list_active_tts_jobs(), [])
 
 
 class PausedTtsEpisodeTests(unittest.TestCase):
