@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -22,6 +24,10 @@ from tool1_dashboard.tts.constants import (
     WORKER_IDLE_RECHECK_SECONDS,
     XTTS_LANG_MAP,
     map_language_code,
+)
+from tool1_dashboard.tts.voice_config import (
+    build_xtts_inference_kwargs,
+    normalize_voice_tts_config,
 )
 
 
@@ -271,6 +277,87 @@ class TTSJobDbTests(unittest.TestCase):
         self.assertIsNone(self.db.get_latest_latent_job_for_profile("nonexistent"))
 
 
+class VoiceTtsConfigTests(unittest.TestCase):
+
+    def test_defaults_to_natural_stable(self):
+        config = normalize_voice_tts_config(None)
+        self.assertEqual(config["preset"], "natural_stable")
+        self.assertEqual(config["temperature"], 0.55)
+        self.assertEqual(config["chunk_max_chars"], 180)
+
+    def test_clamps_manual_values(self):
+        config = normalize_voice_tts_config({
+            "preset": "balanced",
+            "temperature": 2,
+            "top_p": 0.1,
+            "top_k": 999,
+            "speed": 0.1,
+            "chunk_max_chars": 999,
+            "silence_gap_seconds": -1,
+        })
+        self.assertEqual(config["temperature"], 0.85)
+        self.assertEqual(config["top_p"], 0.6)
+        self.assertEqual(config["top_k"], 80)
+        self.assertEqual(config["speed"], 0.96)
+        self.assertEqual(config["chunk_max_chars"], 260)
+        self.assertEqual(config["silence_gap_seconds"], 0.0)
+
+    def test_xtts_inference_kwargs_are_explicit_and_disable_internal_split(self):
+        kwargs = build_xtts_inference_kwargs({
+            "preset": "expressive",
+            "temperature": 0.77,
+            "top_p": 0.9,
+            "top_k": 55,
+            "speed": 1.01,
+        })
+        self.assertTrue(kwargs["do_sample"])
+        self.assertEqual(kwargs["num_beams"], 1)
+        self.assertFalse(kwargs["enable_text_splitting"])
+        self.assertEqual(kwargs["temperature"], 0.77)
+        self.assertEqual(kwargs["top_p"], 0.9)
+        self.assertEqual(kwargs["top_k"], 55)
+        self.assertEqual(kwargs["speed"], 1.01)
+
+
+class DatabaseMigrationTests(unittest.TestCase):
+
+    def test_initialize_adds_voice_tts_config_column_to_existing_db(self):
+        tmpdir = Path(tempfile.mkdtemp())
+        try:
+            db_path = tmpdir / "legacy.db"
+            connection = sqlite3.connect(db_path)
+            connection.execute(
+                """
+                CREATE TABLE voice_profiles (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    language_code TEXT NOT NULL DEFAULT '',
+                    audio_file TEXT NOT NULL,
+                    audio_path TEXT NOT NULL,
+                    latents_path TEXT,
+                    has_latents INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            db = Tool1Database(db_path)
+            db.initialize()
+            del db
+
+            with sqlite3.connect(db_path) as check:
+                columns = {
+                    row[1]
+                    for row in check.execute("PRAGMA table_info(voice_profiles)").fetchall()
+                }
+            self.assertIn("tts_config_json", columns)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 class VoiceProfileDbTests(unittest.TestCase):
 
     def setUp(self):
@@ -299,6 +386,7 @@ class VoiceProfileDbTests(unittest.TestCase):
         profile = self.db.get_voice_profile("vp1")
         self.assertIsNotNone(profile)
         self.assertEqual(profile["language_code"], "pt")
+        self.assertEqual(profile["tts_config_json"], "")
 
     def test_update_and_delete(self):
         from tool1_dashboard.runtime import utc_now
@@ -353,6 +441,7 @@ class ManagerJobSubmissionTests(unittest.TestCase):
 
         payload = json.loads(job["payload_json"])
         self.assertEqual(payload["texts"], ["hello world"])
+        self.assertEqual(payload["original_filename"], "test_narration.wav")
 
     def test_set_job_control(self):
         from tool1_dashboard.tts.manager import TTSManager
@@ -523,6 +612,11 @@ class ServiceVoiceRuntimeTests(unittest.TestCase):
             "updated_at": now,
         })
 
+    def test_existing_profiles_without_tuning_resolve_default_config(self):
+        profile = self.service.get_voice_profile("voice-1")
+        self.assertEqual(profile["tts_config"]["preset"], "natural_stable")
+        self.assertEqual(profile["tts_config"]["chunk_max_chars"], 180)
+
     def test_submit_voice_test_fails_fast_when_runtime_unavailable(self):
         with patch.object(
             self.service.tts_manager,
@@ -553,6 +647,7 @@ class ServiceVoiceRuntimeTests(unittest.TestCase):
         self.assertIsNone(profile["latent_job_id"])
         self.assertEqual(profile["runtime_warning"], "TTS runtime unavailable.")
         self.assertEqual(profile["language_code"], "")
+        self.assertEqual(profile["tts_config"]["preset"], "natural_stable")
         self.assertEqual(self.service.db.list_active_tts_jobs(), [])
 
     def test_create_voice_profile_auto_starts_interactive_latent_prep(self):
@@ -600,6 +695,28 @@ class ServiceVoiceRuntimeTests(unittest.TestCase):
             "This is Voice One. I am ready for the TTS workflow. Here is a calm line, a brighter line, and a softer ending so you can hear my range.",
         )
         self.assertEqual(result["text"], payload["text"])
+        self.assertEqual(payload["texts"], [payload["text"]])
+        self.assertEqual(payload["tts_config"]["preset"], "natural_stable")
+        self.assertEqual(result["tts_config"]["preset"], "natural_stable")
+
+    def test_update_voice_profile_persists_tts_config(self):
+        updated = self.service.update_voice_profile(
+            "voice-1",
+            tts_config={
+                "preset": "expressive",
+                "temperature": 0.78,
+                "top_p": 0.9,
+                "top_k": 55,
+                "speed": 1.02,
+                "chunk_max_chars": 230,
+                "silence_gap_seconds": 0.18,
+            },
+        )
+
+        self.assertEqual(updated["tts_config"]["preset"], "expressive")
+        self.assertEqual(updated["tts_config"]["temperature"], 0.78)
+        stored = self.service.db.get_voice_profile("voice-1")
+        self.assertIn('"preset": "expressive"', stored["tts_config_json"])
 
     def test_list_voice_profiles_includes_latest_voice_jobs(self):
         now = time.time()
@@ -642,6 +759,7 @@ class ServiceVoiceRuntimeTests(unittest.TestCase):
         self.assertEqual(profile["latest_latent_job"]["status"], "processing")
         self.assertEqual(profile["latest_test_job"]["job_id"], "test-1")
         self.assertEqual(profile["latest_test_job"]["payload"]["text"], "Hello from the cloned voice.")
+        self.assertEqual(profile["tts_config"]["preset"], "natural_stable")
         self.assertTrue(profile["latest_test_job"]["result_available"])
         self.assertEqual(profile["latest_test_job"]["download_url"], "/api/tts-jobs/test-1/download")
 
@@ -659,6 +777,9 @@ class VoiceProfileUiCopyTests(unittest.TestCase):
         self.assertNotIn("Needs restart", app_js)
         self.assertNotIn("Start Worker", app_js)
         self.assertIn("Starting voice engine", app_js)
+        self.assertIn("data-open-voice-tuning", app_js)
+        self.assertIn("voice-profile-tuning-form", app_js)
+        self.assertIn("Save and play test", app_js)
 
 
 class PausedTtsEpisodeTests(unittest.TestCase):

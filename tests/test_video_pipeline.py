@@ -1099,6 +1099,61 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                     payload = service.get_settings_payload()
                 self.assertIn("templates", payload)
                 self.assertGreater(len(payload["templates"]), 0)
+                self.assertIn("voice_tts_presets", payload["settings"])
+                self.assertIn("voice_tts_limits", payload["settings"])
+                self.assertEqual(payload["settings"]["voice_tts_default_preset"], "natural_stable")
+
+    def test_episode_tts_submission_chunks_text_and_snapshots_profile_tuning(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                voice_profiles, _ = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    ["pt-BR"],
+                    master_language="pt-BR",
+                    include_translation_for=[],
+                )
+                profile_id = voice_profiles["pt-BR"]
+                service.update_voice_profile(
+                    profile_id,
+                    tts_config={
+                        "preset": "expressive",
+                        "temperature": 0.78,
+                        "top_p": 0.9,
+                        "top_k": 55,
+                        "speed": 1.01,
+                        "chunk_max_chars": 120,
+                        "silence_gap_seconds": 0.18,
+                    },
+                )
+                project = service.create_niche_project(
+                    name="TTS Chunking",
+                    master_language="pt-BR",
+                    configured_languages=["pt-BR"],
+                    language_voice_profiles=voice_profiles,
+                )
+                episode = service.submit_episode(
+                    project["project"]["id"],
+                    title="Long narration",
+                    script_text=" ".join(["Primeira frase com ritmo realista."] * 40),
+                )["episode"]
+
+                with patch("tool1_dashboard.tts.manager.TTSManager.ensure_worker_ready") as ensure_mock, patch(
+                    "tool1_dashboard.tts.manager.TTSManager.submit_tts_job",
+                    return_value="tts-job-1",
+                ) as submit_mock:
+                    service._episode_run_tts_all(episode["id"])
+
+                ensure_mock.assert_called_once_with(intent="pipeline")
+                payload = submit_mock.call_args.kwargs["payload"]
+                self.assertTrue(payload["chunked"])
+                self.assertGreater(len(payload["texts"]), 1)
+                self.assertEqual(payload["language"], "pt")
+                self.assertEqual(payload["tts_config"]["preset"], "expressive")
+                self.assertEqual(payload["tts_config"]["chunk_max_chars"], 120)
+                self.assertEqual(payload["tts_config"]["silence_gap_seconds"], 0.18)
 
 
 if __name__ == "__main__":

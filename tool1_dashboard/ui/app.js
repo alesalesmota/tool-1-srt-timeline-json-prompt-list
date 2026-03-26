@@ -35,6 +35,43 @@ const REFRESH_INTERVAL_MS = 5000;
 const HEALTH_CACHE_TTL_MS = 15000;
 const SETTINGS_CACHE_TTL_MS = 30000;
 const TARGET_LANGUAGES_CACHE_TTL_MS = 60000;
+const FALLBACK_VOICE_TTS_PRESETS = {
+  natural_stable: {
+    preset: "natural_stable",
+    temperature: 0.55,
+    top_p: 0.75,
+    top_k: 30,
+    speed: 1.0,
+    chunk_max_chars: 180,
+    silence_gap_seconds: 0.12,
+  },
+  balanced: {
+    preset: "balanced",
+    temperature: 0.65,
+    top_p: 0.82,
+    top_k: 40,
+    speed: 1.0,
+    chunk_max_chars: 200,
+    silence_gap_seconds: 0.15,
+  },
+  expressive: {
+    preset: "expressive",
+    temperature: 0.75,
+    top_p: 0.88,
+    top_k: 50,
+    speed: 1.0,
+    chunk_max_chars: 220,
+    silence_gap_seconds: 0.15,
+  },
+};
+const FALLBACK_VOICE_TTS_LIMITS = {
+  temperature: { min: 0.35, max: 0.85 },
+  top_p: { min: 0.60, max: 0.95 },
+  top_k: { min: 10, max: 80 },
+  speed: { min: 0.96, max: 1.05 },
+  chunk_max_chars: { min: 120, max: 260 },
+  silence_gap_seconds: { min: 0.00, max: 0.25 },
+};
 
 const state = {
   health: null,
@@ -763,6 +800,50 @@ function voiceProfileLatestReadyJob(profile) {
   return null;
 }
 
+function voiceTtsPresets() {
+  return state.settings?.voice_tts_presets || FALLBACK_VOICE_TTS_PRESETS;
+}
+
+function voiceTtsLimits() {
+  return state.settings?.voice_tts_limits || FALLBACK_VOICE_TTS_LIMITS;
+}
+
+function resolveVoiceProfileTtsConfig(profile) {
+  const presets = voiceTtsPresets();
+  const presetName = profile?.tts_config?.preset || "natural_stable";
+  const preset = presets[presetName] || presets.natural_stable || FALLBACK_VOICE_TTS_PRESETS.natural_stable;
+  return { ...preset, ...(profile?.tts_config || {}), preset: presetName in presets ? presetName : "natural_stable" };
+}
+
+function voiceTtsPresetLabel(preset) {
+  if (preset === "natural_stable") return "Natural stable";
+  return titleCase(preset);
+}
+
+function voiceTtsPresetOptions(selectedPreset) {
+  const presets = voiceTtsPresets();
+  return Object.keys(presets)
+    .map((preset) => `<option value="${esc(preset)}"${preset === selectedPreset ? " selected" : ""}>${esc(voiceTtsPresetLabel(preset))}</option>`)
+    .join("");
+}
+
+function voiceTtsNumberValue(value, decimals = 2) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toFixed(decimals) : "";
+}
+
+function applyVoiceTtsPresetToForm(presetName) {
+  const presets = voiceTtsPresets();
+  const preset = presets[presetName] || presets.natural_stable || FALLBACK_VOICE_TTS_PRESETS.natural_stable;
+  if (!preset) return;
+  if ($("voice-tuning-temperature")) $("voice-tuning-temperature").value = voiceTtsNumberValue(preset.temperature, 2);
+  if ($("voice-tuning-top-p")) $("voice-tuning-top-p").value = voiceTtsNumberValue(preset.top_p, 2);
+  if ($("voice-tuning-top-k")) $("voice-tuning-top-k").value = String(preset.top_k);
+  if ($("voice-tuning-speed")) $("voice-tuning-speed").value = voiceTtsNumberValue(preset.speed, 2);
+  if ($("voice-tuning-chunk-max-chars")) $("voice-tuning-chunk-max-chars").value = String(preset.chunk_max_chars);
+  if ($("voice-tuning-silence-gap")) $("voice-tuning-silence-gap").value = voiceTtsNumberValue(preset.silence_gap_seconds, 2);
+}
+
 function voiceProfileIsStarting(profile) {
   const job = profile.latest_test_job;
   return (
@@ -937,6 +1018,7 @@ function renderVoiceProfiles() {
               data-test-voice="${esc(p.id)}"
               ${actionBusy ? "disabled" : ""}
             >${iconContent("play", actionBusy ? (starting ? "Starting..." : "Generating...") : "Play test")}</button>
+            <button type="button" class="button button-ghost button-small has-icon" data-open-voice-tuning="${esc(p.id)}">${iconContent("settings", "Tuning")}</button>
             <button type="button" class="button button-danger button-small icon-only" data-delete-voice-profile="${esc(p.id)}" aria-label="Delete" title="Delete">${iconContent("delete", "Delete", { iconOnly: true })}</button>
           </div>
         </div>
@@ -982,6 +1064,7 @@ function renderVoiceProfiles() {
     </div>
 
     ${state.modal.kind === "create-voice-profile" ? renderCreateVoiceProfileModal() : ""}
+    ${state.modal.kind === "voice-profile-tuning" ? renderVoiceProfileTuningModal() : ""}
   `;
 }
 
@@ -1006,6 +1089,68 @@ function renderCreateVoiceProfileModal() {
           </div>
           <div class="button-row" style="margin-top:18px;">
             <button type="submit" class="button button-primary has-icon">${iconContent("add", "Create")}</button>
+            <button type="button" class="button button-ghost" data-close-modal="true">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function renderVoiceProfileTuningModal() {
+  const profileId = state.modal.profileId;
+  const profile = (state.voiceProfiles || []).find((item) => item.id === profileId);
+  if (!profile) return "";
+
+  const config = resolveVoiceProfileTtsConfig(profile);
+  const limits = voiceTtsLimits();
+
+  return `
+    <div class="modal-backdrop" data-modal-backdrop="true">
+      <div class="modal-panel">
+        <div class="modal-header">
+          <h2>Tune ${esc(profile.name)}</h2>
+          <button type="button" class="button button-ghost icon-only" data-close-modal="true">${iconContent("close", "Close", { iconOnly: true })}</button>
+        </div>
+        <form id="voice-profile-tuning-form" class="stack">
+          <input type="hidden" id="voice-tuning-profile-id" value="${esc(profile.id)}" />
+          <label class="field">
+            <span class="field-label">Preset</span>
+            <select id="voice-tuning-preset">${voiceTtsPresetOptions(config.preset)}</select>
+          </label>
+          <div class="helper">Use presets to keep narration believable, then fine-tune only if this voice needs it.</div>
+          <details class="surface" style="padding:14px 16px;">
+            <summary style="cursor:pointer;font-weight:600;">Advanced tuning</summary>
+            <div class="form-grid" style="margin-top:14px;">
+              <label class="field">
+                <span class="field-label">Temperature</span>
+                <input id="voice-tuning-temperature" type="number" step="0.01" min="${esc(limits.temperature.min)}" max="${esc(limits.temperature.max)}" value="${esc(voiceTtsNumberValue(config.temperature, 2))}" />
+              </label>
+              <label class="field">
+                <span class="field-label">Top P</span>
+                <input id="voice-tuning-top-p" type="number" step="0.01" min="${esc(limits.top_p.min)}" max="${esc(limits.top_p.max)}" value="${esc(voiceTtsNumberValue(config.top_p, 2))}" />
+              </label>
+              <label class="field">
+                <span class="field-label">Top K</span>
+                <input id="voice-tuning-top-k" type="number" step="1" min="${esc(limits.top_k.min)}" max="${esc(limits.top_k.max)}" value="${esc(config.top_k)}" />
+              </label>
+              <label class="field">
+                <span class="field-label">Speed</span>
+                <input id="voice-tuning-speed" type="number" step="0.01" min="${esc(limits.speed.min)}" max="${esc(limits.speed.max)}" value="${esc(voiceTtsNumberValue(config.speed, 2))}" />
+              </label>
+              <label class="field">
+                <span class="field-label">Chunk max chars</span>
+                <input id="voice-tuning-chunk-max-chars" type="number" step="1" min="${esc(limits.chunk_max_chars.min)}" max="${esc(limits.chunk_max_chars.max)}" value="${esc(config.chunk_max_chars)}" />
+              </label>
+              <label class="field">
+                <span class="field-label">Silence gap (seconds)</span>
+                <input id="voice-tuning-silence-gap" type="number" step="0.01" min="${esc(limits.silence_gap_seconds.min)}" max="${esc(limits.silence_gap_seconds.max)}" value="${esc(voiceTtsNumberValue(config.silence_gap_seconds, 2))}" />
+              </label>
+            </div>
+          </details>
+          <div class="button-row" style="margin-top:18px;">
+            <button type="submit" class="button button-primary has-icon" value="save" name="voiceTuningAction">${iconContent("save", "Save")}</button>
+            <button type="submit" class="button button-ghost has-icon" value="save-play" name="voiceTuningAction">${iconContent("play", "Save and play test")}</button>
             <button type="button" class="button button-ghost" data-close-modal="true">Cancel</button>
           </div>
         </form>
@@ -2570,6 +2715,50 @@ async function createVoiceProfile(event) {
   setNotice("Voice profile created.", "success");
 }
 
+function readVoiceProfileTuningForm() {
+  return {
+    preset: $("voice-tuning-preset")?.value || "natural_stable",
+    temperature: Number($("voice-tuning-temperature")?.value),
+    top_p: Number($("voice-tuning-top-p")?.value),
+    top_k: Number($("voice-tuning-top-k")?.value),
+    speed: Number($("voice-tuning-speed")?.value),
+    chunk_max_chars: Number($("voice-tuning-chunk-max-chars")?.value),
+    silence_gap_seconds: Number($("voice-tuning-silence-gap")?.value),
+  };
+}
+
+async function saveVoiceProfileTuning(event) {
+  event.preventDefault();
+  const profileId = $("voice-tuning-profile-id")?.value;
+  if (!profileId) throw new Error("No voice profile selected.");
+
+  const profile = (state.voiceProfiles || []).find((item) => item.id === profileId);
+  const action = event.submitter?.value || "save";
+  if (action === "save-play" && profile && (voiceProfileIsStarting(profile) || voiceProfileIsGenerating(profile))) {
+    throw new Error("Wait for the current sample to finish before queueing another test.");
+  }
+
+  const payload = {
+    tts_config: readVoiceProfileTuningForm(),
+  };
+  await api(`/api/voice-profiles/${encodeURIComponent(profileId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  state.modal = { kind: null };
+  await refreshData();
+  renderApp();
+
+  if (action === "save-play") {
+    await testVoiceProfile(profileId);
+    setNotice("Voice tuning saved. Generating a fresh test sample.", "success");
+    return;
+  }
+  setNotice("Voice tuning saved.", "success");
+}
+
 async function testVoiceProfile(profileId) {
   if (!profileId) throw new Error("No profile selected.");
   state.submittingVoiceTestProfileId = profileId;
@@ -2709,7 +2898,7 @@ document.addEventListener("click", async (event) => {
     closeEpisodeOverlay();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
+  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
   if (!target) return;
   event.preventDefault();
   try {
@@ -2769,6 +2958,12 @@ document.addEventListener("click", async (event) => {
     }
     if (target.dataset.createVoiceProfile) {
       state.modal = { kind: "create-voice-profile" };
+      renderApp();
+      resetAutoRefresh();
+      return;
+    }
+    if (target.dataset.openVoiceTuning) {
+      state.modal = { kind: "voice-profile-tuning", profileId: target.dataset.openVoiceTuning };
       renderApp();
       resetAutoRefresh();
       return;
@@ -3038,6 +3233,7 @@ document.addEventListener("submit", async (event) => {
   const form = event.target;
   try {
     if (form.id === "create-voice-profile-form") await createVoiceProfile(event);
+    else if (form.id === "voice-profile-tuning-form") await saveVoiceProfileTuning(event);
     else if (form.id === "create-translation-profile-form") await createTranslationProfile(event);
     else if (form.id === "create-niche-form") await createNicheProject(event);
     else if (form.id === "submit-episode-form") await submitEpisode(event);
@@ -3052,6 +3248,10 @@ document.addEventListener("submit", async (event) => {
 document.addEventListener("change", (event) => {
   if (event.target.id === "niche-master-lang") {
     syncCreateNicheLanguagePicker();
+    return;
+  }
+  if (event.target.id === "voice-tuning-preset") {
+    applyVoiceTtsPresetToForm(event.target.value);
     return;
   }
   if (event.target.id === "niche-lang-search") {

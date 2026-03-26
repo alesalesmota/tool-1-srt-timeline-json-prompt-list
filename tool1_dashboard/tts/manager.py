@@ -382,6 +382,9 @@ class TTSManager:
         """Create a TTS job record in the database and return the job_id."""
         job_id = str(uuid.uuid4())
         now = time.time()
+        payload_to_store = dict(payload)
+        if filename and "original_filename" not in payload_to_store:
+            payload_to_store["original_filename"] = filename
         self._db.create_tts_job({
             "job_id": job_id,
             "build_id": build_id,
@@ -389,7 +392,7 @@ class TTSManager:
             "profile_id": profile_id,
             "status": "queued",
             "progress": "Queued...",
-            "payload_json": json.dumps(payload, ensure_ascii=False),
+            "payload_json": json.dumps(payload_to_store, ensure_ascii=False),
             "meta_json": json.dumps(meta or {}, ensure_ascii=False),
             "queue_priority": queue_priority,
             "filename": filename,
