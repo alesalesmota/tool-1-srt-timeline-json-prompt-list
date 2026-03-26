@@ -149,3 +149,11 @@
 - [x] Keep the voice-profile card minimal while exposing tuning as a secondary action
 - [x] Extend backend, worker, UI, and pipeline tests for tuning persistence, chunked payloads, and explicit XTTS kwargs
 - [x] Verify with `node --check`, `python -m unittest discover -s tests -v` (`115` passing), and browser smoke for preset switching plus `Save and play test`
+
+## Drawbridge Voice-Card Control Cleanup (2026-03-26)
+- [x] Convert voice-profile play, tuning, and delete controls into compact icon-only tooltip actions
+- [x] Keep starting and generating play-test states visually compact with a small status pill plus short copy
+- [x] Tighten title/action alignment so long profile names do not force awkward button wrapping
+- [x] Preserve inline audio playback and inline error messaging while cleaning the control row
+- [x] Update Drawbridge task `29eb90f2-dd37-4ab3-bff5-4c680c72abd1` from `to do` -> `doing` -> `done` and sync `.moat/moat-tasks.md`
+- [x] Verify with `node --check`, `python -m unittest discover -s tests -v` (`115` passing), and browser smoke for idle plus generating card states
