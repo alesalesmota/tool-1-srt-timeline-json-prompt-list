@@ -58,9 +58,20 @@ class VoiceTestRequest(BaseModel):
     language: str = "en"
 
 
+class VoiceProfileTtsConfigRequest(BaseModel):
+    preset: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    speed: float | None = None
+    chunk_max_chars: int | None = None
+    silence_gap_seconds: float | None = None
+
+
 class VoiceProfileUpdateRequest(BaseModel):
     name: str | None = None
     language_code: str | None = None
+    tts_config: VoiceProfileTtsConfigRequest | None = None
 
 
 class NicheProjectRequest(BaseModel):
@@ -558,7 +569,7 @@ async def update_voice_profile(
 ) -> dict[str, Any]:
     try:
         return service.update_voice_profile(
-            profile_id, **payload.dict(exclude_none=True)
+            profile_id, **payload.model_dump(exclude_none=True)
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -53,6 +53,14 @@ from .runtime import (
 )
 from .srt_chunker.srt_io import parse_srt_text
 from .templates import TemplateStore
+from .tts.voice_config import (
+    DEFAULT_VOICE_TTS_PRESET,
+    chunk_text_for_voice_tts,
+    normalize_voice_tts_config,
+    serialize_voice_tts_config,
+    voice_tts_limits_payload,
+    voice_tts_presets_payload,
+)
 from .validators import (
     apply_default_asset_types,
     image_prompt_output_schema,
@@ -767,8 +775,12 @@ class Tool1Service:
         return prepare_mfa_language_resources_async(language_code)
 
     def get_settings_payload(self) -> dict[str, Any]:
+        settings = self._global_settings()
+        settings["voice_tts_default_preset"] = DEFAULT_VOICE_TTS_PRESET
+        settings["voice_tts_presets"] = voice_tts_presets_payload()
+        settings["voice_tts_limits"] = voice_tts_limits_payload()
         return {
-            "settings": self._global_settings(),
+            "settings": settings,
             "templates": self.templates.list_templates(),
             "agents_root": str(AGENTS_ROOT),
             "model_catalog": MODEL_CATALOG,
@@ -832,6 +844,8 @@ class Tool1Service:
             return None
         payload = dict(profile)
         profile_id = str(payload.get("id") or "").strip()
+        payload["tts_config"] = self._resolve_voice_tts_config(payload)
+        payload.pop("tts_config_json", None)
         payload["latest_latent_job"] = self._serialize_tts_job(
             self.db.get_latest_latent_job_for_profile(profile_id)
         ) if profile_id else None
@@ -852,6 +866,66 @@ class Tool1Service:
         if profile is None:
             raise FileNotFoundError("Voice profile not found.")
         return self._enrich_voice_profile(profile) or {}
+
+    @staticmethod
+    def _resolve_voice_tts_config(profile_or_raw: Any = None) -> dict[str, Any]:
+        if isinstance(profile_or_raw, dict):
+            raw = profile_or_raw.get("tts_config_json")
+            if raw in (None, ""):
+                raw = profile_or_raw.get("tts_config")
+            return normalize_voice_tts_config(raw)
+        return normalize_voice_tts_config(profile_or_raw)
+
+    def _build_generate_tts_payload(
+        self,
+        *,
+        profile: dict[str, Any],
+        language: str,
+        script_text: str,
+    ) -> dict[str, Any]:
+        from .tts.constants import map_language_code
+
+        resolved_text = str(script_text or "").strip()
+        if not resolved_text:
+            raise ValueError("No valid text to generate audio.")
+        xtts_language = map_language_code(str(language or "").strip() or "en")
+        tts_config = self._resolve_voice_tts_config(profile)
+        texts = chunk_text_for_voice_tts(resolved_text, tts_config)
+        if not texts:
+            raise ValueError("No valid text to generate audio.")
+        return {
+            "profile_id": profile.get("id", ""),
+            "ref_path": profile.get("audio_path", ""),
+            "language": xtts_language,
+            "text": resolved_text,
+            "texts": texts,
+            "chunked": True,
+            "tts_config": tts_config,
+        }
+
+    def _build_voice_test_payload(
+        self,
+        *,
+        profile: dict[str, Any],
+        text: str,
+        language: str,
+    ) -> dict[str, Any]:
+        resolved_text = str(text or "").strip()
+        if not resolved_text:
+            raise ValueError("No valid text to generate audio.")
+        tts_config = self._resolve_voice_tts_config(profile)
+        texts = chunk_text_for_voice_tts(resolved_text, tts_config)
+        if not texts:
+            raise ValueError("No valid text to generate audio.")
+        return {
+            "profile_id": profile.get("id", ""),
+            "ref_path": profile.get("audio_path", ""),
+            "language": language,
+            "text": resolved_text,
+            "texts": texts,
+            "chunked": True,
+            "tts_config": tts_config,
+        }
 
     # ── translation profile management ──────────────────────────────
 
@@ -943,6 +1017,7 @@ class Tool1Service:
             "audio_path": str(audio_path),
             "latents_path": None,
             "has_latents": 0,
+            "tts_config_json": serialize_voice_tts_config({"preset": DEFAULT_VOICE_TTS_PRESET}),
             "created_at": now,
             "updated_at": now,
         })
@@ -966,7 +1041,7 @@ class Tool1Service:
         else:
             runtime_warning = runtime.error
 
-        profile = self.db.get_voice_profile(profile_id) or {}
+        profile = self._enrich_voice_profile(self.db.get_voice_profile(profile_id)) or {}
         profile["latent_job_id"] = job_id
         if runtime_warning:
             profile["runtime_warning"] = runtime_warning
@@ -978,9 +1053,11 @@ class Tool1Service:
             raise FileNotFoundError("Voice profile not found.")
         allowed = {"name", "language_code"}
         filtered = {k: v for k, v in fields.items() if k in allowed and v is not None}
+        if fields.get("tts_config") is not None:
+            filtered["tts_config_json"] = serialize_voice_tts_config(fields.get("tts_config"))
         if filtered:
             self.db.update_voice_profile(profile_id, **filtered)
-        return self.db.get_voice_profile(profile_id) or {}
+        return self._enrich_voice_profile(self.db.get_voice_profile(profile_id)) or {}
 
     def delete_voice_profile(self, profile_id: str) -> dict[str, Any]:
         from .config import TTS_PROFILES_DIR
@@ -1051,12 +1128,11 @@ class Tool1Service:
 
         resolved_text = str(text or "").strip() or self._default_voice_test_text(str(profile.get("name") or ""))
         xtts_lang = map_language_code(str(language or "").strip() or "en")
-        payload = {
-            "profile_id": profile_id,
-            "ref_path": profile.get("audio_path", ""),
-            "text": resolved_text,
-            "language": xtts_lang,
-        }
+        payload = self._build_voice_test_payload(
+            profile=profile,
+            text=resolved_text,
+            language=xtts_lang,
+        )
 
         self.tts_manager.ensure_worker_ready(intent="interactive")
         job_id = self.tts_manager.submit_tts_job(
@@ -1065,7 +1141,13 @@ class Tool1Service:
             payload=payload,
             queue_priority=TEST_VOICE_PRIORITY,
         )
-        return {"job_id": job_id, "status": "queued", "text": resolved_text, "language": xtts_lang}
+        return {
+            "job_id": job_id,
+            "status": "queued",
+            "text": resolved_text,
+            "language": xtts_lang,
+            "tts_config": payload["tts_config"],
+        }
 
     def get_tts_job_status(self, job_id: str) -> dict[str, Any]:
         result = self.tts_manager.get_job_status(job_id)
@@ -1572,6 +1654,13 @@ class Tool1Service:
                 error_message="No voice profile configured",
             )
             return
+        profile = self.db.get_voice_profile(profile_id)
+        if profile is None:
+            self.db.update_episode_language_status(
+                episode_id, lang, tts_status="skipped",
+                error_message=f"Voice profile '{profile_id}' not found",
+            )
+            return
 
         # Get script text
         if lang == episode["master_language"]:
@@ -1588,10 +1677,15 @@ class Tool1Service:
         from .tts.manager import TTSManager
         tts_mgr = TTSManager(self.db)
         tts_mgr.ensure_worker_ready(intent="pipeline")
+        payload = self._build_generate_tts_payload(
+            profile=profile,
+            language=lang,
+            script_text=script_text,
+        )
         job_id = tts_mgr.submit_tts_job(
             job_type="generate",
             profile_id=profile_id,
-            payload={"texts": [script_text]},
+            payload=payload,
             build_id=episode_id,
             filename=f"narration_{lang}.wav",
         )
@@ -2072,6 +2166,13 @@ class Tool1Service:
                     error_message="No voice profile configured",
                 )
                 continue
+            profile = self.db.get_voice_profile(profile_id)
+            if profile is None:
+                self.db.update_episode_language_status(
+                    episode_id, lang, tts_status="skipped",
+                    error_message=f"Voice profile '{profile_id}' not found",
+                )
+                continue
 
             lang_status = self.db.get_episode_language_status(episode_id, lang)
             if lang_status and lang_status.get("tts_status") == "done":
@@ -2094,10 +2195,15 @@ class Tool1Service:
             from .tts.manager import TTSManager
             tts_mgr = TTSManager(self.db)
             tts_mgr.ensure_worker_ready(intent="pipeline")
+            payload = self._build_generate_tts_payload(
+                profile=profile,
+                language=lang,
+                script_text=script_text,
+            )
             job_id = tts_mgr.submit_tts_job(
                 job_type="generate",
                 profile_id=profile_id,
-                payload={"texts": [script_text]},
+                payload=payload,
                 build_id=episode_id,
                 filename=f"narration_{lang}.wav",
             )

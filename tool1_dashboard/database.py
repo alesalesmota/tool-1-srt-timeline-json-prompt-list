@@ -154,6 +154,7 @@ class Tool1Database:
                 audio_path TEXT NOT NULL,
                 latents_path TEXT,
                 has_latents INTEGER NOT NULL DEFAULT 0,
+                tts_config_json TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -227,6 +228,11 @@ class Tool1Database:
                 connection,
                 "stage_runs",
                 {"episode_id": "TEXT"},
+            )
+            self._ensure_columns(
+                connection,
+                "voice_profiles",
+                {"tts_config_json": "TEXT NOT NULL DEFAULT ''"},
             )
             # Create index after ensuring column exists
             connection.execute(

@@ -39,6 +39,11 @@ from tool1_dashboard.tts.constants import (
     WAV_MERGE_READ_FRAMES,
     WORKER_POLL_INTERVAL,
 )
+from tool1_dashboard.tts.voice_config import (
+    build_xtts_inference_kwargs,
+    chunk_text_for_voice_tts,
+    normalize_voice_tts_config,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration from environment (set by TTSManager)
@@ -297,6 +302,37 @@ def _detect_resume_index(job_chunks_dir: str, total_texts: int) -> int:
     return min(resume_from, total_texts)
 
 
+def _resolve_job_tts_config(payload: dict[str, Any]) -> dict[str, Any]:
+    return normalize_voice_tts_config(payload.get("tts_config"))
+
+
+def _resolve_job_texts(
+    payload: dict[str, Any],
+    *,
+    job_type: str,
+) -> list[str]:
+    raw_texts = payload.get("texts")
+    if isinstance(raw_texts, list):
+        texts = [str(text or "").strip() for text in raw_texts if str(text or "").strip()]
+    else:
+        texts = []
+
+    if texts and payload.get("chunked"):
+        return texts
+
+    if texts:
+        combined_text = " ".join(texts).strip()
+        return chunk_text_for_voice_tts(combined_text, payload.get("tts_config"))
+
+    raw_text = str(payload.get("text") or "").strip()
+    if raw_text:
+        return chunk_text_for_voice_tts(raw_text, payload.get("tts_config"))
+
+    if job_type == "generate":
+        raise ValueError("No valid text to generate audio.")
+    raise ValueError("No valid text to generate voice test.")
+
+
 # ---------------------------------------------------------------------------
 # Job processors
 # ---------------------------------------------------------------------------
@@ -330,15 +366,13 @@ def process_latent_job(tts_obj: Any, db: WorkerDB, job: dict) -> None:
 def process_generate_job(tts_obj: Any, db: WorkerDB, job: dict) -> None:
     payload = job["payload"]
     job_id = job["job_id"]
-    texts = payload["texts"]
     profile_id = payload["profile_id"]
     ref_path = payload["ref_path"]
     language = payload["language"]
     original_filename = payload.get("original_filename", "output")
-
-    valid_texts = [t for t in texts if t and t.strip()]
-    if not valid_texts:
-        raise ValueError("No valid text to generate audio.")
+    tts_config = _resolve_job_tts_config(payload)
+    inference_kwargs = build_xtts_inference_kwargs(tts_config)
+    valid_texts = _resolve_job_texts(payload, job_type="generate")
 
     if not os.path.exists(ref_path):
         fallback = os.path.join(PROFILES_DIR, os.path.basename(ref_path))
@@ -356,7 +390,8 @@ def process_generate_job(tts_obj: Any, db: WorkerDB, job: dict) -> None:
         db.update_job(job_id, progress=f"Resuming from chunk {resume_from + 1}/{len(valid_texts)}...")
 
     model = tts_obj.synthesizer.tts_model
-    silence_samples = int(AUDIO_SAMPLE_RATE * SILENCE_GAP_SECONDS)
+    silence_gap_seconds = float(tts_config.get("silence_gap_seconds", SILENCE_GAP_SECONDS))
+    silence_samples = int(AUDIO_SAMPLE_RATE * silence_gap_seconds)
     silence_tensor = torch.zeros(1, silence_samples)
     failed_samples = int(AUDIO_SAMPLE_RATE * FAILED_CHUNK_SECONDS)
 
@@ -385,7 +420,7 @@ def process_generate_job(tts_obj: Any, db: WorkerDB, job: dict) -> None:
                         language=language,
                         gpt_cond_latent=gpt_cond_latent,
                         speaker_embedding=speaker_embedding,
-                        enable_text_splitting=True,
+                        **inference_kwargs,
                     )
                     chunk_audio = torch.tensor(result["wav"]).unsqueeze(0)
                     break
@@ -430,8 +465,10 @@ def process_test_voice_job(tts_obj: Any, db: WorkerDB, job: dict) -> None:
     job_id = job["job_id"]
     profile_id = payload["profile_id"]
     ref_path = payload["ref_path"]
-    text = payload["text"]
     language = payload["language"]
+    tts_config = _resolve_job_tts_config(payload)
+    inference_kwargs = build_xtts_inference_kwargs(tts_config)
+    texts = _resolve_job_texts(payload, job_type="test_voice")
 
     if not os.path.exists(ref_path):
         fallback = os.path.join(PROFILES_DIR, os.path.basename(ref_path))
@@ -446,21 +483,38 @@ def process_test_voice_job(tts_obj: Any, db: WorkerDB, job: dict) -> None:
         tts_obj, db, profile_id, ref_path, job_id
     )
 
-    _check_job_control(db, job_id)
-    db.update_job(job_id, progress="Generating voice test...")
-    with torch.inference_mode():
-        _check_job_control(db, job_id)
-        result = model.inference(
-            text=text,
-            language=language,
-            gpt_cond_latent=gpt_cond_latent,
-            speaker_embedding=speaker_embedding,
-            enable_text_splitting=True,
-        )
+    job_chunks_dir = os.path.join(CHUNKS_DIR, f"test_{job_id}")
+    os.makedirs(job_chunks_dir, exist_ok=True)
+    silence_gap_seconds = float(tts_config.get("silence_gap_seconds", SILENCE_GAP_SECONDS))
+    silence_samples = int(AUDIO_SAMPLE_RATE * silence_gap_seconds)
+    silence_tensor = torch.zeros(1, silence_samples)
 
+    with torch.inference_mode():
+        for idx, text_chunk in enumerate(texts):
+            _check_job_control(db, job_id)
+            db.update_job(job_id, progress=f"Generating sample chunk {idx + 1}/{len(texts)}...")
+            result = model.inference(
+                text=text_chunk,
+                language=language,
+                gpt_cond_latent=gpt_cond_latent,
+                speaker_embedding=speaker_embedding,
+                **inference_kwargs,
+            )
+            chunk_audio = torch.tensor(result["wav"]).unsqueeze(0)
+            audio_path = os.path.join(job_chunks_dir, f"chunk_{idx * 2:04d}.wav")
+            save_pcm16_wav(audio_path, chunk_audio.cpu())
+            if idx < len(texts) - 1:
+                silence_path = os.path.join(job_chunks_dir, f"chunk_{idx * 2 + 1:04d}.wav")
+                save_pcm16_wav(silence_path, silence_tensor)
+
+    db.update_job(job_id, progress="Finalizing voice test...")
     test_path = os.path.join(OUTPUT_DIR, f"test_{job_id}.wav")
-    wav_tensor = torch.tensor(result["wav"]).unsqueeze(0)
-    torchaudio.save(test_path, wav_tensor, AUDIO_SAMPLE_RATE)
+    chunk_paths = [
+        os.path.join(job_chunks_dir, f"chunk_{i:04d}.wav")
+        for i in range(len(texts) * 2 - 1)
+    ]
+    merge_wav_chunks_streaming(chunk_paths, test_path)
+    shutil.rmtree(job_chunks_dir, ignore_errors=True)
 
     db.update_job(
         job_id,
