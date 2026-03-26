@@ -1016,7 +1016,7 @@ function renderPipelineBoard() {
           const empty = !cards ? '<div class="kanban-empty">No episodes at this step.</div>' : "";
           return '<section class="kanban-column">' +
             '<div class="kanban-column-head">' +
-              '<div class="kanban-column-title">' + esc(col.label) + '</div>' +
+              renderColumnHeading(col) +
               statusBadge(String(colEpisodes.length), episodeColumnTone(col.id, episodes)) +
             '</div>' +
             '<div class="kanban-card-list">' + cards + empty + '</div>' +
@@ -1290,6 +1290,18 @@ function renderQueueReadinessSection(readiness, { title = "Queue readiness", emp
   `;
 }
 
+function renderColumnHeading(col) {
+  const label = esc(col.label);
+  if (!col.copy) {
+    return `<div class="kanban-column-heading"><div class="kanban-column-title">${label}</div></div>`;
+  }
+  return `
+    <div class="kanban-column-heading">
+      <div class="kanban-column-title tooltip-anchor" tabindex="0" data-tooltip="${esc(col.copy)}" aria-label="${esc(`${col.label}. ${col.copy}`)}">${label}</div>
+    </div>
+  `;
+}
+
 function renderProjectBoardKanban(project, episodes) {
   return `
     <div id="pipeline-board" class="kanban-board project-kanban-board">
@@ -1298,15 +1310,12 @@ function renderProjectBoardKanban(project, episodes) {
         const cards = colEpisodes.map((ep) => renderEpisodeCard(ep, { projectId: project.id })).join("");
         const empty = !cards ? '<div class="kanban-empty">No episodes at this step.</div>' : "";
         const draftAction = col.id === "draft"
-          ? `<button type="button" class="button button-ghost button-small has-icon" data-open-submit-episode="${esc(project.id)}">${iconContent("add", "Add episode")}</button>`
+          ? `<button type="button" class="button button-ghost icon-only project-column-action tooltip-anchor" data-open-submit-episode="${esc(project.id)}" data-tooltip="Add episode" aria-label="Add episode">${iconContent("add", "Add episode", { iconOnly: true })}</button>`
           : "";
         return `
           <section class="kanban-column project-kanban-column">
             <div class="kanban-column-head">
-              <div>
-                <div class="kanban-column-title">${esc(col.label)}</div>
-                <div class="helper workflow-column-copy">${esc(col.copy)}</div>
-              </div>
+              ${renderColumnHeading(col)}
               <div class="project-column-tools">
                 ${draftAction}
                 ${statusBadge(String(colEpisodes.length), episodeColumnTone(col.id, episodes))}

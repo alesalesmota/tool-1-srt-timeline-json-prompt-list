@@ -761,17 +761,90 @@ body[data-theme="light"] .kanban-column {
   padding: 2px 2px 0;
 }
 
+.kanban-column-heading {
+  min-width: 0;
+  display: grid;
+}
+
 .kanban-column-title {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
   font-size: 16px;
   font-weight: 700;
   letter-spacing: -0.03em;
 }
 
-.workflow-column-copy {
-  margin-top: 4px;
-  margin-bottom: 6px;
-  max-width: 24ch;
+.kanban-column-title.tooltip-anchor {
+  cursor: help;
+}
+
+.kanban-column-title.tooltip-anchor:hover,
+.kanban-column-title.tooltip-anchor:focus {
+  color: var(--brand);
+}
+
+.tooltip-anchor {
+  position: relative;
+}
+
+.tooltip-anchor::before,
+.tooltip-anchor::after {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.tooltip-anchor::before {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 0;
+  top: calc(100% + 10px);
+  width: max-content;
+  max-width: min(280px, 60vw);
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
   line-height: 1.45;
+  white-space: normal;
+  z-index: 25;
+  transform: translateY(-4px);
+}
+
+.tooltip-anchor::after {
+  content: "";
+  position: absolute;
+  left: 16px;
+  top: calc(100% + 5px);
+  width: 10px;
+  height: 10px;
+  border-top: 1px solid var(--line-strong);
+  border-left: 1px solid var(--line-strong);
+  background: var(--panel-strong);
+  z-index: 24;
+  transform: rotate(45deg) translateY(-4px);
+}
+
+.tooltip-anchor:hover::before,
+.tooltip-anchor:hover::after,
+.tooltip-anchor:focus::before,
+.tooltip-anchor:focus::after {
+  opacity: 1;
+}
+
+.tooltip-anchor:hover::before,
+.tooltip-anchor:focus::before {
+  transform: translateY(0);
+}
+
+.tooltip-anchor:hover::after,
+.tooltip-anchor:focus::after {
+  transform: rotate(45deg) translateY(0);
 }
 
 .kanban-card-list {
@@ -2244,6 +2317,18 @@ details.editor-card summary::-webkit-details-marker {
   display: grid;
   gap: 8px;
   justify-items: end;
+}
+
+.project-column-action {
+  width: 44px;
+  height: 44px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.project-column-action .button-icon {
+  width: 18px;
+  height: 18px;
 }
 
 .project-readiness-panel {
