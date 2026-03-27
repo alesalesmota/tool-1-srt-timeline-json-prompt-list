@@ -157,3 +157,16 @@
 - [x] Preserve inline audio playback and inline error messaging while cleaning the control row
 - [x] Update Drawbridge task `29eb90f2-dd37-4ab3-bff5-4c680c72abd1` from `to do` -> `doing` -> `done` and sync `.moat/moat-tasks.md`
 - [x] Verify with `node --check`, `python -m unittest discover -s tests -v` (`115` passing), and browser smoke for idle plus generating card states
+
+## Drawbridge Translation Profile Setup Rework (2026-03-26)
+- [x] Split translation-profile provider metadata away from the stage-provider catalog
+- [x] Add OpenAI model discovery endpoint with inline-key and saved-key flows
+- [x] Sanitize translation-profile API responses so raw key refs do not reach the browser
+- [x] Rebuild Translation Profiles into a shared create/edit modal with provider tabs
+- [x] Keep `Codex CLI` and `Claude Code CLI` visible as placeholder-only tabs with disabled save
+- [x] Add model search, sort, selection, and hover-detail metadata to the OpenAI picker
+- [x] Add edit support with saved-key masking and rediscovery
+- [x] Render translation-profile cards with provider mode, selected model, and saved-key state
+- [x] Reject placeholder provider ids if they are posted directly to the backend
+- [x] Update Drawbridge task `9d96f21b-ec71-4952-8c5a-bce15f8b75fc` from `to do` -> `doing` -> `done` and sync `.moat/moat-tasks.md`
+- [x] Verify with `node --check`, `python -m unittest discover -s tests -v` (`124` passing), and browser smoke for create, placeholder tabs, edit rediscovery, model filtering, and update save

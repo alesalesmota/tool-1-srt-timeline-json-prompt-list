@@ -34,6 +34,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - Views: Niche Projects, project board/detail, episode overlay/direct episode route, Voice Profiles, Translation Profiles, Settings, Templates
   - Legacy Jobs and Projects/Builds models have been fully removed; the old global Pipeline Board is no longer a primary workflow surface.
   - Drawbridge feedback repair on 2026-03-26: the project-board CTA now says `Create episode`, the Draft column add action is a compact `+` with hover copy, column helper text moved into title hover tooltips, and the create-project modal now uses a searchable target-language picker instead of a checkbox wall
+  - Translation Profiles rework on 2026-03-26: the setup modal now has dedicated provider-mode cards, OpenAI model discovery, searchable/sortable model selection, masked saved-key edit flow, and preview-only `Codex CLI` / `Claude Code CLI` tabs instead of the old shared provider/model dropdowns
 - **TTS module** (`tool1_dashboard/tts/`) — audio, chunker, constants, manager, worker (XTTS-v2)
   - **Runtime Fixed (2026-03-26)**: Resolved compatibility issues with `torch 2.6.0` and `transformers 5.x`. Environment now pinned to `torch 2.3.1` and `transformers 4.39.3`. Missing dependencies (`bangla`, `gruut`, `spacy[ja]`, `umap-learn`) manually restored.
 - **Translation module** (`tool1_dashboard/translation/`) — adapter, chunker, prompts, service
@@ -63,21 +64,22 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - dashboard refreshes now reuse short-lived frontend cache windows for health/settings metadata and skip legacy board fetches unless the board view is active
   - CLI provider probe calls are now cached briefly inside `CliRunner`, avoiding repeated `codex`/`claude` subprocess checks on every click
 - **AI agent configs** (`config/agents/`) — scene planning, visual bible, video/image prompts (Claude + Codex)
-- **Test suite** — 115 tests passing (chunking, cli_runner, translation, tts, video_pipeline, API/service coverage)
+- **Test suite** — 124 tests passing (chunking, cli_runner, translation, tts, video_pipeline, API/service coverage)
 
 ### What's Being Worked On
 See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase plan.
 
-**Currently:** Phases 1-10 are complete, the 2026-03-26 workflow repair is complete, the Drawbridge feedback pass is complete, and per-voice TTS pacing control is now shipped. The Tool 1 pipeline is aligned with the intended project-board-first episode workflow and long-form narration now uses explicit app-side TTS chunking plus per-profile pacing presets.
+**Currently:** Phases 1-10 are complete, the 2026-03-26 workflow repair is complete, the Drawbridge feedback pass is complete, per-voice TTS pacing control is shipped, and the Translation Profiles setup flow is now rebuilt around OpenAI API discovery with placeholder CLI preview tabs. The Tool 1 pipeline is aligned with the intended project-board-first episode workflow and long-form narration now uses explicit app-side TTS chunking plus per-profile pacing presets.
 
 ### What Is Still Fragile
 - No dedicated frontend test harness yet; browser verification is still manual/smoke based
 - Intermittent `/api/board` 404 noise appeared in local smoke logs, but no current source call was found in `tool1_dashboard/ui/app.js`
+- Live translation-model discovery depends on a valid OpenAI API key; local browser smoke still uses a mocked discovery route when a real key is unavailable
 - XTTS runtime availability still matters operationally, but the UI no longer asks the user to manually start or restart the worker
 - Fresh Windows environments still need the XTTS runtime installed manually; Coqui TTS may require Microsoft C++ Build Tools before voice cloning can work
 
 ### Git State
-- Branch: `codex/voice-profile-flow-simplification` (active)
+- Branch: `codex/translation-profile-setup-rework` (active)
 - Responsiveness/latency fixes for route changes, overlay opens, repeated provider health probes, and the latest Drawbridge tooltip polish all live in codex feature branches
 - Remote: `https://github.com/alesalesmota/tool-1-srt-timeline-json-prompt-list.git`
 
@@ -102,6 +104,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 | Voice engine lifecycle is automatic and demand-driven | Users should trigger voice actions, not manage worker processes; interactive work can cool down quickly while pipeline TTS stays warm until the queue drains | 2026-03-26 |
 | Narration pacing is tuned per voice profile and snapped into each TTS job | Different voices need different stability/variation bands, and queued jobs must stay reproducible even if the profile is edited later | 2026-03-26 |
 | App-side TTS chunking is authoritative; XTTS internal splitting stays off | Long-form narration must be resumable and predictable, so the repo controls chunk boundaries instead of leaving them to model-side splitting | 2026-03-26 |
+| Translation Profiles use a dedicated provider-mode setup flow | Translation execution currently runs through API providers, so the setup UI must distinguish runnable OpenAI API profiles from future CLI preview modes instead of reusing the stage-provider catalog | 2026-03-26 |
 
 ## User Observations & Insights
 
@@ -124,6 +127,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - **2026-03-26**: Automatic quality retries are not desirable for long-form narration because they add too much runtime; the system should keep natural variation but constrain it to a believable rhythm band and expose manual tuning when presets are not enough
 - **2026-03-26**: Long-form narration should not rely on XTTS internal text splitting; explicit app-side TTS chunking should stay in control so resumability and pacing are predictable, and voice tuning should live on each voice profile rather than in global settings
 - **2026-03-26**: The voice-profile play-testing controls should stay minimal across all states; play, tuning, and delete should read as compact icon actions with hover explanations instead of bulky text buttons
+- **2026-03-26**: Translation profile setup needs a clear distinction between CLI use and API use; if an API key is pasted the app should recognize it, show the available models, and let the user sort/filter them with simple relative cost/speed guidance shown on hover
 - **2026-03-25**: Lost 10+ phase plan between conversations → created IMPLEMENTATION_PLAN.md + IMPLEMENTATION_CHECKLIST.md in repo + updated CLAUDE.md behavior to always persist plans
 - **2026-03-25**: Standalone tools (TRADUTOR, TTS, SRT chunker, Whisper UI) all duplicated integrated modules → deleted
 - **2026-03-24**: Niche Project hierarchy — each niche has pre-configured languages, voice profiles, translation profiles
@@ -134,6 +138,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - Add automated browser regression coverage for the project board and episode overlay workflow
 - Trace and eliminate the stray `/api/board` 404 log source if it reappears in future smoke runs
 - Add richer provider health diagnostics so readiness can distinguish login, quota, and binary availability more precisely
+- Expand Translation Profiles beyond OpenAI once the CLI execution path and persistence contract for `Codex CLI` / `Claude Code CLI` are ready
 - Add chunk-level narration diagnostics so long-form TTS can report pacing anomalies and per-chunk timings without introducing automatic retries
 - Add a clearer “production safe” vs “more expressive” explanation in the tuning modal so preset choice is more obvious before users touch the advanced controls
 - Consider inline stage-run diffing/retry tools in the episode overlay once the current workflow remains stable
@@ -160,6 +165,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-26 | **Drawbridge translation-profile setup rework complete**: split Translation Profiles off the shared stage-provider catalog, added OpenAI model discovery plus sanitized API payloads, rebuilt the modal into a provider-mode create/edit flow with searchable/sortable discovered models and saved-key masking, and exposed preview-only `Codex CLI` / `Claude Code CLI` tabs with disabled save. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`124` passing), and browser smoke on `http://127.0.0.1:8032/#/translation-profiles` covering create, placeholder tabs, edit rediscovery, model filtering, and saving an updated model via a mocked discovery route. |
 | 2026-03-26 | **Drawbridge voice-card control cleanup complete**: compacted the voice-profile action row so play, tuning, and delete are all icon-only tooltip actions, tightened title/action alignment for long names, and kept `Starting voice engine` / `Generating sample` states compact with a small status pill plus short copy instead of bulky text buttons. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`115` passing), and browser smoke on `http://127.0.0.1:8765/#/voice-profiles` confirming the new idle and generating states. |
 | 2026-03-26 | **Per-voice TTS pacing control shipped**: added saved per-profile `tts_config` presets plus advanced tuning, exposed a compact `Tuning` modal on voice-profile cards, made the repo TTS chunker the single authoritative split layer for both `Play test` and production narration, disabled XTTS internal text splitting, and snapshotted the resolved tuning into queued TTS jobs so live jobs are stable across later profile edits. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`115` passing), and browser smoke on `http://127.0.0.1:8765/#/voice-profiles` covering preset switching, advanced-value rewriting, and `Save and play test` driving the inline `Generating sample` state. |
 | 2026-03-26 | **Automatic voice-engine lifecycle shipped**: removed first-party manual worker controls from Voice Profiles and episode TTS views, stopped auto-launching XTTS at app boot, added on-demand auto-start plus stale-worker recovery, and introduced smart idle shutdown with short interactive cooldowns and longer pipeline drain cooldowns. Voice Profiles now show `Starting voice engine` inline only while a user action wakes the engine, while episode views only surface true startup/runtime failures. Verified with `node --check tool1_dashboard/ui/app.js` and `python -m unittest discover -s tests -v` (`108` passing). |

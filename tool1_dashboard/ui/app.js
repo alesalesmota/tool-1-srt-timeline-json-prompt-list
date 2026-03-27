@@ -31,6 +31,29 @@ const DEFAULT_MODEL_CATALOG = {
     { value: "gpt-5.1-codex-mini", label: "GPT-5.1 Codex Mini" },
   ],
 };
+const TRANSLATION_PROFILE_PROVIDER_CATALOG = [
+  {
+    id: "openai",
+    label: "OpenAI API",
+    mode: "api",
+    placeholder: false,
+    description: "Runnable now. Paste a key, load available models, then save the profile.",
+  },
+  {
+    id: "codex_cli",
+    label: "Codex CLI",
+    mode: "cli",
+    placeholder: true,
+    description: "UI preview only for now. This tab shows the planned CLI setup shape.",
+  },
+  {
+    id: "claude_cli",
+    label: "Claude Code CLI",
+    mode: "cli",
+    placeholder: true,
+    description: "UI preview only for now. This tab shows the planned CLI setup shape.",
+  },
+];
 const REFRESH_INTERVAL_MS = 5000;
 const HEALTH_CACHE_TTL_MS = 15000;
 const SETTINGS_CACHE_TTL_MS = 30000;
@@ -84,6 +107,7 @@ const state = {
   theme: "dark",
   notice: { text: "", tone: "neutral" },
   modal: { kind: null },
+  translationProfileEditor: null,
   submittingVoiceTestProfileId: null,
   pendingVoiceTestJobs: {},
   autoPlayedVoiceTestJobs: {},
@@ -291,6 +315,7 @@ function iconSvg(name) {
     close: '<svg viewBox="0 0 20 20"><path d="m5 5 10 10"/><path d="M15 5 5 15"/></svg>',
     delete: '<svg viewBox="0 0 20 20"><path d="M4.5 6h11"/><path d="M8 3.5h4"/><path d="M6.5 6v9.5a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1V6"/><path d="M8.5 8.5v5"/><path d="M11.5 8.5v5"/></svg>',
     download: '<svg viewBox="0 0 20 20"><path d="M10 4v8"/><path d="m6.5 9.5 3.5 3.5 3.5-3.5"/><path d="M4 15.5h12"/></svg>',
+    edit: '<svg viewBox="0 0 20 20"><path d="m4 13.5 8.8-8.8 2.5 2.5-8.8 8.8L4 16z"/><path d="M11.7 5.8 14.2 8.3"/><path d="M4 16h3.2"/></svg>',
     eye: '<svg viewBox="0 0 20 20"><path d="M1.8 10s3-5 8.2-5 8.2 5 8.2 5-3 5-8.2 5-8.2-5-8.2-5Z"/><circle cx="10" cy="10" r="2.2"/></svg>',
     finalize: '<svg viewBox="0 0 20 20"><path d="M10 3.5v8"/><path d="m6.5 8.5 3.5 3.5 3.5-3.5"/><path d="M4 14.5h12"/></svg>',
     language: '<svg viewBox="0 0 20 20"><path d="M10 3.5A6.5 6.5 0 1 0 16.5 10"/><path d="M3.9 7.5h12.2"/><path d="M3.9 12.5h8.1"/><path d="M10 3.5c1.8 1.8 2.8 4.1 2.8 6.5 0 2.4-1 4.7-2.8 6.5"/><path d="M10 3.5C8.2 5.3 7.2 7.6 7.2 10c0 2.4 1 4.7 2.8 6.5"/></svg>',
@@ -1182,77 +1207,367 @@ function renderVoiceProfileTuningModal() {
   `;
 }
 
-function renderTranslationProfiles() {
-  const profiles = state.translationProfiles || [];
-  const cards = profiles
-    .map(
-      (p) => `
-      <div class="profile-card">
-        <div class="profile-card-head">
-          <h3 class="profile-card-title">${esc(p.name)}</h3>
-          <button type="button" class="button button-danger button-small icon-only" data-delete-translation-profile="${esc(p.id)}" aria-label="Delete" title="Delete">${iconContent("delete", "Delete", { iconOnly: true })}</button>
-        </div>
-        <div class="badge-row" style="margin-top:8px;">
-          <span class="badge">${esc(p.provider || "?")}</span>
-          ${p.model ? `<span class="badge">${esc(p.model)}</span>` : ""}
-        </div>
-      </div>
-    `
-    )
-    .join("");
+function translationProfileProviderSpec(providerId, fallbackLabel = "") {
+  const spec = TRANSLATION_PROFILE_PROVIDER_CATALOG.find((item) => item.id === providerId);
+  if (spec) return spec;
+  return {
+    id: providerId || "legacy",
+    label: fallbackLabel || (providerId ? `Legacy: ${titleCase(providerId)}` : "Legacy provider"),
+    mode: "legacy",
+    placeholder: false,
+    description: "Legacy translation profile retained for compatibility.",
+  };
+}
 
-  $("view").innerHTML = `
-    <div class="detail-section">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <div class="eyebrow">Translation profiles (${profiles.length})</div>
-        <button type="button" class="button button-primary button-small has-icon" data-create-translation-profile="true">${iconContent("add", "Create profile")}</button>
-      </div>
-      ${profiles.length
-        ? `<div class="profiles-grid" style="margin-top:12px;">${cards}</div>`
-        : `<p class="helper" style="margin-top:8px;">No translation profiles yet.</p>`}
-    </div>
+function buildTranslationProfileEditor(profile = null) {
+  const providerSpec = profile
+    ? translationProfileProviderSpec(profile.provider, profile.provider_label)
+    : translationProfileProviderSpec("openai");
+  const activeProvider = providerSpec.mode === "legacy" ? "legacy" : providerSpec.id;
+  return {
+    mode: profile ? "edit" : "create",
+    profileId: profile?.id || null,
+    activeProvider,
+    sourceProvider: profile?.provider || "openai",
+    sourceProviderLabel: profile?.provider_label || providerSpec.label,
+    name: profile?.name || "",
+    apiKeyDraft: "",
+    hasSavedApiKey: Boolean(profile?.has_api_key),
+    apiKeyMasked: profile?.api_key_masked || "",
+    selectedModel: profile?.model || "",
+    discoveredModels: [],
+    discoverySucceeded: false,
+    discoveryError: "",
+    discoveryStatus: profile?.provider === "openai" && profile?.has_api_key
+      ? "Saved key available. Load models to edit this profile."
+      : "Paste an OpenAI API key and load the model list.",
+    recommendedModel: "",
+    isDiscovering: false,
+    modelSearch: "",
+    sortBy: "recommended",
+  };
+}
 
-    ${state.modal.kind === "create-translation-profile" ? renderCreateTranslationProfileModal() : ""}
+function activeTranslationProfileEditor() {
+  return state.translationProfileEditor || buildTranslationProfileEditor();
+}
+
+function translationProfileCanReuseSavedKey(editor = state.translationProfileEditor) {
+  return Boolean(
+    editor
+    && editor.mode === "edit"
+    && editor.sourceProvider === "openai"
+    && editor.hasSavedApiKey
+    && editor.profileId,
+  );
+}
+
+function translationProfileEditorCanSave(editor = state.translationProfileEditor) {
+  if (!editor || editor.activeProvider !== "openai") return false;
+  if (!String(editor.name || "").trim()) return false;
+  if (!editor.discoverySucceeded || !String(editor.selectedModel || "").trim()) return false;
+  return Boolean(String(editor.apiKeyDraft || "").trim() || translationProfileCanReuseSavedKey(editor));
+}
+
+function filteredTranslationModels(editor) {
+  const query = String(editor?.modelSearch || "").trim().toLowerCase();
+  const sortBy = editor?.sortBy || "recommended";
+  const models = [...(editor?.discoveredModels || [])].filter((model) => {
+    if (!query) return true;
+    const haystack = [
+      model.id,
+      model.label,
+      model.capability_label,
+      model.best_for,
+    ].join(" ").toLowerCase();
+    return haystack.includes(query);
+  });
+  models.sort((left, right) => {
+    if (sortBy === "price") {
+      return (
+        (left.price_score - right.price_score) ||
+        (right.speed_score - left.speed_score) ||
+        String(left.label || left.id).localeCompare(String(right.label || right.id))
+      );
+    }
+    if (sortBy === "speed") {
+      return (
+        (right.speed_score - left.speed_score) ||
+        (left.price_score - right.price_score) ||
+        String(left.label || left.id).localeCompare(String(right.label || right.id))
+      );
+    }
+    if (sortBy === "name") {
+      return String(left.label || left.id).localeCompare(String(right.label || right.id));
+    }
+    return (
+      (right.recommended === left.recommended ? 0 : right.recommended ? 1 : -1) ||
+      (left.price_score - right.price_score) ||
+      (right.speed_score - left.speed_score) ||
+      String(left.label || left.id).localeCompare(String(right.label || right.id))
+    );
+  });
+  return models;
+}
+
+function renderTranslationDiscoveryStatus(editor) {
+  if (!editor || editor.activeProvider !== "openai") return "";
+  if (editor.discoveryError) {
+    return `<div class="profile-inline-message" data-tone="error">${esc(editor.discoveryError)}</div>`;
+  }
+  if (editor.isDiscovering) {
+    return `<div class="profile-inline-message">Checking the OpenAI key and loading available models...</div>`;
+  }
+  if (editor.discoverySucceeded) {
+    const count = (editor.discoveredModels || []).length;
+    return `<div class="profile-inline-message">${esc(`${count} model${count === 1 ? "" : "s"} loaded. Hover a model to inspect quality, speed, and cost hints.`)}</div>`;
+  }
+  return `<div class="profile-inline-message">${esc(editor.discoveryStatus || "Paste an OpenAI API key and load the model list.")}</div>`;
+}
+
+function renderTranslationModelControls(editor) {
+  if (!editor || editor.activeProvider !== "openai") return "";
+  return `
+    <label class="field">
+      <span class="field-label">Search models</span>
+      <input id="tp-model-search" value="${esc(editor.modelSearch)}" placeholder="Search by name or usage hint" ${editor.discoverySucceeded ? "" : "disabled"} />
+    </label>
+    <label class="field">
+      <span class="field-label">Sort</span>
+      <select id="tp-model-sort" ${editor.discoverySucceeded ? "" : "disabled"}>
+        <option value="recommended" ${editor.sortBy === "recommended" ? "selected" : ""}>Recommended</option>
+        <option value="price" ${editor.sortBy === "price" ? "selected" : ""}>Cheapest first</option>
+        <option value="speed" ${editor.sortBy === "speed" ? "selected" : ""}>Fastest first</option>
+        <option value="name" ${editor.sortBy === "name" ? "selected" : ""}>Name</option>
+      </select>
+    </label>
   `;
 }
 
-function renderCreateTranslationProfileModal() {
+function renderTranslationModelPanel(editor) {
+  if (!editor || editor.activeProvider !== "openai") return "";
+  if (!editor.discoverySucceeded) {
+    return `<div class="translation-model-empty helper">Load models first. The save action stays locked until the key is checked and a model is selected.</div>`;
+  }
+  const visibleModels = filteredTranslationModels(editor);
+  if (!visibleModels.length) {
+    return `<div class="translation-model-empty helper">No models match the current search.</div>`;
+  }
+  const selected = (editor.discoveredModels || []).find((model) => model.id === editor.selectedModel);
+  return `
+    <div class="translation-model-panel-head">
+      <div class="badge-row">
+        ${selected ? statusBadge(`Selected: ${selected.label}`, "active") : statusBadge("Choose a model", "warn")}
+        ${editor.recommendedModel ? statusBadge(`Default: ${editor.recommendedModel}`, "success") : ""}
+      </div>
+    </div>
+    <div class="translation-model-list">
+      ${visibleModels.map((model) => `
+        <button
+          type="button"
+          class="translation-model-option tooltip-anchor${editor.selectedModel === model.id ? " is-active" : ""}"
+          data-select-translation-model="${esc(model.id)}"
+          data-tooltip="${esc(`${model.best_for} Price ${model.price_score}/5. Speed ${model.speed_score}/5. ${model.capability_label}.`)}"
+          aria-pressed="${editor.selectedModel === model.id ? "true" : "false"}"
+        >
+          <div class="translation-model-option-head">
+            <div class="translation-model-option-title">${esc(model.label)}</div>
+            <div class="badge-row">
+              ${model.recommended ? statusBadge("Recommended", "success") : ""}
+              ${statusBadge(model.capability_label, "active")}
+            </div>
+          </div>
+          <div class="translation-model-option-copy">${esc(model.id)}</div>
+          <div class="translation-model-option-copy">${esc(shortText(model.best_for, 18))}</div>
+          <div class="badge-row">
+            <span class="badge">Price ${esc(model.price_score)}/5</span>
+            <span class="badge">Speed ${esc(model.speed_score)}/5</span>
+          </div>
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderTranslationProviderTabs(editor) {
+  const tabs = TRANSLATION_PROFILE_PROVIDER_CATALOG.map((spec) => `
+    <button
+      type="button"
+      class="translation-provider-tab${editor.activeProvider === spec.id ? " is-active" : ""}"
+      data-translation-provider-tab="${esc(spec.id)}"
+      aria-pressed="${editor.activeProvider === spec.id ? "true" : "false"}"
+    >
+      <div class="translation-provider-tab-head">
+        <span>${esc(spec.label)}</span>
+        ${spec.placeholder ? statusBadge("Placeholder", "warn") : statusBadge("Live", "success")}
+      </div>
+      <div class="translation-provider-tab-copy">${esc(spec.description)}</div>
+    </button>
+  `).join("");
+  const legacy = editor.activeProvider === "legacy"
+    ? `
+      <div class="translation-provider-tab is-active is-legacy">
+        <div class="translation-provider-tab-head">
+          <span>${esc(editor.sourceProviderLabel || "Legacy profile")}</span>
+          ${statusBadge("Legacy", "warn")}
+        </div>
+        <div class="translation-provider-tab-copy">This stored profile still exists, but the new setup flow only edits OpenAI profiles.</div>
+      </div>
+    `
+    : "";
+  return `<div class="translation-provider-grid">${tabs}${legacy}</div>`;
+}
+
+function renderTranslationProfileEditorBody(editor) {
+  if (editor.activeProvider === "openai") {
+    return `
+      <div class="form-grid">
+        <label class="field">
+          <span class="field-label">Profile name</span>
+          <input id="tp-profile-name" value="${esc(editor.name)}" placeholder="e.g. Spanish main" required />
+        </label>
+        <label class="field">
+          <span class="field-label">OpenAI API key</span>
+          <input id="tp-api-key" type="password" value="${esc(editor.apiKeyDraft)}" placeholder="${translationProfileCanReuseSavedKey(editor) ? "Leave blank to keep the saved key" : "Paste an OpenAI key"}" autocomplete="off" spellcheck="false" />
+        </label>
+      </div>
+      <div class="translation-key-meta">
+        ${translationProfileCanReuseSavedKey(editor) ? statusBadge(`Saved key ${editor.apiKeyMasked}`, "active") : ""}
+        <span class="helper">${esc(editor.mode === "edit" ? "Leave the field blank to keep the current key, or paste a new one and reload models." : "This key is only used to load the models available to this OpenAI account.")}</span>
+      </div>
+      <div class="button-row translation-discovery-actions">
+        <button type="button" class="button has-icon" id="tp-discover-button" data-translation-discover="true">${iconContent("refresh", editor.discoverySucceeded ? "Refresh models" : "Check key")}</button>
+      </div>
+      <div id="tp-discovery-status">${renderTranslationDiscoveryStatus(editor)}</div>
+      <div id="tp-model-controls" class="translation-model-controls">
+        ${renderTranslationModelControls(editor)}
+      </div>
+      <div id="tp-model-panel">${renderTranslationModelPanel(editor)}</div>
+    `;
+  }
+  if (editor.activeProvider === "legacy") {
+    return `
+      <div class="profile-inline-message" data-tone="error">This saved profile uses a legacy provider. The new setup flow keeps it visible and deletable, but only OpenAI profiles can be edited here.</div>
+      <div class="form-grid">
+        <label class="field">
+          <span class="field-label">Profile name</span>
+          <input value="${esc(editor.name)}" readonly />
+        </label>
+        <label class="field">
+          <span class="field-label">Provider</span>
+          <input value="${esc(editor.sourceProviderLabel || editor.sourceProvider)}" readonly />
+        </label>
+        <label class="field">
+          <span class="field-label">Model</span>
+          <input value="${esc(editor.selectedModel || "Unknown")}" readonly />
+        </label>
+        <label class="field">
+          <span class="field-label">Saved key</span>
+          <input value="${esc(editor.apiKeyMasked || "Not available")}" readonly />
+        </label>
+      </div>
+    `;
+  }
+  const activeSpec = translationProfileProviderSpec(editor.activeProvider);
+  const defaultCommand = activeSpec.id === "codex_cli" ? "codex exec" : "claude -p";
+  const defaultModel = activeSpec.id === "codex_cli" ? "gpt-5.4" : "haiku";
+  return `
+    <div class="profile-inline-message" data-tone="warn">Placeholder only. This tab is a UI preview and cannot be saved yet.</div>
+    <div class="form-grid">
+      <label class="field">
+        <span class="field-label">Profile name</span>
+        <input value="${esc(editor.name || `${activeSpec.label} preview`)}" readonly />
+      </label>
+      <label class="field">
+        <span class="field-label">CLI command</span>
+        <input value="${esc(defaultCommand)}" readonly />
+      </label>
+      <label class="field">
+        <span class="field-label">Preferred model</span>
+        <input value="${esc(defaultModel)}" readonly />
+      </label>
+      <label class="field">
+        <span class="field-label">Auth source</span>
+        <input value="Uses the local CLI session" readonly />
+      </label>
+    </div>
+  `;
+}
+
+function renderTranslationProfileModal() {
+  const editor = activeTranslationProfileEditor();
+  const title = editor.mode === "edit" ? "Edit translation profile" : "Create translation profile";
+  const submitLabel = editor.mode === "edit" ? "Save profile" : "Create profile";
   return `
     <div class="modal-backdrop" data-modal-backdrop="true">
-      <div class="modal-panel">
+      <div class="modal-panel translation-profile-modal">
         <div class="modal-header">
-          <h2>Create translation profile</h2>
+          <h2>${esc(title)}</h2>
           <button type="button" class="button button-ghost icon-only" data-close-modal="true">${iconContent("close", "Close", { iconOnly: true })}</button>
         </div>
-        <form id="create-translation-profile-form" class="stack">
-          <div class="form-grid">
-            <label class="field">
-              <span class="field-label">Name</span>
-              <input id="tp-name" required />
-            </label>
-            <label class="field">
-              <span class="field-label">Provider</span>
-              <select id="tp-provider">
-                <option value="claude">Claude</option>
-                <option value="codex">Codex</option>
-              </select>
-            </label>
-            <label class="field">
-              <span class="field-label">API key (optional)</span>
-              <input id="tp-api-key" type="password" placeholder="Leave blank to use default" />
-            </label>
-            <label class="field">
-              <span class="field-label">Model (optional)</span>
-              <input id="tp-model" placeholder="e.g. haiku, gpt-5.4" />
-            </label>
-          </div>
-          <div class="button-row" style="margin-top:18px;">
-            <button type="submit" class="button button-primary has-icon">${iconContent("add", "Create")}</button>
+        <form id="translation-profile-editor-form" class="stack">
+          ${renderTranslationProviderTabs(editor)}
+          ${renderTranslationProfileEditorBody(editor)}
+          <div class="button-row translation-profile-actions">
+            <button type="submit" id="tp-submit-button" class="button button-primary has-icon"${translationProfileEditorCanSave(editor) ? "" : " disabled"}>${iconContent(editor.mode === "edit" ? "save" : "add", submitLabel)}</button>
             <button type="button" class="button button-ghost" data-close-modal="true">Cancel</button>
           </div>
         </form>
       </div>
     </div>
+  `;
+}
+
+function renderTranslationProfiles() {
+  const profiles = state.translationProfiles || [];
+  const cards = profiles
+    .map((profile) => {
+      const providerSpec = translationProfileProviderSpec(profile.provider, profile.provider_label);
+      const isOpenAi = profile.provider === "openai";
+      const helperCopy = profile.provider_mode === "legacy"
+        ? "Legacy profile kept for compatibility. Delete and recreate it in the new OpenAI flow when you want to migrate."
+        : providerSpec.description;
+      return `
+        <div class="profile-card translation-profile-card">
+          <div class="profile-card-head">
+            <div>
+              <h3 class="profile-card-title">${esc(profile.name)}</h3>
+              <div class="badge-row" style="margin-top:8px;">
+                ${statusBadge(profile.provider_label || providerSpec.label, profile.provider_mode === "legacy" ? "warn" : "active")}
+                ${profile.model ? statusBadge(profile.model, "neutral") : ""}
+                ${profile.has_api_key ? statusBadge(`Key ${profile.api_key_masked}`, "success") : statusBadge("No key", "warn")}
+              </div>
+            </div>
+            <div class="profile-card-actions">
+              ${profile.provider_editable ? `<button type="button" class="button button-small icon-only profile-card-action" data-edit-translation-profile="${esc(profile.id)}" aria-label="Edit" title="Edit">${iconContent("edit", "Edit", { iconOnly: true })}</button>` : ""}
+              <button type="button" class="button button-danger button-small icon-only profile-card-action" data-delete-translation-profile="${esc(profile.id)}" aria-label="Delete" title="Delete">${iconContent("delete", "Delete", { iconOnly: true })}</button>
+            </div>
+          </div>
+          <div class="profile-card-body">
+            <p class="profile-card-copy">${esc(helperCopy)}</p>
+            <div class="profile-card-meta">
+              ${esc(isOpenAi ? "Routable in the current setup flow." : "Visible for reference only in the new setup flow.")}
+            </div>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+
+  $("view").innerHTML = `
+    <div class="detail-section">
+      <div class="section-header">
+        <div class="eyebrow">Translation profiles (${profiles.length})</div>
+        <div class="button-row">
+          <button type="button" class="button button-primary button-small has-icon" data-create-translation-profile="true">${iconContent("add", "Create profile")}</button>
+        </div>
+      </div>
+      <p class="helper" style="margin-top:8px; max-width:72ch;">OpenAI API is the only runnable translation profile in this pass. Codex CLI and Claude Code CLI are shown in the editor as preview-only placeholders so you can see the planned setup shape.</p>
+      ${profiles.length
+        ? `<div class="profiles-grid" style="margin-top:12px;">${cards}</div>`
+        : `<p class="helper" style="margin-top:8px;">No translation profiles yet.</p>`}
+    </div>
+    ${state.modal.kind === "translation-profile-editor" ? renderTranslationProfileModal() : ""}
   `;
 }
 
@@ -2452,6 +2767,7 @@ function renderApp() {
   document.body.classList.toggle("modal-open", Boolean(state.modal.kind) || Boolean(state.episodeOverlayId));
   if (state.modal.kind === "create-niche") syncCreateNicheLanguagePicker();
   syncVoiceProfileAudioAutoplay();
+  refreshTranslationProfileEditorDom();
   syncAllProviderModelSelects();
   resetElapsedTimer();
   restoreDashboardScroll();
@@ -2801,22 +3117,192 @@ async function testVoiceProfile(profileId) {
   }
 }
 
-async function createTranslationProfile(event) {
+function openTranslationProfileEditor(profileId = null) {
+  const profile = profileId
+    ? (state.translationProfiles || []).find((item) => item.id === profileId) || null
+    : null;
+  state.translationProfileEditor = buildTranslationProfileEditor(profile);
+  state.modal = { kind: "translation-profile-editor" };
+  renderApp();
+  resetAutoRefresh();
+  if (profile?.provider === "openai" && profile?.has_api_key) {
+    state.translationProfileEditor.discoveryStatus = "Loading models with the saved OpenAI key.";
+    refreshTranslationProfileEditorDom();
+    discoverTranslationProfileModels().catch((error) => {
+      if (state.translationProfileEditor) {
+        state.translationProfileEditor.discoveryError = error.message;
+        state.translationProfileEditor.discoverySucceeded = false;
+        state.translationProfileEditor.isDiscovering = false;
+        refreshTranslationProfileEditorDom();
+      }
+    });
+  }
+}
+
+function captureTranslationProfileEditorDraft({ invalidateDiscovery = false } = {}) {
+  const editor = state.translationProfileEditor;
+  if (!editor) return null;
+  const nameInput = $("tp-profile-name");
+  if (nameInput) editor.name = nameInput.value;
+  const apiKeyInput = $("tp-api-key");
+  if (apiKeyInput) {
+    const previous = editor.apiKeyDraft;
+    editor.apiKeyDraft = apiKeyInput.value;
+    if (invalidateDiscovery && editor.apiKeyDraft !== previous) {
+      editor.discoverySucceeded = false;
+      editor.discoveryError = "";
+      editor.discoveredModels = [];
+      editor.recommendedModel = "";
+      editor.selectedModel = "";
+      editor.discoveryStatus = editor.apiKeyDraft.trim()
+        ? "Check the key to load models for this account."
+        : (translationProfileCanReuseSavedKey(editor)
+          ? "Saved key available. Load models to edit this profile."
+          : "Paste an OpenAI API key and load the model list.");
+    }
+  }
+  const searchInput = $("tp-model-search");
+  if (searchInput) editor.modelSearch = searchInput.value;
+  const sortSelect = $("tp-model-sort");
+  if (sortSelect) editor.sortBy = sortSelect.value;
+  return editor;
+}
+
+function syncTranslationProfileEditorActionState() {
+  const editor = state.translationProfileEditor;
+  if (!editor) return;
+  const submitButton = $("tp-submit-button");
+  if (submitButton) {
+    submitButton.disabled = !translationProfileEditorCanSave(editor);
+  }
+  const discoverButton = $("tp-discover-button");
+  if (discoverButton) {
+    const canReuseSavedKey = translationProfileCanReuseSavedKey(editor);
+    const label = editor.isDiscovering
+      ? "Checking..."
+      : editor.discoverySucceeded
+        ? "Refresh models"
+        : (canReuseSavedKey && !String(editor.apiKeyDraft || "").trim() ? "Load models" : "Check key");
+    discoverButton.disabled = editor.isDiscovering;
+    discoverButton.innerHTML = iconContent("refresh", label);
+  }
+}
+
+function refreshTranslationProfileEditorDom() {
+  if (state.modal.kind !== "translation-profile-editor" || !state.translationProfileEditor) return;
+  const statusNode = $("tp-discovery-status");
+  if (statusNode) {
+    statusNode.innerHTML = renderTranslationDiscoveryStatus(state.translationProfileEditor);
+  }
+  const controlsNode = $("tp-model-controls");
+  if (controlsNode) {
+    controlsNode.innerHTML = renderTranslationModelControls(state.translationProfileEditor);
+  }
+  const modelPanel = $("tp-model-panel");
+  if (modelPanel) {
+    modelPanel.innerHTML = renderTranslationModelPanel(state.translationProfileEditor);
+  }
+  syncTranslationProfileEditorActionState();
+}
+
+function setTranslationProfileEditorProvider(providerId) {
+  const editor = captureTranslationProfileEditorDraft();
+  if (!editor) return;
+  editor.activeProvider = providerId;
+  renderApp();
+}
+
+function selectTranslationProfileModel(modelId) {
+  const editor = state.translationProfileEditor;
+  if (!editor) return;
+  editor.selectedModel = modelId;
+  refreshTranslationProfileEditorDom();
+}
+
+async function discoverTranslationProfileModels() {
+  const editor = captureTranslationProfileEditorDraft({ invalidateDiscovery: false });
+  if (!editor || editor.activeProvider !== "openai") return;
+  const apiKeyDraft = String(editor.apiKeyDraft || "").trim();
+  if (!apiKeyDraft && !translationProfileCanReuseSavedKey(editor)) {
+    editor.discoveryError = "Paste an OpenAI API key first.";
+    editor.discoverySucceeded = false;
+    refreshTranslationProfileEditorDom();
+    return;
+  }
+  editor.isDiscovering = true;
+  editor.discoveryError = "";
+  editor.discoveryStatus = apiKeyDraft
+    ? "Checking the pasted OpenAI key."
+    : "Checking the saved OpenAI key.";
+  refreshTranslationProfileEditorDom();
+  try {
+    const payload = {};
+    if (apiKeyDraft) payload.api_key = apiKeyDraft;
+    if (!apiKeyDraft && translationProfileCanReuseSavedKey(editor)) payload.profile_id = editor.profileId;
+    const result = await api("/api/translation-profiles/openai/discover", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    editor.discoveredModels = result.models || [];
+    editor.recommendedModel = result.recommended_model || "";
+    const selectedStillValid = editor.discoveredModels.some((model) => model.id === editor.selectedModel);
+    editor.selectedModel = selectedStillValid
+      ? editor.selectedModel
+      : (editor.recommendedModel || editor.discoveredModels[0]?.id || "");
+    editor.discoverySucceeded = editor.discoveredModels.length > 0;
+    editor.discoveryStatus = result.from_saved_key
+      ? "Models loaded using the saved OpenAI key."
+      : "Models loaded using the pasted OpenAI key.";
+  } catch (error) {
+    editor.discoverySucceeded = false;
+    editor.discoveryError = error.message;
+    editor.discoveredModels = [];
+    editor.recommendedModel = "";
+    editor.selectedModel = "";
+  } finally {
+    editor.isDiscovering = false;
+    refreshTranslationProfileEditorDom();
+  }
+}
+
+async function saveTranslationProfileEditor(event) {
   event.preventDefault();
+  const editor = captureTranslationProfileEditorDraft();
+  if (!editor) return;
+  if (!translationProfileEditorCanSave(editor)) {
+    throw new Error(
+      editor.activeProvider === "openai"
+        ? "Check the OpenAI key, load models, and pick one before saving."
+        : "This provider is a placeholder preview and cannot be saved yet.",
+    );
+  }
   const payload = {
-    name: $("tp-name").value.trim(),
-    provider: $("tp-provider").value,
-    api_key: $("tp-api-key")?.value?.trim() || "",
-    model: $("tp-model")?.value?.trim() || "",
+    name: String(editor.name || "").trim(),
+    provider: "openai",
+    model: String(editor.selectedModel || "").trim(),
   };
-  await api("/api/translation-profiles", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const apiKeyDraft = String(editor.apiKeyDraft || "").trim();
+  if (editor.mode === "create") {
+    payload.api_key = apiKeyDraft;
+    await api("/api/translation-profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    setNotice("Translation profile created.", "success");
+  } else {
+    if (apiKeyDraft) payload.api_key = apiKeyDraft;
+    await api(`/api/translation-profiles/${encodeURIComponent(editor.profileId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    setNotice("Translation profile updated.", "success");
+  }
+  state.translationProfileEditor = null;
   state.modal = { kind: null };
-  setNotice("Translation profile created.", "success");
-  await refreshData();
+  await refreshData({ force: true });
   renderApp();
 }
 
@@ -2912,6 +3398,7 @@ async function prepareLanguage() {
 document.addEventListener("click", async (event) => {
   if (event.target.matches("[data-modal-backdrop]")) {
     state.modal = { kind: null };
+    state.translationProfileEditor = null;
     state.translationPreview = null;
     renderApp();
     resetAutoRefresh();
@@ -2921,12 +3408,13 @@ document.addEventListener("click", async (event) => {
     closeEpisodeOverlay();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-delete-translation-profile], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
+  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
   if (!target) return;
   event.preventDefault();
   try {
     if (target.dataset.closeModal) {
       if (state.modal.kind === "translation-preview") state.translationPreview = null;
+      state.translationProfileEditor = null;
       state.modal = { kind: null };
       renderApp();
       resetAutoRefresh();
@@ -2996,9 +3484,23 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (target.dataset.createTranslationProfile) {
-      state.modal = { kind: "create-translation-profile" };
-      renderApp();
-      resetAutoRefresh();
+      openTranslationProfileEditor();
+      return;
+    }
+    if (target.dataset.editTranslationProfile) {
+      openTranslationProfileEditor(target.dataset.editTranslationProfile);
+      return;
+    }
+    if (target.dataset.translationProviderTab) {
+      setTranslationProfileEditorProvider(target.dataset.translationProviderTab);
+      return;
+    }
+    if (target.dataset.translationDiscover) {
+      await discoverTranslationProfileModels();
+      return;
+    }
+    if (target.dataset.selectTranslationModel) {
+      selectTranslationProfileModel(target.dataset.selectTranslationModel);
       return;
     }
     if (target.dataset.deleteTranslationProfile) {
@@ -3257,7 +3759,7 @@ document.addEventListener("submit", async (event) => {
   try {
     if (form.id === "create-voice-profile-form") await createVoiceProfile(event);
     else if (form.id === "voice-profile-tuning-form") await saveVoiceProfileTuning(event);
-    else if (form.id === "create-translation-profile-form") await createTranslationProfile(event);
+    else if (form.id === "translation-profile-editor-form") await saveTranslationProfileEditor(event);
     else if (form.id === "create-niche-form") await createNicheProject(event);
     else if (form.id === "submit-episode-form") await submitEpisode(event);
     else if (form.id === "settings-form") await saveSettings(event);
@@ -3268,7 +3770,29 @@ document.addEventListener("submit", async (event) => {
   }
 });
 
+document.addEventListener("input", (event) => {
+  if (event.target.id === "tp-profile-name") {
+    captureTranslationProfileEditorDraft();
+    syncTranslationProfileEditorActionState();
+    return;
+  }
+  if (event.target.id === "tp-api-key") {
+    captureTranslationProfileEditorDraft({ invalidateDiscovery: true });
+    refreshTranslationProfileEditorDom();
+    return;
+  }
+  if (event.target.id === "tp-model-search") {
+    captureTranslationProfileEditorDraft();
+    refreshTranslationProfileEditorDom();
+  }
+});
+
 document.addEventListener("change", (event) => {
+  if (event.target.id === "tp-model-sort") {
+    captureTranslationProfileEditorDraft();
+    refreshTranslationProfileEditorDom();
+    return;
+  }
   if (event.target.id === "niche-master-lang") {
     syncCreateNicheLanguagePicker();
     return;
@@ -3315,6 +3839,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     if (state.modal.kind) {
       if (state.modal.kind === "translation-preview") state.translationPreview = null;
+      state.translationProfileEditor = null;
       state.modal = { kind: null };
       renderApp();
       resetAutoRefresh();

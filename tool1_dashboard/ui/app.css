@@ -1904,6 +1904,10 @@ details.editor-card summary::-webkit-details-marker {
   gap: 16px;
 }
 
+.translation-profile-card .profile-card-copy {
+  max-width: 44ch;
+}
+
 .modal-panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -1913,6 +1917,153 @@ details.editor-card summary::-webkit-details-marker {
   width: 90vw;
   max-height: 85vh;
   overflow-y: auto;
+}
+
+.translation-profile-modal {
+  max-width: 980px;
+  width: min(980px, 94vw);
+}
+
+.translation-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.translation-provider-tab {
+  appearance: none;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px 16px;
+  background: var(--panel-soft);
+  color: var(--ink);
+  cursor: pointer;
+  display: grid;
+  gap: 8px;
+  transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.translation-provider-tab:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+
+.translation-provider-tab.is-active {
+  border-color: rgba(144, 179, 255, 0.28);
+  box-shadow: 0 0 0 1px rgba(144, 179, 255, 0.2);
+}
+
+.translation-provider-tab.is-legacy {
+  cursor: default;
+}
+
+.translation-provider-tab-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.translation-provider-tab-copy {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.translation-key-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 2px 0 14px;
+}
+
+.translation-discovery-actions {
+  margin-bottom: 10px;
+}
+
+.translation-model-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 12px;
+  align-items: end;
+  margin-top: 16px;
+}
+
+.translation-model-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0 10px;
+}
+
+.translation-model-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
+}
+
+.translation-model-option {
+  appearance: none;
+  width: 100%;
+  text-align: left;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--ink);
+  display: grid;
+  gap: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.translation-model-option:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+
+.translation-model-option.is-active {
+  border-color: rgba(144, 179, 255, 0.32);
+  box-shadow: 0 0 0 1px rgba(144, 179, 255, 0.2);
+  background: rgba(144, 179, 255, 0.08);
+}
+
+.translation-model-option-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.translation-model-option-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.translation-model-option-copy {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.translation-model-empty {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px dashed var(--line-strong);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.translation-profile-actions {
+  margin-top: 18px;
 }
 
 .modal-header {
@@ -2181,6 +2332,9 @@ details.editor-card summary::-webkit-details-marker {
   .loc-list { grid-template-columns: 1fr; }
   .modal-panel { width: 95vw; padding: 16px; }
   .niche-language-search-row { grid-template-columns: 1fr; }
+  .translation-provider-grid { grid-template-columns: 1fr; }
+  .translation-model-controls { grid-template-columns: 1fr; }
+  .translation-model-list { grid-template-columns: 1fr; }
 }
 
 /* ── Phase 6: Episode Board Enhancements ─────────────────────── */
@@ -2595,6 +2749,10 @@ details.editor-card summary::-webkit-details-marker {
   .board-modal-side {
     border-left: 0;
     border-top: 1px solid var(--line);
+  }
+
+  .translation-provider-grid {
+    grid-template-columns: 1fr;
   }
 }
 

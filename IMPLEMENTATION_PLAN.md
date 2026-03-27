@@ -210,6 +210,60 @@ This addendum captures the narration-stability pass that followed the voice-prof
 
 ---
 
+## 2026-03-26 Translation Profile Setup Rework Addendum
+
+This addendum captures the Drawbridge pass that rebuilt Translation Profiles around the actual runnable provider path instead of the shared CLI stage-provider catalog.
+
+### Goals
+
+- clarify API vs CLI provider modes inside Translation Profiles
+- make OpenAI API the only runnable/savable translation profile in this pass
+- load the available OpenAI models from the pasted or saved API key instead of asking for a free-text model id
+- expose model sorting, filtering, and hover metadata so model choice is understandable at setup time
+- keep future CLI modes visible as placeholders without allowing invalid persistence
+
+### Implemented shape
+
+- Translation Profiles now use a dedicated provider catalog with:
+  - `OpenAI API` as the live runnable mode
+  - `Codex CLI` and `Claude Code CLI` as placeholder preview tabs
+- Added `POST /api/translation-profiles/openai/discover`
+  - accepts a pasted `api_key` for create flow or `profile_id` for edit flow
+  - calls OpenAI `GET /v1/models`
+  - filters for text-capable models
+  - merges live ids with local metadata for labels, price/speed scores, capability labels, and `best for` hover copy
+  - returns a normalized model list plus a recommended default
+- Translation-profile API payloads are now sanitized for the frontend
+  - raw key refs are no longer returned
+  - responses expose `has_api_key`, `api_key_masked`, `provider_label`, `provider_mode`, and `provider_placeholder`
+- The Translation Profiles UI now uses a shared create/edit modal with:
+  - provider mode tabs/cards
+  - explicit OpenAI key check / model refresh action
+  - searchable and sortable discovered model picker
+  - hover detail tooltips for model cost/speed/capability hints
+  - saved-key masking for edit flow
+  - disabled save path for placeholder CLI tabs
+- Existing legacy providers remain visible and deletable, but the new editor only supports OpenAI updates in this pass
+
+### Guardrails
+
+- Only `openai` can be created or updated through the current setup flow
+- Placeholder CLI provider ids are rejected server-side if posted directly
+- Edit-mode model discovery can reuse the stored secret without exposing it back to the browser
+
+### Verification baseline
+
+- `python -m unittest discover -s tests -v` -> 124 passing tests
+- `node --check tool1_dashboard/ui/app.js`
+- Browser smoke on `http://127.0.0.1:8032/#/translation-profiles` covering:
+  - placeholder tab rendering and disabled save
+  - mocked OpenAI model discovery during create flow
+  - saved-key rediscovery during edit flow
+  - model search/filter interaction
+  - editing a profile and saving a changed model
+
+---
+
 ## Files to Modify (Critical)
 
 | File | Action |
