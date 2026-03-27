@@ -55,6 +55,7 @@ const TRANSLATION_PROFILE_PROVIDER_CATALOG = [
   },
 ];
 const REFRESH_INTERVAL_MS = 5000;
+const ACTIVE_REFRESH_INTERVAL_MS = 1000;
 const HEALTH_CACHE_TTL_MS = 15000;
 const SETTINGS_CACHE_TTL_MS = 30000;
 const TARGET_LANGUAGES_CACHE_TTL_MS = 60000;
@@ -143,6 +144,7 @@ let elapsedTimer = null;
 let refreshGeneration = 0;
 let activeRefreshes = 0;
 let blockingRefreshes = 0;
+let currentRefreshIntervalMs = REFRESH_INTERVAL_MS;
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) =>
@@ -475,6 +477,126 @@ function stageLabel(stage) {
   return EPISODE_STAGE_LABELS[stage] || titleCase(stage || "workflow");
 }
 
+function stageActivityLabel(stage) {
+  const activity = {
+    draft: "Ready to start workflow",
+    consistency_guide: "Running Consistency Guide",
+    translation: "Running Translation",
+    tts: "Generating TTS",
+    alignment: "Aligning audio",
+    chunking: "Running Chunking",
+    scene_planning: "Running Scene Planning",
+    video_prompt_generation: "Generating video prompts",
+    image_prompt_generation: "Generating image prompts",
+    timeline_mapping: "Mapping timeline",
+    review: "Ready for review",
+    export: "Export completed",
+  };
+  return activity[stage] || `Running ${stageLabel(stage)}`;
+}
+
+function episodeDisplayStage(episode) {
+  if (!episode) return "draft";
+  const currentStage = episode.current_stage || "";
+  const pipelineStatus = episode.pipeline_status || "idle";
+  if (["queued", "paused_for_tts"].includes(pipelineStatus) || (pipelineStatus === "running" && currentStage === "draft")) {
+    const queuedStage = episodeQueueStartStage(episode);
+    if (EPISODE_PIPELINE_COLUMNS.some((column) => column.id === queuedStage)) return queuedStage;
+  }
+  if (EPISODE_PIPELINE_COLUMNS.some((column) => column.id === currentStage)) return currentStage;
+  if (["queued", "running", "paused_for_tts"].includes(pipelineStatus)) {
+    const queuedStage = episodeQueueStartStage(episode);
+    if (EPISODE_PIPELINE_COLUMNS.some((column) => column.id === queuedStage)) return queuedStage;
+  }
+  return "draft";
+}
+
+function languageStageStatusKey(stage) {
+  const statusKeys = {
+    translation: "translation_status",
+    tts: "tts_status",
+    alignment: "srt_status",
+    timeline_mapping: "timeline_status",
+  };
+  return statusKeys[stage] || `${stage}_status`;
+}
+
+function perLanguageStageCounts(languageStatuses, stage) {
+  if (!Array.isArray(languageStatuses) || !languageStatuses.length || !EPISODE_PER_LANG_STAGES.includes(stage)) {
+    return null;
+  }
+  const statusKey = languageStageStatusKey(stage);
+  return languageStatuses.reduce((counts, langStatus) => {
+    const status = String(langStatus?.[statusKey] || "").toLowerCase();
+    if (status === "done" || status === "completed") {
+      counts.done += 1;
+    } else if (status === "running" || status === "processing") {
+      counts.running += 1;
+    } else if (status === "failed" || status === "error") {
+      counts.failed += 1;
+    } else {
+      counts.pending += 1;
+    }
+    return counts;
+  }, {
+    total: languageStatuses.length,
+    done: 0,
+    running: 0,
+    pending: 0,
+    failed: 0,
+  });
+}
+
+function perLanguageStageSummary(stage, counts) {
+  const activity = stageActivityLabel(stage);
+  if (!counts?.total) return `${activity}.`;
+  const parts = [`${activity} ${counts.done}/${counts.total} done`];
+  if (counts.failed) parts.push(`${counts.failed} failed`);
+  return `${parts.join(", ")}.`;
+}
+
+function episodeCardStatusTone(episode) {
+  const pipelineStatus = episode?.pipeline_status || "idle";
+  if (pipelineStatus === "failed") return "error";
+  if (pipelineStatus === "review" || pipelineStatus === "done") return "success";
+  if (pipelineStatus === "queued" || pipelineStatus === "paused_for_tts") return "warn";
+  if (pipelineStatus === "running") return "active";
+  if (episode?.queue_readiness?.ok === false) return "warn";
+  return "neutral";
+}
+
+function episodeWorkflowStatusCopy(episode) {
+  if (!episode) return "";
+  const pipelineStatus = episode.pipeline_status || "idle";
+  const displayStage = episodeDisplayStage(episode);
+  const counts = perLanguageStageCounts(episode.language_statuses, displayStage);
+  if (pipelineStatus === "failed") return `Stopped in ${stageLabel(displayStage)}.`;
+  if (pipelineStatus === "done") return "Export completed.";
+  if (pipelineStatus === "review") return "Ready for review.";
+  if (pipelineStatus === "paused_for_tts") {
+    return counts?.total ? perLanguageStageSummary("tts", counts) : "Waiting for TTS jobs to finish.";
+  }
+  if (pipelineStatus === "running") {
+    return EPISODE_PER_LANG_STAGES.includes(displayStage)
+      ? perLanguageStageSummary(displayStage, counts)
+      : `${stageActivityLabel(displayStage)}.`;
+  }
+  if (pipelineStatus === "queued") return `Waiting for worker to start ${stageLabel(displayStage)}.`;
+  if (episode.queue_readiness?.ok === false) return "Workflow blocked until setup is fixed.";
+  if (displayStage === "draft") return "Ready to start workflow.";
+  return `${stageActivityLabel(displayStage)}.`;
+}
+
+function renderEpisodeWorkflowStatus(episode) {
+  const statusCopy = episodeWorkflowStatusCopy(episode);
+  if (!statusCopy) return "";
+  return `
+    <div class="episode-card-status" data-tone="${esc(episodeCardStatusTone(episode))}" role="status" aria-live="polite">
+      <span class="episode-card-status-dot" aria-hidden="true"></span>
+      <span class="episode-card-status-copy">${esc(statusCopy)}</span>
+    </div>`;
+}
+
 function optimisticQueuedEpisodeRecord(episode, startStage) {
   return {
     ...episode,
@@ -672,6 +794,21 @@ function autoRefreshAllowed(route) {
   if (route.view === "episode") return true;
   if (route.view === "voice-profiles") return true;
   return false;
+}
+
+function hasActiveEpisodeWorkflows() {
+  return workflowActionEpisodes().some((episode) => ["queued", "running", "paused_for_tts"].includes(episode?.pipeline_status || "idle"));
+}
+
+function desiredRefreshIntervalMs() {
+  return hasActiveEpisodeWorkflows() ? ACTIVE_REFRESH_INTERVAL_MS : REFRESH_INTERVAL_MS;
+}
+
+function syncAutoRefreshInterval() {
+  const nextIntervalMs = desiredRefreshIntervalMs();
+  if (nextIntervalMs === currentRefreshIntervalMs) return;
+  currentRefreshIntervalMs = nextIntervalMs;
+  resetAutoRefresh();
 }
 
 function navIsActive(navView) {
@@ -1792,8 +1929,7 @@ function episodeColumnForCard(ep) {
   if (ep.board_status === "Needs Attention" || ep.pipeline_status === "failed") return "needs_attention";
   if (ep.board_status === "Done" || ep.current_stage === "export" || ep.pipeline_status === "done") return "export";
   if (ep.board_status === "Review" || ep.current_stage === "review" || ep.pipeline_status === "review") return "review";
-  if (EPISODE_PIPELINE_COLUMNS.some((c) => c.id === ep.current_stage)) return ep.current_stage;
-  return "draft";
+  return episodeDisplayStage(ep);
 }
 
 function episodeColumnTone(colId, episodes) {
@@ -1807,10 +1943,11 @@ function episodeColumnTone(colId, episodes) {
 function langProgressHtml(langStatuses, stage) {
   if (!langStatuses || !langStatuses.length) return "";
   const total = langStatuses.length;
-  const statusKey = stage + "_status";
-  const done = langStatuses.filter((ls) => ls[statusKey] === "done").length;
-  const running = langStatuses.filter((ls) => ls[statusKey] === "running").length;
-  const failed = langStatuses.filter((ls) => ls[statusKey] === "failed").length;
+  const statusKey = languageStageStatusKey(stage);
+  const normalizedStatuses = langStatuses.map((ls) => String(ls?.[statusKey] || "").toLowerCase());
+  const done = normalizedStatuses.filter((status) => status === "done" || status === "completed").length;
+  const running = normalizedStatuses.filter((status) => status === "running" || status === "processing").length;
+  const failed = normalizedStatuses.filter((status) => status === "failed" || status === "error").length;
   const pct = total ? Math.round((done / total) * 100) : 0;
   let label = `${done}/${total}`;
   if (running) label += ` (${running} running)`;
@@ -1911,7 +2048,7 @@ function reconcileEpisodeWorkflowActionStates() {
 
 function queueActionStatusTooltip(ep) {
   const status = ep.pipeline_status || "idle";
-  const activeStage = stageLabel(ep.current_stage || ep.queued_from_stage || "consistency_guide");
+  const activeStage = stageLabel(episodeDisplayStage(ep) || ep.queued_from_stage || "consistency_guide");
   if (status === "queued") return `Workflow queued. Waiting for ${activeStage} to start.`;
   if (status === "running") return `Workflow running in ${activeStage}.`;
   return queueActionLabel(ep);
@@ -2034,7 +2171,7 @@ function renderReadinessWarning(readiness) {
 
 function renderEpisodeCard(ep, options = {}) {
   const showProjectLabel = Boolean(options.showProjectLabel);
-  const currentStage = ep.current_stage || "draft";
+  const currentStage = episodeDisplayStage(ep);
   const isPerLang = EPISODE_PER_LANG_STAGES.includes(currentStage);
   const progress = isPerLang ? langProgressHtml(ep.language_statuses, currentStage) : "";
   const tone = pipelineTone(ep.pipeline_status);
@@ -2047,6 +2184,7 @@ function renderEpisodeCard(ep, options = {}) {
     ? `<span class="running-elapsed episode-elapsed" data-started-at="${esc(ep.updated_at)}">${esc(relativeTime(ep.updated_at))}</span>`
     : "";
   const queueButton = renderEpisodeWorkflowActionButton(ep, { className: "button-tiny episode-card-action", readiness: queueReadiness });
+  const workflowStatus = renderEpisodeWorkflowStatus(ep);
 
   return `
     <div class="episode-card surface" data-open-episode="${esc(ep.id)}" data-project-id="${esc(ep.niche_project_id || options.projectId || "")}">
@@ -2060,6 +2198,7 @@ function renderEpisodeCard(ep, options = {}) {
         ${langCount ? `<span class="badge badge-small">${langCount} lang${langCount > 1 ? "s" : ""}</span>` : ""}
         ${elapsedHtml}
       </div>
+      ${workflowStatus}
       ${progress}
       ${error}
       ${renderReadinessNotice(queueReadiness, { compact: true })}
@@ -3421,12 +3560,14 @@ async function refreshData({ preserveNotice = true, routeLoading = false, force 
     }
     state.isRefreshingData = activeRefreshes > 0;
     state.isLoadingRoute = blockingRefreshes > 0;
+    syncAutoRefreshInterval();
   }
 }
 
 function resetAutoRefresh() {
   if (refreshTimer) window.clearInterval(refreshTimer);
   if (!autoRefreshAllowed(state.route)) return;
+  currentRefreshIntervalMs = desiredRefreshIntervalMs();
   refreshTimer = window.setInterval(() => {
     if (
       state.modal.kind ||
@@ -3436,7 +3577,7 @@ function resetAutoRefresh() {
       projectConfigInteractionIsActive()
     ) return;
     refreshData().then(renderApp).catch(() => {});
-  }, REFRESH_INTERVAL_MS);
+  }, currentRefreshIntervalMs);
 }
 
 function resetElapsedTimer() {
@@ -3523,6 +3664,7 @@ async function triggerEpisodeWorkflowStart(episodeId, explicitStage = null) {
     applyOptimisticEpisodeWorkflowStart(episodeId, startStage);
   }
   renderApp();
+  syncAutoRefreshInterval();
   try {
     const result = await api(`/api/episodes/${encodeURIComponent(episodeId)}/queue`, {
       method: "POST",
