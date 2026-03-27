@@ -172,9 +172,10 @@
 - [x] Verify with `node --check`, `python -m unittest discover -s tests -v` (`124` passing), and browser smoke for create, placeholder tabs, edit rediscovery, model filtering, and update save
 
 ## Drawbridge Language Setup Disclosure Fix (2026-03-27)
-- [x] Add project-scoped disclosure UI state for niche-project config panels in `tool1_dashboard/ui/app.js`
-- [x] Preserve `Language setup` open state across background `refreshData().then(renderApp)` rerenders without disabling auto-refresh
-- [x] Reuse the same disclosure-state fix for `Provider setup` while keeping the selected Bridge task focused on `Language setup`
+- [x] Replace native project-config `<details>` panels with explicit button-driven disclosure controls in `tool1_dashboard/ui/app.js`
+- [x] Preserve `Language setup` and `Provider setup` open state across background `refreshData().then(renderApp)` rerenders
+- [x] Pause auto-refresh while project-config controls are actively focused so dropdown edits are not interrupted mid-interaction
 - [x] Reset disclosure state when leaving the project so a fresh visit still starts collapsed
 - [x] Update Drawbridge task `a17fdd50-b72a-4df2-9a4e-5ef2f914fbb2` from `to do` -> `doing` -> `done` and sync `.moat/moat-tasks.md`
-- [x] Verify with `node --check tool1_dashboard/ui/app.js` and browser smoke on `http://127.0.0.1:8020/#/niche-projects/niche-20260326-133703-religi-o`
+- [x] Update Drawbridge task `1b7ec1b8-bfe3-4325-9172-d27a81296d94` from `to do` -> `doing` -> `done` and sync `.moat/moat-tasks.md`
+- [x] Verify with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`124` passing), and browser smoke on `http://127.0.0.1:8020/#/niche-projects/niche-20260326-133703-religi-o`

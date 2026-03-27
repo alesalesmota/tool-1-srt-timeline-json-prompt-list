@@ -24,7 +24,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 - **Tool 1** (this project) — Planning & pre-generation: translation → TTS → alignment → scene planning → timeline → prompts
 - **Tool 2** (separate) — Final video assembly: takes Tool 1 outputs + shared assets → produces final localized videos
 
-## Current State (as of 2026-03-26)
+## Current State (as of 2026-03-27)
 
 ### What Exists & Works
 - **Dashboard app** (`tool1_dashboard/`) — FastAPI-based, Kanban-style pipeline UI
@@ -69,7 +69,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 ### What's Being Worked On
 See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase plan.
 
-**Currently:** Phases 1-10 are complete, the 2026-03-26 workflow repair is complete, the Drawbridge feedback pass is complete, per-voice TTS pacing control is shipped, the Translation Profiles setup flow is now rebuilt around OpenAI API discovery with placeholder CLI preview tabs, and the niche-project `Language setup` / `Provider setup` disclosures now preserve their open state across background refresh rerenders. The Tool 1 pipeline is aligned with the intended project-board-first episode workflow and long-form narration now uses explicit app-side TTS chunking plus per-profile pacing presets.
+**Currently:** Phases 1-10 are complete, the 2026-03-26 workflow repair is complete, the Drawbridge feedback pass is complete, per-voice TTS pacing control is shipped, the Translation Profiles setup flow is now rebuilt around OpenAI API discovery with placeholder CLI preview tabs, and the niche-project `Language setup` / `Provider setup` controls now use explicit button-driven disclosures that preserve open state across rerenders while pausing auto-refresh during active config-field focus. The Tool 1 pipeline is aligned with the intended project-board-first episode workflow and long-form narration now uses explicit app-side TTS chunking plus per-profile pacing presets.
 
 ### What Is Still Fragile
 - No dedicated frontend test harness yet; browser verification is still manual/smoke based
@@ -79,7 +79,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - Fresh Windows environments still need the XTTS runtime installed manually; Coqui TTS may require Microsoft C++ Build Tools before voice cloning can work
 
 ### Git State
-- Branch: `codex/translation-profile-setup-rework` (active)
+- Branch: `codex/stabilize-project-config-panels` (active)
 - Responsiveness/latency fixes for route changes, overlay opens, repeated provider health probes, and the latest Drawbridge tooltip polish all live in codex feature branches
 - Remote: `https://github.com/alesalesmota/tool-1-srt-timeline-json-prompt-list.git`
 
@@ -166,7 +166,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
-| 2026-03-27 | **Drawbridge language-setup disclosure fix complete**: added explicit frontend state for niche-project config disclosures, keyed it to the active project, preserved `Language setup` and `Provider setup` open state across `renderApp()` rerenders, and reset that state on a fresh project visit so the default remains collapsed. Verified with `node --check tool1_dashboard/ui/app.js` plus browser smoke on `http://127.0.0.1:8020/#/niche-projects/niche-20260326-133703-religi-o`, confirming `Language setup` stays open through the 5-second auto-refresh loop, remains open after field interaction, and returns to collapsed after leaving the project and opening it again. |
+| 2026-03-27 | **Drawbridge project-config disclosure stabilization complete**: replaced the niche-project config panels' native `<details>` behavior with explicit button-driven disclosure state in the frontend, kept `Language setup` and `Provider setup` stable across rerenders, and paused the 5-second auto-refresh loop while project-config controls are focused so dropdown work is not interrupted mid-edit. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`124` passing), and Playwright smoke on `http://127.0.0.1:8020/#/niche-projects/niche-20260326-133703-religi-o`, confirming both panels stay open across >10 seconds of background refresh, remain stable while selects are focused, and toggle correctly via keyboard `Space` / `Enter` with `aria-expanded` updates. |
 | 2026-03-26 | **Drawbridge translation-profile setup rework complete**: split Translation Profiles off the shared stage-provider catalog, added OpenAI model discovery plus sanitized API payloads, rebuilt the modal into a provider-mode create/edit flow with searchable/sortable discovered models and saved-key masking, and exposed preview-only `Codex CLI` / `Claude Code CLI` tabs with disabled save. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`124` passing), and browser smoke on `http://127.0.0.1:8032/#/translation-profiles` covering create, placeholder tabs, edit rediscovery, model filtering, and saving an updated model via a mocked discovery route. |
 | 2026-03-26 | **Drawbridge voice-card control cleanup complete**: compacted the voice-profile action row so play, tuning, and delete are all icon-only tooltip actions, tightened title/action alignment for long names, and kept `Starting voice engine` / `Generating sample` states compact with a small status pill plus short copy instead of bulky text buttons. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`115` passing), and browser smoke on `http://127.0.0.1:8765/#/voice-profiles` confirming the new idle and generating states. |
 | 2026-03-26 | **Per-voice TTS pacing control shipped**: added saved per-profile `tts_config` presets plus advanced tuning, exposed a compact `Tuning` modal on voice-profile cards, made the repo TTS chunker the single authoritative split layer for both `Play test` and production narration, disabled XTTS internal text splitting, and snapshotted the resolved tuning into queued TTS jobs so live jobs are stable across later profile edits. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`115` passing), and browser smoke on `http://127.0.0.1:8765/#/voice-profiles` covering preset switching, advanced-value rewriting, and `Save and play test` driving the inline `Generating sample` state. |

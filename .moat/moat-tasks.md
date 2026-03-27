@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 11 | **To Do**: 1 | **Doing**: 0 | **Done**: 10
+**Total**: 12 | **To Do**: 2 | **Doing**: 0 | **Done**: 10
 
 ## Tasks
 
@@ -21,8 +21,9 @@
         
     
   – "When i open this dropdown setup, it auto closes and i can..." `section.project-config-grid > details.surface.project-config-disclosure:nth-child(2)`
+12. [ ] Freeform Rectangle Task – "this 2 could be on the lateral menu" `freeform`
 
 ---
 
-_Generated: 27/03/2026, 14:50:42_
+_Generated: 27/03/2026, 14:53:32_
 _Source: moat-tasks-detail.json_
