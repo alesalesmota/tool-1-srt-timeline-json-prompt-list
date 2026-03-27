@@ -151,6 +151,17 @@ const esc = (value) =>
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
 
+function domSafeId(...parts) {
+  return parts
+    .map((part) =>
+      String(part ?? "")
+        .trim()
+        .replace(/[^a-zA-Z0-9_-]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "item"
+    )
+    .join("-");
+}
+
 function parseDateValue(value) {
   if (value === null || value === undefined || value === "") return null;
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
@@ -405,6 +416,57 @@ function ensureProjectConfigDisclosures(projectId) {
     };
   }
   return state.projectConfigDisclosures.panels;
+}
+
+function setProjectConfigDisclosure(projectId, panelName, isOpen) {
+  const panels = ensureProjectConfigDisclosures(projectId);
+  if (!(panelName in panels)) return false;
+  panels[panelName] = Boolean(isOpen);
+  return panels[panelName];
+}
+
+function toggleProjectConfigDisclosure(projectId, panelName) {
+  const panels = ensureProjectConfigDisclosures(projectId);
+  if (!(panelName in panels)) return false;
+  return setProjectConfigDisclosure(projectId, panelName, !panels[panelName]);
+}
+
+function syncProjectConfigDisclosureDom(disclosure, isOpen) {
+  if (!disclosure) return;
+  disclosure.dataset.open = isOpen ? "true" : "false";
+  const toggle = disclosure.querySelector("[data-project-config-toggle]");
+  const body = disclosure.querySelector(".project-config-disclosure-body");
+  if (toggle) toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  if (body) body.hidden = !isOpen;
+}
+
+function renderProjectConfigDisclosure({ projectId, panelName, label, body, isOpen }) {
+  const bodyId = domSafeId("project-config", projectId, panelName, "panel");
+  return `
+    <section
+      class="surface project-config-disclosure"
+      data-project-config-disclosure="${esc(panelName)}"
+      data-project-id="${esc(projectId)}"
+      data-open="${isOpen ? "true" : "false"}"
+    >
+      <div class="project-config-disclosure-head">
+        <button
+          type="button"
+          class="project-config-toggle"
+          data-project-config-toggle="${esc(panelName)}"
+          data-project-id="${esc(projectId)}"
+          aria-expanded="${isOpen ? "true" : "false"}"
+          aria-controls="${esc(bodyId)}"
+        >
+          <span class="project-config-toggle-label">${esc(label)}</span>
+          <span class="project-config-toggle-caret" aria-hidden="true"></span>
+        </button>
+      </div>
+      <div id="${esc(bodyId)}" class="project-config-disclosure-body"${isOpen ? "" : " hidden"}>
+        ${body}
+      </div>
+    </section>
+  `;
 }
 
 function ensureEpisodeSupplementalDataLoaded(episodeId, { force = false } = {}) {
@@ -1055,6 +1117,11 @@ function voiceProfileAudioIsPlaying() {
   return Array.from(document.querySelectorAll(".profile-audio-player")).some(
     (audio) => audio && !audio.paused && !audio.ended && audio.currentTime > 0
   );
+}
+
+function projectConfigInteractionIsActive() {
+  const activeElement = document.activeElement;
+  return Boolean(activeElement?.closest?.(".project-config-grid"));
 }
 
 function renderVoiceProfiles() {
@@ -2094,14 +2161,20 @@ function renderNicheProjectDetail() {
     </section>
 
     <section class="project-config-grid">
-      <details class="surface project-config-disclosure" data-project-config-disclosure="language" data-project-id="${esc(project.id)}"${disclosurePanels.language ? " open" : ""}>
-        <summary>Language setup</summary>
-        ${renderLanguageConfigSection(project, detail.voice_profiles || [], detail.translation_profiles || [])}
-      </details>
-      <details class="surface project-config-disclosure" data-project-config-disclosure="provider" data-project-id="${esc(project.id)}"${disclosurePanels.provider ? " open" : ""}>
-        <summary>Provider setup</summary>
-        ${renderProviderConfigSection(project)}
-      </details>
+      ${renderProjectConfigDisclosure({
+        projectId: project.id,
+        panelName: "language",
+        label: "Language setup",
+        body: renderLanguageConfigSection(project, detail.voice_profiles || [], detail.translation_profiles || []),
+        isOpen: disclosurePanels.language,
+      })}
+      ${renderProjectConfigDisclosure({
+        projectId: project.id,
+        panelName: "provider",
+        label: "Provider setup",
+        body: renderProviderConfigSection(project),
+        isOpen: disclosurePanels.provider,
+      })}
     </section>
 
     ${state.modal.kind === "submit-episode" ? renderSubmitEpisodeModal() : ""}
@@ -2995,7 +3068,13 @@ function resetAutoRefresh() {
   if (refreshTimer) window.clearInterval(refreshTimer);
   if (!autoRefreshAllowed(state.route)) return;
   refreshTimer = window.setInterval(() => {
-    if (state.modal.kind || state.isLoadingRoute || state.isRefreshingData || voiceProfileAudioIsPlaying()) return;
+    if (
+      state.modal.kind ||
+      state.isLoadingRoute ||
+      state.isRefreshingData ||
+      voiceProfileAudioIsPlaying() ||
+      projectConfigInteractionIsActive()
+    ) return;
     refreshData().then(renderApp).catch(() => {});
   }, REFRESH_INTERVAL_MS);
 }
@@ -3446,7 +3525,7 @@ document.addEventListener("click", async (event) => {
     closeEpisodeOverlay();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export]");
+  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export], [data-project-config-toggle]");
   if (!target) return;
   event.preventDefault();
   try {
@@ -3489,6 +3568,15 @@ document.addEventListener("click", async (event) => {
     if (target.dataset.themeToggle) {
       applyTheme(state.theme === "dark" ? "light" : "dark");
       renderApp();
+      return;
+    }
+    if (target.dataset.projectConfigToggle) {
+      const disclosure = target.closest("[data-project-config-disclosure]");
+      const isOpen = toggleProjectConfigDisclosure(
+        target.dataset.projectId || disclosure?.dataset.projectId || null,
+        target.dataset.projectConfigToggle
+      );
+      syncProjectConfigDisclosureDom(disclosure, isOpen);
       return;
     }
     if (target.dataset.prepareLanguage) {
@@ -3867,16 +3955,6 @@ document.addEventListener("change", (event) => {
     syncProviderModelSelect(event.target.id, modelSelectId);
   }
 });
-
-document.addEventListener("toggle", (event) => {
-  const disclosure = event.target;
-  if (!(disclosure instanceof HTMLDetailsElement)) return;
-  const panelName = disclosure.dataset.projectConfigDisclosure;
-  if (!panelName) return;
-  const panels = ensureProjectConfigDisclosures(disclosure.dataset.projectId || null);
-  if (!(panelName in panels)) return;
-  panels[panelName] = disclosure.open;
-}, true);
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && event.target.id === "niche-lang-search") {

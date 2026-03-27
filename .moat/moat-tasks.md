@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 11 | **To Do**: 2 | **Doing**: 0 | **Done**: 9
+**Total**: 11 | **To Do**: 1 | **Doing**: 0 | **Done**: 10
 
 ## Tasks
 
@@ -17,12 +17,12 @@
         
     
   – "once i open this dropdown setup, it auto closes, and im n..." `section.project-config-grid > details.surface.project-config-disclosure:nth-child(1)`
-11. [ ] details: Provider setup
+11. [x] details: Provider setup
         
     
   – "When i open this dropdown setup, it auto closes and i can..." `section.project-config-grid > details.surface.project-config-disclosure:nth-child(2)`
 
 ---
 
-_Generated: 27/03/2026, 14:37:42_
+_Generated: 27/03/2026, 14:50:42_
 _Source: moat-tasks-detail.json_
