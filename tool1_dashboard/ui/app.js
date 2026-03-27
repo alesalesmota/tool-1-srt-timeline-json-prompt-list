@@ -581,6 +581,8 @@ function navIsActive(navView) {
 function renderSidebar() {
   const providers = state.health?.providers || {};
   const alignment = state.health?.alignment || {};
+  const themeToggleLabel = state.theme === "dark" ? "Light mode" : "Dark mode";
+  const themeToggleIcon = state.theme === "dark" ? "sun" : "moon";
   const navItems = [
     { view: "niche-projects", label: "Niche Projects", icon: "settings", count: state.nicheProjects.length },
     { view: "voice-profiles", label: "Voice Profiles", icon: "settings", count: state.voiceProfiles.length },
@@ -615,6 +617,18 @@ function renderSidebar() {
       </div>
     </section>
 
+    <section class="sidebar-section sidebar-utility-section">
+      <div class="eyebrow">Quick actions</div>
+      <div class="sidebar-nav sidebar-utility-nav">
+        <button type="button" class="nav-link sidebar-utility-button" data-refresh="true" aria-label="Refresh data" title="Refresh data">
+          <span class="nav-label">${iconMarkup("refresh")}<span>Refresh data</span></span>
+        </button>
+        <button type="button" class="nav-link sidebar-utility-button" data-theme-toggle="true" aria-label="${esc(themeToggleLabel)}" title="${esc(themeToggleLabel)}">
+          <span class="nav-label">${iconMarkup(themeToggleIcon)}<span>${esc(themeToggleLabel)}</span></span>
+        </button>
+      </div>
+    </section>
+
     <section class="sidebar-section system-health-section">
       <div class="eyebrow">System health</div>
       <div class="badge-row" style="margin-top:10px;">
@@ -641,14 +655,6 @@ function renderTopbar() {
         ` : ""}
         ${state.notice.text ? `<div class="notice" data-tone="${esc(state.notice.tone)}">${esc(state.notice.text)}</div>` : ""}
       </div>
-    </div>
-    <div class="topbar-actions">
-      <button type="button" class="button button-ghost icon-only" data-refresh="true" aria-label="Refresh" title="Refresh">
-        ${iconContent("refresh", "Refresh", { iconOnly: true })}
-      </button>
-      <button type="button" class="button ${state.theme === "dark" ? "button-primary" : "button-ghost"} icon-only" data-theme-toggle="true" aria-label="${esc(state.theme === "dark" ? "Light mode" : "Dark mode")}" title="${esc(state.theme === "dark" ? "Light mode" : "Dark mode")}">
-        ${iconContent(state.theme === "dark" ? "sun" : "moon", state.theme === "dark" ? "Light mode" : "Dark mode", { iconOnly: true })}
-      </button>
     </div>
   `;
 }
@@ -1626,30 +1632,34 @@ function renderTranslationProfiles() {
   const cards = profiles
     .map((profile) => {
       const providerSpec = translationProfileProviderSpec(profile.provider, profile.provider_label);
-      const isOpenAi = profile.provider === "openai";
-      const helperCopy = profile.provider_mode === "legacy"
-        ? "Legacy profile kept for compatibility. Delete and recreate it in the new OpenAI flow when you want to migrate."
-        : providerSpec.description;
+      const readyLabel = profile.provider_runnable ? "Ready" : "Needs setup";
+      const readyTone = profile.provider_runnable ? "success" : "warn";
+      const providerTone = profile.provider_mode === "legacy" ? "warn" : "active";
+      const modelBadge = profile.model
+        ? statusBadge(profile.model, "neutral")
+        : statusBadge("No model", "warn");
       return `
         <div class="profile-card translation-profile-card">
           <div class="profile-card-head">
-            <div>
-              <h3 class="profile-card-title">${esc(profile.name)}</h3>
-              <div class="badge-row" style="margin-top:8px;">
-                ${statusBadge(profile.provider_label || providerSpec.label, profile.provider_mode === "legacy" ? "warn" : "active")}
-                ${profile.model ? statusBadge(profile.model, "neutral") : ""}
-                ${profile.has_api_key ? statusBadge(`Key ${profile.api_key_masked}`, "success") : statusBadge("No key", "warn")}
+            <button
+              type="button"
+              class="translation-profile-summary"
+              data-edit-translation-profile="${esc(profile.id)}"
+              aria-label="${esc(`Open ${profile.name} details`)}"
+              title="Open details"
+            >
+              <div class="translation-profile-summary-copy">
+                <h3 class="profile-card-title">${esc(profile.name)}</h3>
+                <div class="badge-row translation-profile-badges">
+                  ${statusBadge(profile.provider_label || providerSpec.label, providerTone)}
+                  ${modelBadge}
+                  ${statusBadge(readyLabel, readyTone)}
+                </div>
               </div>
-            </div>
+            </button>
             <div class="profile-card-actions">
               ${profile.provider_editable ? `<button type="button" class="button button-small icon-only profile-card-action" data-edit-translation-profile="${esc(profile.id)}" aria-label="Edit" title="Edit">${iconContent("edit", "Edit", { iconOnly: true })}</button>` : ""}
               <button type="button" class="button button-danger button-small icon-only profile-card-action" data-delete-translation-profile="${esc(profile.id)}" aria-label="Delete" title="Delete">${iconContent("delete", "Delete", { iconOnly: true })}</button>
-            </div>
-          </div>
-          <div class="profile-card-body">
-            <p class="profile-card-copy">${esc(helperCopy)}</p>
-            <div class="profile-card-meta">
-              ${esc(isOpenAi ? "Routable in the current setup flow." : "Visible for reference only in the new setup flow.")}
             </div>
           </div>
         </div>
@@ -1659,13 +1669,12 @@ function renderTranslationProfiles() {
 
   $("view").innerHTML = `
     <div class="detail-section">
-      <div class="section-header">
-        <div class="eyebrow">Translation profiles (${profiles.length})</div>
+      <div class="section-header translation-profiles-toolbar">
+        <div class="translation-profiles-count helper">${esc(`${profiles.length} profile${profiles.length === 1 ? "" : "s"}`)}</div>
         <div class="button-row">
           <button type="button" class="button button-primary button-small has-icon" data-create-translation-profile="true">${iconContent("add", "Create profile")}</button>
         </div>
       </div>
-      <p class="helper" style="margin-top:8px; max-width:72ch;">OpenAI API is the only runnable translation profile in this pass. Codex CLI and Claude Code CLI are shown in the editor as preview-only placeholders so you can see the planned setup shape.</p>
       ${profiles.length
         ? `<div class="profiles-grid" style="margin-top:12px;">${cards}</div>`
         : `<p class="helper" style="margin-top:8px;">No translation profiles yet.</p>`}

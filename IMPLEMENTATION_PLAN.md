@@ -1,5 +1,5 @@
 # Tool 1 Creator Studio — Reconstruction Plan
-> Last updated: 2026-03-26
+> Last updated: 2026-03-27
 
 ## Context
 
@@ -261,6 +261,68 @@ This addendum captures the Drawbridge pass that rebuilt Translation Profiles aro
   - saved-key rediscovery during edit flow
   - model search/filter interaction
   - editing a profile and saving a changed model
+
+---
+
+## 2026-03-27 Translation Profile Card Simplification Addendum
+
+This addendum captures the follow-up Drawbridge pass that trimmed the translation-profiles page down to a compact default view.
+
+### Goals
+
+- stop repeating `Translation Profiles` in both the page title and section body
+- remove the long helper and key/meta copy that made the cards visually noisy
+- keep the default card focused on the few details the user needs to scan quickly
+- reuse the existing modal for deeper details instead of introducing a second inline expansion pattern
+
+### Implemented shape
+
+- The translation-profiles page header now keeps only a compact count plus the `Create profile` action
+- The default card summary now shows:
+  - profile name
+  - provider label
+  - selected model
+  - readiness badge derived from `provider_runnable`
+- The masked API-key badge, provider-description paragraph, and extra meta line are removed from the default card view
+- The card summary is now the primary details trigger and reuses the existing translation-profile editor modal on click
+- Edit/delete icon actions remain available as independent controls beside the summary region
+
+### Verification baseline
+
+- `node --check tool1_dashboard/ui/app.js`
+- Playwright smoke on `http://127.0.0.1:8020/#/translation-profiles` covering:
+  - compact card summaries for all profiles
+  - summary click opening the existing edit modal
+  - delete icon opening only the confirm dialog
+  - mobile-width snapshot confirming the compact cards remain readable
+
+---
+
+## 2026-03-27 Sidebar Utility Relocation Addendum
+
+This addendum captures the next Drawbridge pass that moved the two global shell controls out of the top-right chrome and into the lateral menu.
+
+### Goals
+
+- remove the refresh/theme buttons from the page header so the topbar stays focused on title and notices
+- keep both controls easy to reach even when the sidebar is collapsed
+- preserve hover labels and existing `data-refresh` / `data-theme-toggle` behavior without introducing a second control path
+
+### Implemented shape
+
+- The topbar now renders only the page title plus sync/notice meta
+- The sidebar includes a new compact quick-actions group with:
+  - `Refresh data`
+  - `Light mode` / `Dark mode`
+- The quick-action buttons reuse the existing sidebar visual language so they work in both collapsed icon-only mode and expanded labeled mode
+
+### Verification baseline
+
+- `node --check tool1_dashboard/ui/app.js`
+- Playwright smoke on `http://127.0.0.1:8021/#/translation-profiles` covering:
+  - no refresh/theme buttons in the topbar
+  - both controls present in the sidebar
+  - translation-profile page still opening and rendering correctly after the shell move
 
 ---
 

@@ -306,7 +306,7 @@
       "h": 487
     },
     "screenshotPath": "./screenshots/moat-1774631012285-vyftt6g4e.png",
-    "status": "to do",
+    "status": "done",
     "timestamp": 1774631012420,
     "boundingBox": {
       "xyxy": {
@@ -359,5 +359,85 @@
     "screenshotPath": "./screenshots/moat-1774631700475-4tdvfi64g.png",
     "status": "done",
     "timestamp": 1774631700612
+  },
+  {
+    "id": "ee8b37dd-c563-495b-8ffc-0ef2a80d1603",
+    "title": "Freeform Rectangle Task",
+    "comment": "this 2 could be on the lateral menu",
+    "selector": "freeform",
+    "boundingRect": {
+      "x": 1767,
+      "y": 5,
+      "w": 119,
+      "h": 76
+    },
+    "screenshotPath": "./screenshots/moat-1774633999459-gevz7g72g.png",
+    "status": "done",
+    "timestamp": 1774633999612,
+    "boundingBox": {
+      "xyxy": {
+        "x1": 1767,
+        "y1": 5,
+        "x2": 1886,
+        "y2": 81
+      },
+      "xywh": {
+        "x": 1767,
+        "y": 5,
+        "width": 119,
+        "height": 76
+      },
+      "normalized": {
+        "x": 0.9203125,
+        "y": 0.005291005291005291,
+        "width": 0.06197916666666667,
+        "height": 0.08042328042328042
+      },
+      "viewport": {
+        "width": 1920,
+        "height": 945
+      },
+      "type": "freeform"
+    }
+  },
+  {
+    "id": "50815060-5efc-4251-8a89-61129d92331b",
+    "title": "Freeform Rectangle Task",
+    "comment": "when i click on queue nothing happens, and im not sure what queue means, i hope is to start the workflow, if thats the case a \"start\" would be better, if not we are missing a start button",
+    "selector": "freeform",
+    "boundingRect": {
+      "x": 366,
+      "y": 18,
+      "w": 1179,
+      "h": 662
+    },
+    "screenshotPath": "./screenshots/moat-1774635563622-39uyhxgi4.png",
+    "status": "to do",
+    "timestamp": 1774635563792,
+    "boundingBox": {
+      "xyxy": {
+        "x1": 366,
+        "y1": 18,
+        "x2": 1545,
+        "y2": 680
+      },
+      "xywh": {
+        "x": 366,
+        "y": 18,
+        "width": 1179,
+        "height": 662
+      },
+      "normalized": {
+        "x": 0.190625,
+        "y": 0.01904761904761905,
+        "width": 0.6140625,
+        "height": 0.7005291005291006
+      },
+      "viewport": {
+        "width": 1920,
+        "height": 945
+      },
+      "type": "freeform"
+    }
   }
 ]

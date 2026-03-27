@@ -217,6 +217,14 @@ body.sidebar-expanded .sidebar-section {
   gap: 8px;
 }
 
+.sidebar-utility-section {
+  padding-top: 6px;
+}
+
+.sidebar-utility-nav {
+  gap: 8px;
+}
+
 .nav-link,
 .filter-chip,
 .tab-link,
@@ -254,6 +262,11 @@ body.sidebar-expanded .nav-label span:not(.button-icon) {
 body.sidebar-expanded .nav-link {
   justify-content: space-between;
   padding: 12px 14px;
+}
+
+.sidebar-utility-button,
+body.sidebar-expanded .sidebar-utility-button {
+  justify-content: flex-start;
 }
 
 .nav-link:hover,
@@ -1904,8 +1917,60 @@ details.editor-card summary::-webkit-details-marker {
   gap: 16px;
 }
 
-.translation-profile-card .profile-card-copy {
-  max-width: 44ch;
+.translation-profiles-toolbar {
+  align-items: center;
+}
+
+.translation-profiles-count {
+  margin: 0;
+}
+
+.translation-profile-card {
+  gap: 0;
+}
+
+.translation-profile-card .profile-card-head {
+  align-items: stretch;
+  gap: 14px;
+}
+
+.translation-profile-summary {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  flex: 1 1 auto;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.translation-profile-summary-copy {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.translation-profile-summary:hover .profile-card-title {
+  color: var(--ink);
+}
+
+.translation-profile-summary:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 4px;
+  border-radius: 12px;
+}
+
+.translation-profile-badges {
+  gap: 8px;
+}
+
+.translation-profile-card .badge {
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .modal-panel {

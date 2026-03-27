@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 12 | **To Do**: 2 | **Doing**: 0 | **Done**: 10
+**Total**: 13 | **To Do**: 1 | **Doing**: 0 | **Done**: 12
 
 ## Tasks
 
@@ -12,7 +12,7 @@
 6. [x] Freeform Rectangle Task – "this UI elements are looking bad, and bad coded acroos al..." `freeform`
 7. [x] Colored Container – "so here in this section we have many, imrpovement to make..." `#view > div.modal-backdrop:nth-child(2)`
 8. [x] Freeform Rectangle Task – "the information that appear in this section when i hover ..." `freeform`
-9. [ ] Freeform Rectangle Task – "i see 2 times "Translation Profile" This description is n..." `freeform`
+9. [x] Freeform Rectangle Task – "i see 2 times "Translation Profile" This description is n..." `freeform`
 10. [x] details: Language setup
         
     
@@ -21,9 +21,10 @@
         
     
   – "When i open this dropdown setup, it auto closes and i can..." `section.project-config-grid > details.surface.project-config-disclosure:nth-child(2)`
-12. [ ] Freeform Rectangle Task – "this 2 could be on the lateral menu" `freeform`
+12. [x] Freeform Rectangle Task – "this 2 could be on the lateral menu" `freeform`
+13. [ ] Freeform Rectangle Task – "when i click on queue nothing happens, and im not sure wh..." `freeform`
 
 ---
 
-_Generated: 27/03/2026, 14:53:32_
+_Generated: 27/03/2026, 15:21:18_
 _Source: moat-tasks-detail.json_

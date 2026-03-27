@@ -179,3 +179,18 @@
 - [x] Update Drawbridge task `a17fdd50-b72a-4df2-9a4e-5ef2f914fbb2` from `to do` -> `doing` -> `done` and sync `.moat/moat-tasks.md`
 - [x] Update Drawbridge task `1b7ec1b8-bfe3-4325-9172-d27a81296d94` from `to do` -> `doing` -> `done` and sync `.moat/moat-tasks.md`
 - [x] Verify with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`124` passing), and browser smoke on `http://127.0.0.1:8020/#/niche-projects/niche-20260326-133703-religi-o`
+
+## Drawbridge Translation Profile Card Simplification (2026-03-27)
+- [x] Remove the repeated `Translation Profiles` section copy and the long helper paragraph from the translation-profiles page chrome
+- [x] Simplify each translation-profile card to show only profile name, provider, model, and readiness in the default view
+- [x] Reuse the existing translation-profile editor modal as the details surface when the summary area is clicked
+- [x] Keep edit/delete icon actions separate from the summary click target
+- [x] Update Drawbridge task `07a5ddf5-14fc-45f8-89fb-2bbdd8ced2b1` from `to do` -> `doing` -> `done` and sync `.moat/moat-tasks.md`
+- [x] Verify with `node --check tool1_dashboard/ui/app.js` and Playwright smoke on `http://127.0.0.1:8020/#/translation-profiles`
+
+## Drawbridge Sidebar Utility Relocation (2026-03-27)
+- [x] Remove the refresh and theme-toggle buttons from the top-right topbar chrome
+- [x] Rehome both shell controls into the left sidebar as compact quick actions that still work in collapsed mode
+- [x] Keep the topbar focused on page title and notices while preserving hover labels for the sidebar actions
+- [x] Update Drawbridge task `ee8b37dd-c563-495b-8ffc-0ef2a80d1603` from `to do` -> `doing` -> `done` and sync `.moat/moat-tasks.md`
+- [x] Verify with Playwright smoke on `http://127.0.0.1:8021/#/translation-profiles`
