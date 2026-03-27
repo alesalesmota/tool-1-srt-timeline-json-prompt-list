@@ -127,6 +127,13 @@ const state = {
   isRefreshingData: false,
   lastEpisodeFilesLoadedFor: null,
   lastEpisodeReviewLoadedFor: null,
+  projectConfigDisclosures: {
+    projectId: null,
+    panels: {
+      language: false,
+      provider: false,
+    },
+  },
 };
 
 let refreshTimer = null;
@@ -369,6 +376,35 @@ function resetEpisodeSupplementalState(episodeId = null) {
   if (!episodeId || state.lastEpisodeReviewLoadedFor === episodeId) {
     state.lastEpisodeReviewLoadedFor = null;
   }
+}
+
+function defaultProjectConfigDisclosurePanels() {
+  return {
+    language: false,
+    provider: false,
+  };
+}
+
+function resetProjectConfigDisclosures() {
+  state.projectConfigDisclosures = {
+    projectId: null,
+    panels: defaultProjectConfigDisclosurePanels(),
+  };
+}
+
+function ensureProjectConfigDisclosures(projectId) {
+  const normalizedProjectId = projectId ? String(projectId) : null;
+  if (!normalizedProjectId) {
+    resetProjectConfigDisclosures();
+    return state.projectConfigDisclosures.panels;
+  }
+  if (state.projectConfigDisclosures.projectId !== normalizedProjectId) {
+    state.projectConfigDisclosures = {
+      projectId: normalizedProjectId,
+      panels: defaultProjectConfigDisclosurePanels(),
+    };
+  }
+  return state.projectConfigDisclosures.panels;
 }
 
 function ensureEpisodeSupplementalDataLoaded(episodeId, { force = false } = {}) {
@@ -2026,6 +2062,7 @@ function renderNicheProjectDetail() {
   const projectReadiness = project.queue_readiness || { ok: true, blockers: [], warnings: [] };
   const queueBlocked = projectReadiness.ok === false;
   const batchDisabled = queueBlocked ? "disabled" : "";
+  const disclosurePanels = ensureProjectConfigDisclosures(project.id);
 
   $("view").innerHTML = `
     <section class="surface project-board-shell">
@@ -2057,11 +2094,11 @@ function renderNicheProjectDetail() {
     </section>
 
     <section class="project-config-grid">
-      <details class="surface project-config-disclosure">
+      <details class="surface project-config-disclosure" data-project-config-disclosure="language" data-project-id="${esc(project.id)}"${disclosurePanels.language ? " open" : ""}>
         <summary>Language setup</summary>
         ${renderLanguageConfigSection(project, detail.voice_profiles || [], detail.translation_profiles || [])}
       </details>
-      <details class="surface project-config-disclosure">
+      <details class="surface project-config-disclosure" data-project-config-disclosure="provider" data-project-id="${esc(project.id)}"${disclosurePanels.provider ? " open" : ""}>
         <summary>Provider setup</summary>
         ${renderProviderConfigSection(project)}
       </details>
@@ -2942,6 +2979,7 @@ async function refreshData({ preserveNotice = true, routeLoading = false, force 
       rememberLastOpenProject(activeProjectId);
     } else {
       state.nicheProjectDetail = null;
+      resetProjectConfigDisclosures();
     }
   } finally {
     activeRefreshes = Math.max(0, activeRefreshes - 1);
@@ -3829,6 +3867,16 @@ document.addEventListener("change", (event) => {
     syncProviderModelSelect(event.target.id, modelSelectId);
   }
 });
+
+document.addEventListener("toggle", (event) => {
+  const disclosure = event.target;
+  if (!(disclosure instanceof HTMLDetailsElement)) return;
+  const panelName = disclosure.dataset.projectConfigDisclosure;
+  if (!panelName) return;
+  const panels = ensureProjectConfigDisclosures(disclosure.dataset.projectId || null);
+  if (!(panelName in panels)) return;
+  panels[panelName] = disclosure.open;
+}, true);
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && event.target.id === "niche-lang-search") {

@@ -253,5 +253,111 @@
     "screenshotPath": "./screenshots/moat-1774565805926-0i30f81ot.png",
     "status": "done",
     "timestamp": 1774565806084
+  },
+  {
+    "id": "602e53e2-c0c4-4ee7-a726-b16ea6b76ea9",
+    "title": "Freeform Rectangle Task",
+    "comment": "the information that appear in this section when i hover the mouse, doesnt make sense. the way you designed, its better to have the information on the card already, or compact the card with way less information. Also this grid layout ocupy way to much unecessary space, may a list format gives me a better sence of order, also the price evaluation is not very helpfull, a better detailed price rating would be better, i mean betwen models that are 1/5 wich one would be the cheapest, there is no way to tell, also does 1/5 means cheaper or exepnsive? hard to tell, \nthe name of the model appear 2 times on the card,  the description you created should focus on detailing any type of model speciality, for example i know codex is a term for coding, there is agentic models, image models, videos this type of specifications could be more usefull",
+    "selector": "freeform",
+    "boundingRect": {
+      "x": 794,
+      "y": 394,
+      "w": 327,
+      "h": 183
+    },
+    "screenshotPath": "./screenshots/moat-1774630762887-72tzuurw9.png",
+    "status": "done",
+    "timestamp": 1774630763026,
+    "boundingBox": {
+      "xyxy": {
+        "x1": 794,
+        "y1": 394,
+        "x2": 1121,
+        "y2": 577
+      },
+      "xywh": {
+        "x": 794,
+        "y": 394,
+        "width": 327,
+        "height": 183
+      },
+      "normalized": {
+        "x": 0.41354166666666664,
+        "y": 0.41693121693121693,
+        "width": 0.1703125,
+        "height": 0.19365079365079366
+      },
+      "viewport": {
+        "width": 1920,
+        "height": 945
+      },
+      "type": "freeform"
+    }
+  },
+  {
+    "id": "07a5ddf5-14fc-45f8-89fb-2bbdd8ced2b1",
+    "title": "Freeform Rectangle Task",
+    "comment": "i see 2 times \"Translation Profile\"\nThis description is not needed\n, notice the spanish box, clearly seeable UI issues, if em\ni belive in the card is only usefull to appear \"Spanish\", \"OpenAI API\", \"model\", once i click on the card i can see other details, also a status showing if its ready or not to work well.",
+    "selector": "freeform",
+    "boundingRect": {
+      "x": 88,
+      "y": 16,
+      "w": 1050,
+      "h": 487
+    },
+    "screenshotPath": "./screenshots/moat-1774631012285-vyftt6g4e.png",
+    "status": "to do",
+    "timestamp": 1774631012420,
+    "boundingBox": {
+      "xyxy": {
+        "x1": 88,
+        "y1": 16,
+        "x2": 1138,
+        "y2": 503
+      },
+      "xywh": {
+        "x": 88,
+        "y": 16,
+        "width": 1050,
+        "height": 487
+      },
+      "normalized": {
+        "x": 0.04583333333333333,
+        "y": 0.016931216931216932,
+        "width": 0.546875,
+        "height": 0.5153439153439153
+      },
+      "viewport": {
+        "width": 1920,
+        "height": 945
+      },
+      "type": "freeform"
+    }
+  },
+  {
+    "id": "a17fdd50-b72a-4df2-9a4e-5ef2f914fbb2",
+    "title": "details: Language setup\n        \n    \n ",
+    "comment": "once i open this dropdown setup, it auto closes, and im not able to set up anything",
+    "selector": "section.project-config-grid > details.surface.project-config-disclosure:nth-child(1)",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774631630122-rloq3mx0c.png",
+    "status": "done",
+    "timestamp": 1774631630257
+  },
+  {
+    "id": "1b7ec1b8-bfe3-4325-9172-d27a81296d94",
+    "title": "details: Provider setup\n        \n    \n ",
+    "comment": "When i open this dropdown setup, it auto closes and i cant set up anything",
+    "selector": "section.project-config-grid > details.surface.project-config-disclosure:nth-child(2)",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774631700475-4tdvfi64g.png",
+    "status": "to do",
+    "timestamp": 1774631700612
   }
 ]
