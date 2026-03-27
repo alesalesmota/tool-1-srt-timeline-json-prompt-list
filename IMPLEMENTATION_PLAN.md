@@ -326,6 +326,53 @@ This addendum captures the next Drawbridge pass that moved the two global shell 
 
 ---
 
+## 2026-03-27 Episode Start UX Cleanup Addendum
+
+This addendum captures the workflow-launch cleanup that followed the earlier project-board repair.
+
+### Goals
+
+- replace ambiguous `Queue` / `Requeue` wording with explicit workflow language
+- keep episode start controls compact and icon-only while preserving hover explanations and `aria-label`s
+- make readiness panels reflect ready, blocked, queued, and running states instead of always reading like blockers
+- keep the episode overlay open after a start attempt and show inline local feedback immediately
+- preserve the existing `/api/episodes/{id}/queue` and `queue_readiness` backend contract
+
+### Implemented shape
+
+- Episode workflow actions now use state-specific labels:
+  - `Start workflow`
+  - `Restart workflow`
+  - `Run again`
+- Board cards and episode overlay/detail actions now share compact icon-only controls with tooltip shells that still explain disabled states
+- Project and episode readiness panels now switch between:
+  - `Ready to start`
+  - `Ready to restart`
+  - `Ready to run again`
+  - `Workflow blockers`
+  - `Workflow in progress`
+- Starting a workflow now applies optimistic local episode state, disables repeated clicks, and shows inline overlay feedback
+- Frontend action state is reconciled on refresh, so if the workflow fails moments after a start request the overlay swaps the optimistic success copy for an inline error
+- Readiness blocker copy is normalized on the frontend from queue language into workflow language without changing the backend payload schema
+
+### Verification baseline
+
+- `node --check tool1_dashboard/ui/app.js`
+- `python -m unittest discover -s tests -v` -> 124 passing tests
+- Playwright smoke on:
+  - `http://127.0.0.1:8020/#/niche-projects/niche-20260327-160221-bridge-smoke-ready-638141`
+  - `http://127.0.0.1:8020/#/niche-projects/niche-20260327-160221-bridge-smoke-blocked-638141`
+- Verified:
+  - ready/review/done/failed cards expose the new workflow wording
+  - blocked episodes keep disabled start controls with blocker tooltips and blocker panels
+  - mobile-width overlay and card controls remain icon-only with accessible labels
+  - the real restart flow keeps the overlay open and flips the inline message to `Workflow failed in Consistency Guide.` after the backend failure refresh
+- Live environment note:
+  - the smoke restart hit a provider-side Claude quota error: `Claude limit reached. You've hit your limit · resets Mar 28, 5pm (America/Sao_Paulo)`
+  - this is an environment/runtime limitation, not a frontend regression; the UI now surfaces it correctly inline
+
+---
+
 ## Files to Modify (Critical)
 
 | File | Action |

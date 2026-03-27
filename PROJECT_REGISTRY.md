@@ -30,12 +30,13 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 - **Dashboard app** (`tool1_dashboard/`) — FastAPI-based, Kanban-style pipeline UI
   - Unified backend with service layer + SQLite
   - Dark/light theme, responsive layout
-  - Primary workflow is now project-scoped: `Niche Projects -> Project board -> Draft episode -> Episode overlay -> explicit queue`
+  - Primary workflow is now project-scoped: `Niche Projects -> Project board -> Draft episode -> Episode overlay -> explicit workflow start`
   - Views: Niche Projects, project board/detail, episode overlay/direct episode route, Voice Profiles, Translation Profiles, Settings, Templates
   - Legacy Jobs and Projects/Builds models have been fully removed; the old global Pipeline Board is no longer a primary workflow surface.
   - Drawbridge feedback repair on 2026-03-26: the project-board CTA now says `Create episode`, the Draft column add action is a compact `+` with hover copy, column helper text moved into title hover tooltips, and the create-project modal now uses a searchable target-language picker instead of a checkbox wall
   - Translation Profiles rework on 2026-03-26/27: the setup modal now has dedicated provider-mode cards, OpenAI model discovery, searchable/sortable model selection, masked saved-key edit flow, preview-only `Codex CLI` / `Claude Code CLI` tabs, and compact summary cards that only show name/provider/model/readiness while opening the existing modal for details on click
   - Shell controls polish on 2026-03-27: the global refresh/theme quick actions moved out of the top-right chrome and into the sidebar as compact utility buttons, keeping the page header focused on the current workspace title
+  - Episode workflow-launch cleanup on 2026-03-27: queue wording is now explicit workflow wording, board/overlay start controls are compact icon-only actions with hover explanations, readiness panels are state-aware, and overlay feedback now reconciles fast backend failures instead of leaving stale success copy behind
 - **TTS module** (`tool1_dashboard/tts/`) — audio, chunker, constants, manager, worker (XTTS-v2)
   - **Runtime Fixed (2026-03-26)**: Resolved compatibility issues with `torch 2.6.0` and `transformers 5.x`. Environment now pinned to `torch 2.3.1` and `transformers 4.39.3`. Missing dependencies (`bangla`, `gruut`, `spacy[ja]`, `umap-learn`) manually restored.
 - **Translation module** (`tool1_dashboard/translation/`) — adapter, chunker, prompts, service
@@ -70,17 +71,18 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 ### What's Being Worked On
 See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase plan.
 
-**Currently:** Phases 1-10 are complete, the 2026-03-26 workflow repair is complete, the Drawbridge feedback pass is complete, per-voice TTS pacing control is shipped, the Translation Profiles flow now combines OpenAI API discovery with compact summary cards that open the existing editor modal on click, the global refresh/theme controls now live in the sidebar instead of the topbar, and the niche-project `Language setup` / `Provider setup` controls now use explicit button-driven disclosures that preserve open state across rerenders while pausing auto-refresh during active config-field focus. The Tool 1 pipeline is aligned with the intended project-board-first episode workflow and long-form narration now uses explicit app-side TTS chunking plus per-profile pacing presets.
+**Currently:** Phases 1-10 are complete, the 2026-03-26 workflow repair is complete, the Drawbridge feedback pass is complete, per-voice TTS pacing control is shipped, the Translation Profiles flow now combines OpenAI API discovery with compact summary cards that open the existing editor modal on click, the global refresh/theme controls now live in the sidebar instead of the topbar, the niche-project `Language setup` / `Provider setup` controls now use explicit button-driven disclosures that preserve open state across rerenders while pausing auto-refresh during active config-field focus, and the episode start path now uses explicit workflow wording with icon-only actions plus inline overlay feedback that stays correct through quick backend failures. The Tool 1 pipeline is aligned with the intended project-board-first episode workflow and long-form narration now uses explicit app-side TTS chunking plus per-profile pacing presets.
 
 ### What Is Still Fragile
 - No dedicated frontend test harness yet; browser verification is still manual/smoke based
 - Intermittent `/api/board` 404 noise appeared in local smoke logs, but no current source call was found in `tool1_dashboard/ui/app.js`
 - Live translation-model discovery depends on a valid OpenAI API key; local browser smoke still uses a mocked discovery route when a real key is unavailable
+- Live workflow smoke can fail immediately when Claude quota is exhausted; on 2026-03-27 the provider returned `Claude limit reached. You've hit your limit · resets Mar 28, 5pm (America/Sao_Paulo)`, and the frontend now surfaces that inline correctly but cannot resolve the quota issue itself
 - XTTS runtime availability still matters operationally, but the UI no longer asks the user to manually start or restart the worker
 - Fresh Windows environments still need the XTTS runtime installed manually; Coqui TTS may require Microsoft C++ Build Tools before voice cloning can work
 
 ### Git State
-- Branch: `codex/compact-translation-profile-cards` (active)
+- Branch: `codex/episode-start-ux-cleanup` (active)
 - Responsiveness/latency fixes for route changes, overlay opens, repeated provider health probes, and the latest Drawbridge tooltip polish all live in codex feature branches
 - Remote: `https://github.com/alesalesmota/tool-1-srt-timeline-json-prompt-list.git`
 
@@ -132,6 +134,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - **2026-03-27**: Project setup disclosures cannot auto-close during background refresh; the user must be able to open `Language setup`, interact with dropdowns, and keep working without the page collapsing the section underneath them
 - **2026-03-27**: Translation-profile cards should stay compact in the default view; the page should not repeat `Translation Profiles`, the card should only show language/provider/model/readiness, and deeper details should appear only after clicking the card
 - **2026-03-27**: The two global shell controls in the top-right corner can live in the lateral menu instead; the topbar should stay focused on the current page title and notices
+- **2026-03-27**: `Queue` is unclear on the episode workflow surface; the action should say `Start workflow` / `Restart workflow` / `Run again`, and the controls should stay minimal icon buttons with hover explanations instead of large permanent text buttons
 - **2026-03-25**: Lost 10+ phase plan between conversations → created IMPLEMENTATION_PLAN.md + IMPLEMENTATION_CHECKLIST.md in repo + updated CLAUDE.md behavior to always persist plans
 - **2026-03-25**: Standalone tools (TRADUTOR, TTS, SRT chunker, Whisper UI) all duplicated integrated modules → deleted
 - **2026-03-24**: Niche Project hierarchy — each niche has pre-configured languages, voice profiles, translation profiles
@@ -169,6 +172,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-03-27 | **Drawbridge episode start UX cleanup complete**: renamed the queue/requeue surface into explicit workflow language, replaced board and overlay start buttons with compact icon-only actions plus hover explanations, made readiness panels state-aware, added optimistic inline overlay feedback, and reconciled that feedback against later refreshes so fast provider failures replace stale success copy with `Workflow failed in Consistency Guide.`. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`124` passing), and Playwright smoke on seeded ready/blocked project boards plus a mobile-width overlay pass. The live restart smoke hit a real provider limitation (`Claude limit reached. You've hit your limit · resets Mar 28, 5pm (America/Sao_Paulo)`), which the UI now surfaces correctly inline. |
 | 2026-03-27 | **Drawbridge sidebar utility relocation complete**: moved the global `Refresh data` and theme-toggle controls from the top-right topbar into the left sidebar as compact quick-action buttons, so the header now shows only the active page title plus notices while the shell actions stay in the lateral menu. Verified with Playwright smoke on `http://127.0.0.1:8021/#/translation-profiles`, confirming the topbar no longer contains those controls and the sidebar exposes both actions in collapsed mode. |
 | 2026-03-27 | **Drawbridge translation-profile card simplification complete**: removed the repeated translation-profile section copy and long helper text from the page, rebuilt the default cards into compact summary buttons that show only name/provider/model/readiness, and reused the existing translation-profile editor modal as the details surface on click while keeping edit/delete actions separate. Verified with `node --check tool1_dashboard/ui/app.js` and Playwright smoke on `http://127.0.0.1:8020/#/translation-profiles`, including summary-click modal open, delete-dialog isolation, and mobile-width snapshot checks. |
 | 2026-03-27 | **Drawbridge project-config disclosure stabilization complete**: replaced the niche-project config panels' native `<details>` behavior with explicit button-driven disclosure state in the frontend, kept `Language setup` and `Provider setup` stable across rerenders, and paused the 5-second auto-refresh loop while project-config controls are focused so dropdown work is not interrupted mid-edit. Verified with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`124` passing), and Playwright smoke on `http://127.0.0.1:8020/#/niche-projects/niche-20260326-133703-religi-o`, confirming both panels stay open across >10 seconds of background refresh, remain stable while selects are focused, and toggle correctly via keyboard `Space` / `Enter` with `aria-expanded` updates. |

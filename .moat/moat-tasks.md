@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 13 | **To Do**: 1 | **Doing**: 0 | **Done**: 12
+**Total**: 13 | **To Do**: 0 | **Doing**: 0 | **Done**: 13
 
 ## Tasks
 
@@ -22,9 +22,9 @@
     
   – "When i open this dropdown setup, it auto closes and i can..." `section.project-config-grid > details.surface.project-config-disclosure:nth-child(2)`
 12. [x] Freeform Rectangle Task – "this 2 could be on the lateral menu" `freeform`
-13. [ ] Freeform Rectangle Task – "when i click on queue nothing happens, and im not sure wh..." `freeform`
+13. [x] Freeform Rectangle Task – "when i click on queue nothing happens, and im not sure wh..." `freeform`
 
 ---
 
-_Generated: 27/03/2026, 15:21:18_
+_Generated: 27/03/2026, 16:22:00_
 _Source: moat-tasks-detail.json_

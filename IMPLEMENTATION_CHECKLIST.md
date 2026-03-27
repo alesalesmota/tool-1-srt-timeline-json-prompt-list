@@ -194,3 +194,13 @@
 - [x] Keep the topbar focused on page title and notices while preserving hover labels for the sidebar actions
 - [x] Update Drawbridge task `ee8b37dd-c563-495b-8ffc-0ef2a80d1603` from `to do` -> `doing` -> `done` and sync `.moat/moat-tasks.md`
 - [x] Verify with Playwright smoke on `http://127.0.0.1:8021/#/translation-profiles`
+
+## Drawbridge Episode Start UX Cleanup (2026-03-27)
+- [x] Rename episode queue/requeue wording into `Start workflow`, `Restart workflow`, and `Run again`
+- [x] Convert board-card and overlay workflow controls into compact icon-only actions with hover explanations and disabled-state tooltips
+- [x] Make project and episode readiness panels state-aware for ready, blocked, queued, and running cases
+- [x] Keep the episode overlay open after workflow start and add inline optimistic pending plus success/error feedback
+- [x] Reconcile inline workflow feedback against later refreshes so fast provider failures replace stale success copy
+- [x] Normalize readiness blocker copy from queue wording into workflow wording on the frontend without changing the API contract
+- [x] Update Drawbridge task `50815060-5efc-4251-8a89-61129d92331b` from `to do` -> `doing` -> `done` and sync `.moat/moat-tasks.md`
+- [x] Verify with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`124` passing), and Playwright smoke on the seeded ready/blocked niche projects plus a mobile-width overlay pass
