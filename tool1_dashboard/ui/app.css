@@ -874,6 +874,14 @@ body[data-theme="light"] .kanban-column {
   transform: rotate(45deg) translateY(0);
 }
 
+.button-tooltip-shell {
+  display: inline-flex;
+}
+
+.button-tooltip-shell > .button[disabled] {
+  pointer-events: none;
+}
+
 .kanban-card-list {
   display: grid;
   gap: 12px;
@@ -2423,6 +2431,57 @@ details.editor-card summary::-webkit-details-marker {
   opacity: 1;
 }
 
+.episode-card:focus-within .episode-quick-actions {
+  opacity: 1;
+}
+
+.episode-action-button.button.icon-only {
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  min-height: 38px;
+  padding: 0;
+  border-radius: 12px;
+}
+
+.episode-card-action.button.icon-only {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  border-radius: 10px;
+}
+
+.episode-card-action.button.icon-only .button-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.episode-detail-action.button.icon-only {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 14px;
+}
+
+.episode-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.episode-workflow-feedback {
+  margin-top: 0;
+}
+
+@media (hover: none) {
+  .episode-quick-actions {
+    opacity: 1;
+  }
+}
+
 /* Tiny button variant */
 .button-tiny {
   padding: 3px 8px;
@@ -2722,6 +2781,14 @@ details.editor-card summary::-webkit-details-marker {
 
 .project-readiness-panel[data-tone="success"] {
   border-color: rgba(116, 210, 171, 0.18);
+}
+
+.project-readiness-panel[data-tone="warn"] {
+  border-color: rgba(232, 199, 125, 0.22);
+}
+
+.project-readiness-panel[data-tone="active"] {
+  border-color: rgba(144, 179, 255, 0.22);
 }
 
 .project-readiness-head {

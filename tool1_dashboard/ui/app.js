@@ -1,6 +1,6 @@
 // ── Episode pipeline (TTS-first) constants ────────────────────────
 const EPISODE_PIPELINE_COLUMNS = [
-  { id: "draft", label: "Draft", short: "Draft", copy: "Script saved to the project board and waiting for an explicit queue." },
+  { id: "draft", label: "Draft", short: "Draft", copy: "Script saved to the project board and waiting for an explicit workflow start." },
   { id: "consistency_guide", label: "Consistency Guide", short: "Guide", copy: "Locking characters, style, and continuity rules." },
   { id: "translation", label: "Translation", short: "Translate", copy: "Translating script for each target language." },
   { id: "tts", label: "TTS / Voice", short: "TTS", copy: "Generating narration audio per language." },
@@ -122,6 +122,7 @@ const state = {
   nicheProjectDetail: null,
   boardEpisodes: [],
   episodeDetail: null,
+  episodeWorkflowActions: {},
   translationPreview: null,
   isLoadingRoute: false,
   isRefreshingData: false,
@@ -366,12 +367,20 @@ function iconContent(name, label, { iconOnly = false, iconClass = "" } = {}) {
   return `${iconMarkup(name, { className: iconClass })}${iconOnly ? `<span class="sr-only">${esc(label)}</span>` : `<span class="button-label">${esc(label)}</span>`}`;
 }
 
+function workflowTerminology(text) {
+  return String(text || "")
+    .replace(/\bbefore re-?queueing\b/gi, "before restarting the workflow")
+    .replace(/\bbefore queueing\b/gi, "before starting the workflow")
+    .replace(/\bre-?queueing\b/gi, "restarting the workflow")
+    .replace(/\bqueueing\b/gi, "starting the workflow");
+}
+
 function apiErrorMessage(detail) {
   if (!detail) return "Request failed.";
-  if (typeof detail === "string") return detail;
-  if (typeof detail.message === "string" && detail.message.trim()) return detail.message;
+  if (typeof detail === "string") return workflowTerminology(detail);
+  if (typeof detail.message === "string" && detail.message.trim()) return workflowTerminology(detail.message);
   if (detail.queue_readiness?.blockers?.length) {
-    return detail.queue_readiness.blockers.map((item) => item.message).join(" ");
+    return detail.queue_readiness.blockers.map((item) => workflowTerminology(item.message)).join(" ");
   }
   return "Request failed.";
 }
@@ -387,6 +396,99 @@ function resetEpisodeSupplementalState(episodeId = null) {
   if (!episodeId || state.lastEpisodeReviewLoadedFor === episodeId) {
     state.lastEpisodeReviewLoadedFor = null;
   }
+  clearEpisodeWorkflowActionState(episodeId);
+}
+
+function episodeWorkflowActionState(episodeId) {
+  return episodeId ? state.episodeWorkflowActions?.[episodeId] || null : null;
+}
+
+function setEpisodeWorkflowActionState(episodeId, nextState) {
+  if (!episodeId) return;
+  state.episodeWorkflowActions = {
+    ...state.episodeWorkflowActions,
+    [episodeId]: nextState,
+  };
+}
+
+function clearEpisodeWorkflowActionState(episodeId = null) {
+  if (!episodeId) {
+    state.episodeWorkflowActions = {};
+    return;
+  }
+  if (!state.episodeWorkflowActions?.[episodeId]) return;
+  const nextStates = { ...state.episodeWorkflowActions };
+  delete nextStates[episodeId];
+  state.episodeWorkflowActions = nextStates;
+}
+
+function workflowActionEpisodes() {
+  const episodes = [];
+  const seen = new Set();
+  const register = (episode) => {
+    if (!episode?.id || seen.has(episode.id)) return;
+    seen.add(episode.id);
+    episodes.push(episode);
+  };
+  (state.boardEpisodes || []).forEach(register);
+  (state.nicheProjectDetail?.episodes || []).forEach(register);
+  register(state.episodeDetail?.episode);
+  return episodes;
+}
+
+function findEpisodeReference(episodeId) {
+  if (!episodeId) return null;
+  if (state.episodeDetail?.episode?.id === episodeId) {
+    return state.episodeDetail.episode;
+  }
+  const projectEpisode = (state.nicheProjectDetail?.episodes || []).find((episode) => episode.id === episodeId);
+  if (projectEpisode) {
+    return projectEpisode;
+  }
+  return (state.boardEpisodes || []).find((episode) => episode.id === episodeId) || null;
+}
+
+function updateEpisodeReferences(episodeId, updater) {
+  if (!episodeId || typeof updater !== "function") return;
+  if (Array.isArray(state.boardEpisodes)) {
+    state.boardEpisodes = state.boardEpisodes.map((episode) => (episode.id === episodeId ? updater(episode) : episode));
+  }
+  if (Array.isArray(state.nicheProjectDetail?.episodes)) {
+    state.nicheProjectDetail = {
+      ...state.nicheProjectDetail,
+      episodes: state.nicheProjectDetail.episodes.map((episode) => (episode.id === episodeId ? updater(episode) : episode)),
+    };
+  }
+  if (state.episodeDetail?.episode?.id === episodeId) {
+    state.episodeDetail = {
+      ...state.episodeDetail,
+      episode: updater(state.episodeDetail.episode),
+    };
+  }
+}
+
+function episodeQueueStartStage(episode, explicitStage = null) {
+  return explicitStage || episode?.queued_from_stage || "consistency_guide";
+}
+
+function stageLabel(stage) {
+  return EPISODE_STAGE_LABELS[stage] || titleCase(stage || "workflow");
+}
+
+function optimisticQueuedEpisodeRecord(episode, startStage) {
+  return {
+    ...episode,
+    board_status: "Queued",
+    pipeline_status: "queued",
+    current_stage: startStage,
+    queued_from_stage: startStage,
+    last_error: null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function applyOptimisticEpisodeWorkflowStart(episodeId, startStage) {
+  updateEpisodeReferences(episodeId, (episode) => optimisticQueuedEpisodeRecord(episode, startStage));
 }
 
 function defaultProjectConfigDisclosurePanels() {
@@ -525,7 +627,7 @@ function routeTitle(route) {
   if (route.view === "niche-projects" || route.view === "niche-project") {
     return {
       title: "Niche Projects",
-      copy: "Project boards own the workflow: draft first, then explicit queueing.",
+      copy: "Project boards own the workflow: draft first, then an explicit workflow start.",
     };
   }
   if (route.view === "episode") {
@@ -599,7 +701,7 @@ function renderSidebar() {
         </button>
         <div class="brand-title">Tool 1</div>
       </div>
-        <div class="brand-copy">Project-scoped workflow. Create the card in Draft, then queue it explicitly when the project is ready.</div>
+        <div class="brand-copy">Project-scoped workflow. Create the card in Draft, then start it explicitly when the project is ready.</div>
       </section>
 
     <section class="sidebar-section">
@@ -1721,14 +1823,201 @@ function langProgressHtml(langStatuses, stage) {
 }
 
 function queueActionLabel(ep) {
-  if ((ep.pipeline_status || "idle") === "failed") return "Requeue";
+  if ((ep.pipeline_status || "idle") === "failed") return "Restart workflow";
+  if ((ep.pipeline_status || "idle") === "review") return "Restart workflow";
   if ((ep.pipeline_status || "idle") === "done") return "Run again";
-  if ((ep.pipeline_status || "idle") === "review") return "Requeue";
-  return "Queue";
+  return "Start workflow";
 }
 
 function readinessMessages(readiness, limit = 99) {
-  return (readiness?.blockers || []).slice(0, limit).map((item) => item.message).filter(Boolean);
+  return (readiness?.blockers || []).slice(0, limit).map((item) => workflowTerminology(item.message)).filter(Boolean);
+}
+
+function queueActionPendingLabel(ep) {
+  if ((ep.pipeline_status || "idle") === "failed") return "Restarting workflow";
+  if ((ep.pipeline_status || "idle") === "review") return "Restarting workflow";
+  if ((ep.pipeline_status || "idle") === "done") return "Starting workflow again";
+  return "Starting workflow";
+}
+
+function queueActionPendingMessage(ep, startStage) {
+  const startCopy = stageLabel(startStage);
+  if ((ep.pipeline_status || "idle") === "failed") return `Restarting the workflow from ${startCopy}.`;
+  if ((ep.pipeline_status || "idle") === "review") return `Restarting the workflow from ${startCopy}.`;
+  if ((ep.pipeline_status || "idle") === "done") return `Starting the workflow again from ${startCopy}.`;
+  return `Starting the workflow from ${startCopy}.`;
+}
+
+function queueActionSuccessMessage(ep, startStage) {
+  const startCopy = stageLabel(startStage);
+  if ((ep.pipeline_status || "idle") === "failed") return `Workflow restarted. Waiting for ${startCopy}.`;
+  if ((ep.pipeline_status || "idle") === "review") return `Workflow restarted. Waiting for ${startCopy}.`;
+  if ((ep.pipeline_status || "idle") === "done") return `Workflow started again. Waiting for ${startCopy}.`;
+  return `Workflow started. Waiting for ${startCopy}.`;
+}
+
+function queueActionReadyTitle(ep) {
+  const label = queueActionLabel(ep);
+  if (label === "Restart workflow") return "Ready to restart";
+  if (label === "Run again") return "Ready to run again";
+  return "Ready to start";
+}
+
+function queueActionImmediateFailureMessage(ep, fallbackStage) {
+  const failedStage = stageLabel(ep?.current_stage || fallbackStage || ep?.queued_from_stage || "workflow");
+  return `Workflow failed in ${failedStage}.`;
+}
+
+function reconcileEpisodeWorkflowActionStates() {
+  let raisedFailureNotice = false;
+  workflowActionEpisodes().forEach((episode) => {
+    const actionState = episodeWorkflowActionState(episode.id);
+    if (!actionState) return;
+    const status = episode.pipeline_status || "idle";
+    if (status === "failed" && episode.last_error) {
+      const failureMessage = queueActionImmediateFailureMessage(episode, episode.current_stage || episode.queued_from_stage);
+      if (
+        actionState.pending ||
+        actionState.tone !== "error" ||
+        actionState.message !== failureMessage
+      ) {
+        setEpisodeWorkflowActionState(episode.id, {
+          ...actionState,
+          pending: false,
+          tone: "error",
+          message: failureMessage,
+        });
+      }
+      if (
+        !raisedFailureNotice &&
+        (
+          state.notice?.tone !== "error" ||
+          state.notice?.text !== episode.last_error
+        )
+      ) {
+        setNotice(episode.last_error, "error");
+        raisedFailureNotice = true;
+      }
+      return;
+    }
+    if (actionState.pending && !["queued", "running"].includes(status)) {
+      setEpisodeWorkflowActionState(episode.id, {
+        ...actionState,
+        pending: false,
+      });
+    }
+  });
+}
+
+function queueActionStatusTooltip(ep) {
+  const status = ep.pipeline_status || "idle";
+  const activeStage = stageLabel(ep.current_stage || ep.queued_from_stage || "consistency_guide");
+  if (status === "queued") return `Workflow queued. Waiting for ${activeStage} to start.`;
+  if (status === "running") return `Workflow running in ${activeStage}.`;
+  return queueActionLabel(ep);
+}
+
+function queueActionMeta(ep, readiness = ep.queue_readiness || { ok: true, blockers: [], warnings: [] }) {
+  const actionState = episodeWorkflowActionState(ep.id);
+  const status = ep.pipeline_status || "idle";
+  const startStage = episodeQueueStartStage(ep);
+  const readyIcon = ["failed", "review", "done"].includes(status) ? "rerun" : "play";
+  if (actionState?.pending) {
+    return {
+      label: queueActionPendingLabel(ep),
+      tooltip: actionState.message || queueActionPendingMessage(ep, startStage),
+      icon: "refresh",
+      iconClass: "button-icon-spin",
+      disabled: true,
+      startStage,
+    };
+  }
+  if (status === "queued" || status === "running") {
+    return {
+      label: status === "running" ? "Workflow running" : "Workflow queued",
+      tooltip: queueActionStatusTooltip(ep),
+      icon: "refresh",
+      iconClass: status === "running" ? "button-icon-spin" : "",
+      disabled: true,
+      startStage,
+    };
+  }
+  if (readiness?.ok === false) {
+    return {
+      label: queueActionLabel(ep),
+      tooltip: readinessMessages(readiness, 1)[0] || "Fix the workflow blockers before starting.",
+      icon: readyIcon,
+      iconClass: "",
+      disabled: true,
+      startStage,
+    };
+  }
+  return {
+    label: queueActionLabel(ep),
+    tooltip: queueActionLabel(ep),
+    icon: readyIcon,
+    iconClass: "",
+    disabled: false,
+    startStage,
+  };
+}
+
+function renderIconOnlyActionButton({
+  icon,
+  label,
+  tooltip = label,
+  toneClass = "button-ghost",
+  className = "",
+  dataAttributes = {},
+  disabled = false,
+  iconClass = "",
+}) {
+  const classes = ["button", toneClass, "icon-only"];
+  if (className) classes.push(className);
+  const attrMarkup = disabled
+    ? "disabled"
+    : Object.entries(dataAttributes)
+      .filter(([, value]) => value !== null && value !== undefined && value !== "")
+      .map(([name, value]) => `data-${name}="${esc(value)}"`)
+      .join(" ");
+  return `
+    <span class="tooltip-anchor button-tooltip-shell" data-tooltip="${esc(tooltip)}" title="${esc(tooltip)}">
+      <button type="button" class="${classes.join(" ")}" ${attrMarkup} aria-label="${esc(label)}">${iconContent(icon, label, { iconOnly: true, iconClass })}</button>
+    </span>
+  `;
+}
+
+function renderEpisodeWorkflowActionButton(ep, { className = "", readiness = ep.queue_readiness || { ok: true, blockers: [], warnings: [] } } = {}) {
+  const meta = queueActionMeta(ep, readiness);
+  return renderIconOnlyActionButton({
+    icon: meta.icon,
+    label: meta.label,
+    tooltip: meta.tooltip,
+    toneClass: "button-primary",
+    className: `episode-action-button episode-workflow-action ${className}`.trim(),
+    dataAttributes: {
+      "queue-episode": ep.id,
+      stage: meta.startStage,
+    },
+    disabled: meta.disabled,
+    iconClass: meta.iconClass,
+  });
+}
+
+function renderEpisodeDeleteActionButton(episodeId, { className = "" } = {}) {
+  return renderIconOnlyActionButton({
+    icon: "delete",
+    label: "Delete episode",
+    toneClass: "button-danger",
+    className: `episode-action-button ${className}`.trim(),
+    dataAttributes: { "delete-episode": episodeId },
+  });
+}
+
+function renderEpisodeWorkflowNotice(episodeId) {
+  const actionState = episodeWorkflowActionState(episodeId);
+  if (!actionState?.message) return "";
+  return `<div class="notice episode-workflow-feedback" data-tone="${esc(actionState.tone || "success")}">${esc(actionState.message)}</div>`;
 }
 
 function renderReadinessNotice(readiness, { limit = 2, compact = false } = {}) {
@@ -1753,15 +2042,11 @@ function renderEpisodeCard(ep, options = {}) {
   const nicheLabel = (ep.niche_project_title && showProjectLabel) ? `<span class="episode-card-niche">${esc(ep.niche_project_title)}</span>` : "";
   const langCount = (ep.configured_languages || []).length;
   const isRunning = ep.pipeline_status === "running";
-  const canQueue = ["idle", "failed", "review", "done"].includes(ep.pipeline_status || "idle");
   const queueReadiness = ep.queue_readiness || { ok: true, blockers: [], warnings: [] };
-  const queueBlocked = canQueue && queueReadiness.ok === false;
   const elapsedHtml = isRunning && ep.updated_at
     ? `<span class="running-elapsed episode-elapsed" data-started-at="${esc(ep.updated_at)}">${esc(relativeTime(ep.updated_at))}</span>`
     : "";
-  const queueButton = canQueue
-    ? `<button type="button" class="button button-primary button-tiny" data-queue-episode="${esc(ep.id)}" title="${esc(queueBlocked ? readinessMessages(queueReadiness, 1)[0] || queueActionLabel(ep) : queueActionLabel(ep))}" ${queueBlocked ? "disabled" : ""}>${iconContent("play", queueActionLabel(ep), { iconOnly: true })}</button>`
-    : "";
+  const queueButton = renderEpisodeWorkflowActionButton(ep, { className: "button-tiny episode-card-action", readiness: queueReadiness });
 
   return `
     <div class="episode-card surface" data-open-episode="${esc(ep.id)}" data-project-id="${esc(ep.niche_project_id || options.projectId || "")}">
@@ -1783,7 +2068,7 @@ function renderEpisodeCard(ep, options = {}) {
         <span class="helper" style="font-size:0.7rem;opacity:0.5;">${esc(relativeTime(ep.updated_at))}</span>
         <div class="episode-quick-actions" onclick="event.stopPropagation()">
           ${queueButton}
-          <button type="button" class="button button-danger button-tiny" data-delete-episode="${esc(ep.id)}" title="Delete">${iconContent("delete", "Delete", { iconOnly: true })}</button>
+          ${renderEpisodeDeleteActionButton(ep.id, { className: "button-tiny episode-card-action" })}
         </div>
       </div>
     </div>`;
@@ -1924,7 +2209,7 @@ function renderSubmitEpisodeModal() {
             <span class="field-label">Script text</span>
             <textarea id="se-script" rows="10" required placeholder="Paste the full script here..."></textarea>
           </label>
-          <div class="helper">This creates a Draft card only. Queue it explicitly from the board when the project is ready.</div>
+          <div class="helper">This creates a Draft card only. Start it explicitly from the board when the project is ready.</div>
           <div class="button-row" style="margin-top:18px;">
             <button type="submit" class="button button-primary has-icon">${iconContent("add", "Create episode")}</button>
             <button type="button" class="button button-ghost" data-close-modal="true">Cancel</button>
@@ -2063,23 +2348,80 @@ function renderProviderConfigSection(project) {
   `;
 }
 
-function renderQueueReadinessSection(readiness, { title = "Queue readiness", emptyCopy = "Project is ready to queue from Draft." } = {}) {
+function workflowReadinessSectionOptions({ readiness, episode = null } = {}) {
+  if (episode) {
+    const status = episode.pipeline_status || "idle";
+    if (status === "queued") {
+      return {
+        title: "Workflow in progress",
+        emptyCopy: queueActionStatusTooltip(episode),
+        tone: "warn",
+        badgeLabel: "Queued",
+      };
+    }
+    if (status === "running") {
+      return {
+        title: "Workflow in progress",
+        emptyCopy: queueActionStatusTooltip(episode),
+        tone: "active",
+        badgeLabel: "Running",
+      };
+    }
+    if (readiness?.ok === false) {
+      return {
+        title: "Workflow blockers",
+        tone: "error",
+        badgeLabel: "Blocked",
+      };
+    }
+    return {
+      title: queueActionReadyTitle(episode),
+      emptyCopy: `This episode is ready to ${queueActionLabel(episode).toLowerCase()}.`,
+      tone: "success",
+      badgeLabel: "Ready",
+    };
+  }
+  if (readiness?.ok === false) {
+    return {
+      title: "Workflow blockers",
+      tone: "error",
+      badgeLabel: "Blocked",
+    };
+  }
+  return {
+    title: "Ready to start",
+    emptyCopy: "Draft episodes are ready to start from the board.",
+    tone: "success",
+    badgeLabel: "Ready",
+  };
+}
+
+function renderQueueReadinessSection(readiness, { title = "Workflow readiness", emptyCopy = "Project is ready to start from Draft.", tone = null, badgeLabel = null } = {}) {
   const blockers = readinessMessages(readiness, 99);
   const warning = readiness?.warnings?.[0]?.message;
-  const tone = readiness?.ok === false ? "error" : "success";
+  const resolvedTone = tone || (readiness?.ok === false ? "error" : "success");
+  const resolvedBadgeLabel = badgeLabel || (resolvedTone === "error" ? "Blocked" : "Ready");
   const body = blockers.length
     ? `<div class="queue-readiness-blocks">${blockers.map((message) => `<div class="queue-readiness-row">${esc(message)}</div>`).join("")}</div>`
     : `<div class="helper">${esc(emptyCopy)}</div>`;
   return `
-    <div class="project-readiness-panel" data-tone="${esc(tone)}">
+    <div class="project-readiness-panel" data-tone="${esc(resolvedTone)}">
       <div class="project-readiness-head">
-        <span class="badge" data-tone="${esc(tone)}">${esc(readiness?.ok === false ? "Blocked" : "Ready")}</span>
+        <span class="badge" data-tone="${esc(resolvedTone)}">${esc(resolvedBadgeLabel)}</span>
         <strong>${esc(title)}</strong>
       </div>
       ${body}
       ${warning ? `<div class="queue-warning" style="margin-top:8px;">${esc(warning)}</div>` : ""}
     </div>
   `;
+}
+
+function renderProjectWorkflowReadinessSection(readiness) {
+  return renderQueueReadinessSection(readiness, workflowReadinessSectionOptions({ readiness }));
+}
+
+function renderEpisodeWorkflowReadinessSection(episode, readiness) {
+  return renderQueueReadinessSection(readiness, workflowReadinessSectionOptions({ readiness, episode }));
 }
 
 function renderColumnHeading(col) {
@@ -2125,7 +2467,7 @@ function renderNicheProjectDetail() {
   const detail = state.nicheProjectDetail;
   if (!detail) {
     $("view").innerHTML = state.isLoadingRoute
-      ? renderLoadingSurface("Loading project board", "Pulling episodes, queue readiness, and language setup for this project.")
+      ? renderLoadingSurface("Loading project board", "Pulling episodes, workflow readiness, and language setup for this project.")
       : '<div class="surface" style="padding:2rem;"><p class="helper">Niche project not found.</p></div>';
     return;
   }
@@ -2158,12 +2500,12 @@ function renderNicheProjectDetail() {
       </div>
 
       ${renderProjectStats(detail)}
-      ${renderQueueReadinessSection(projectReadiness)}
+      ${renderProjectWorkflowReadinessSection(projectReadiness)}
 
       <div class="project-board-toolbar">
-        ${draftCount > 0 ? '<button type="button" class="button button-ghost button-small has-icon" data-batch-queue-drafts="' + esc(project.id) + '" ' + batchDisabled + '>' + iconContent("play", "Queue all drafts (" + draftCount + ")") + '</button>' : ''}
-        ${failedCount > 0 ? '<button type="button" class="button button-ghost button-small has-icon" data-batch-queue-failed="' + esc(project.id) + '" ' + batchDisabled + '>' + iconContent("rerun", "Requeue failed (" + failedCount + ")") + '</button>' : ''}
-        ${queueBlocked ? '<span class="helper">Fix the blockers above before queueing or requeueing episodes.</span>' : '<span class="helper">Draft cards stay idle until you queue them explicitly.</span>'}
+        ${draftCount > 0 ? '<button type="button" class="button button-ghost button-small has-icon" data-batch-queue-drafts="' + esc(project.id) + '" ' + batchDisabled + '>' + iconContent("play", "Start all drafts (" + draftCount + ")") + '</button>' : ''}
+        ${failedCount > 0 ? '<button type="button" class="button button-ghost button-small has-icon" data-batch-queue-failed="' + esc(project.id) + '" ' + batchDisabled + '>' + iconContent("rerun", "Restart failed (" + failedCount + ")") + '</button>' : ''}
+        ${queueBlocked ? '<span class="helper">Fix the blockers above before starting or restarting episode workflows.</span>' : '<span class="helper">Draft cards stay idle until you start the workflow explicitly.</span>'}
       </div>
 
       ${renderProjectBoardKanban(project, episodes)}
@@ -2228,10 +2570,11 @@ function renderEpisodeDetailOverlay() {
   const stageRuns = detail.stage_runs || [];
   const currentStage = episode.current_stage || "draft";
   const readiness = episode.queue_readiness || { ok: true, blockers: [], warnings: [] };
-  const queueDisabled = episode.pipeline_status === "running" || readiness.ok === false;
   const allStages = EPISODE_PIPELINE_COLUMNS.filter((c) => c.id !== "needs_attention");
   const currentIdx = allStages.findIndex((c) => c.id === currentStage);
   const progressPct = allStages.length ? Math.max(0, Math.round(((currentIdx < 0 ? 0 : currentIdx + (episode.pipeline_status === "review" || episode.pipeline_status === "done" ? 1 : 0)) / allStages.length) * 100)) : 0;
+  const queueActionButton = renderEpisodeWorkflowActionButton(episode, { className: "episode-detail-action", readiness });
+  const deleteActionButton = renderEpisodeDeleteActionButton(episode.id, { className: "episode-detail-action" });
   const stageStrip = allStages.map((s, i) => {
     let st = "pending";
     if (episode.pipeline_status === "done") st = "done";
@@ -2305,13 +2648,14 @@ function renderEpisodeDetailOverlay() {
         <div class="board-modal-layout">
           <div class="board-modal-main">
             ${episode.last_error ? '<div class="notice" data-tone="error">' + esc(episode.last_error) + '</div>' : ""}
-            ${renderQueueReadinessSection(readiness, { title: "Queue blockers", emptyCopy: "This episode can be queued from the board." })}
+            ${renderEpisodeWorkflowNotice(episode.id)}
+            ${renderEpisodeWorkflowReadinessSection(episode, readiness)}
             <div class="board-modal-section">
               <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
                 <div class="eyebrow" style="margin:0;">Pipeline progress ${progressPct}%</div>
-                <div class="button-row">
-                  <button type="button" class="button button-primary button-small has-icon" data-queue-episode="${esc(episode.id)}" ${queueDisabled ? "disabled" : ""}>${iconContent("play", queueActionLabel(episode))}</button>
-                  <button type="button" class="button button-danger button-small icon-only" data-delete-episode="${esc(episode.id)}">${iconContent("delete", "Delete episode", { iconOnly: true })}</button>
+                <div class="episode-detail-actions">
+                  ${queueActionButton}
+                  ${deleteActionButton}
                 </div>
               </div>
               <div class="pipeline-progress-bar" style="margin-top:12px;">
@@ -2343,9 +2687,9 @@ function renderEpisodeDetailOverlay() {
           <aside class="board-modal-side">
             <div class="board-modal-side-card">
               <div class="eyebrow">Quick actions</div>
-              <div class="stack">
-                <button type="button" class="button button-primary has-icon" data-queue-episode="${esc(episode.id)}" ${queueDisabled ? "disabled" : ""}>${iconContent("play", queueActionLabel(episode))}</button>
-                <button type="button" class="button button-danger has-icon" data-delete-episode="${esc(episode.id)}">${iconContent("delete", "Delete episode")}</button>
+              <div class="episode-detail-actions">
+                ${queueActionButton}
+                ${deleteActionButton}
               </div>
             </div>
             <div class="board-modal-side-card">
@@ -2373,6 +2717,7 @@ function renderEpisodeDetail() {
   const langStatuses = detail.language_statuses || [];
   const stageRuns = detail.stage_runs || [];
   const currentStage = episode.current_stage || "draft";
+  const readiness = episode.queue_readiness || { ok: true, blockers: [], warnings: [] };
 
   // Pipeline progress bar
   const allStages = EPISODE_PIPELINE_COLUMNS.filter((c) => c.id !== "needs_attention");
@@ -2455,8 +2800,9 @@ function renderEpisodeDetail() {
     </details>`;
   }).join("") : '<p class="helper">No stage runs recorded yet.</p>';
 
-  const queueDisabled = episode.pipeline_status === "running" ? "disabled" : "";
   const isRunning = episode.pipeline_status === "running";
+  const queueActionButton = renderEpisodeWorkflowActionButton(episode, { className: "episode-detail-action", readiness });
+  const deleteActionButton = renderEpisodeDeleteActionButton(episode.id, { className: "episode-detail-action" });
 
   // Output files section (lazy-loaded)
   const filesSection = `
@@ -2484,14 +2830,17 @@ function renderEpisodeDetail() {
           ${isRunning ? '<span class="running-elapsed" data-started-at="' + esc(episode.updated_at) + '">…</span>' : ''}
         </div>
         ${episode.last_error ? '<div class="notice" data-tone="error" style="margin-top:12px;">' + esc(episode.last_error) + '</div>' : ""}
+        ${renderEpisodeWorkflowNotice(episode.id)}
       </div>
+
+      ${renderEpisodeWorkflowReadinessSection(episode, readiness)}
 
       <div class="surface" style="padding:16px;">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <div class="eyebrow">Pipeline progress — ${progressPct}%</div>
-          <div class="button-row">
-            <button type="button" class="button button-primary button-small has-icon" data-queue-episode="${esc(episode.id)}" ${queueDisabled}>${iconContent("play", "Queue / Rerun")}</button>
-            <button type="button" class="button button-danger button-small icon-only" title="Delete episode" data-delete-episode="${esc(episode.id)}">${iconContent("delete", "Delete episode", { iconOnly: true })}</button>
+          <div class="episode-detail-actions">
+            ${queueActionButton}
+            ${deleteActionButton}
           </div>
         </div>
         <div class="pipeline-progress-bar" style="margin-top:12px;">
@@ -3063,6 +3412,8 @@ async function refreshData({ preserveNotice = true, routeLoading = false, force 
       state.nicheProjectDetail = null;
       resetProjectConfigDisclosures();
     }
+
+    reconcileEpisodeWorkflowActionStates();
   } finally {
     activeRefreshes = Math.max(0, activeRefreshes - 1);
     if (routeLoading) {
@@ -3160,6 +3511,48 @@ function closeEpisodeOverlay() {
   }
   renderApp();
   resetAutoRefresh();
+}
+
+async function triggerEpisodeWorkflowStart(episodeId, explicitStage = null) {
+  const episode = findEpisodeReference(episodeId);
+  const startStage = episodeQueueStartStage(episode, explicitStage);
+  const pendingMessage = queueActionPendingMessage(episode || {}, startStage);
+  resetEpisodeSupplementalState(episodeId);
+  setEpisodeWorkflowActionState(episodeId, { pending: true, tone: "warn", message: pendingMessage });
+  if (episode) {
+    applyOptimisticEpisodeWorkflowStart(episodeId, startStage);
+  }
+  renderApp();
+  try {
+    const result = await api(`/api/episodes/${encodeURIComponent(episodeId)}/queue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ start_stage: explicitStage || null }),
+    });
+    await refreshData();
+    const refreshedEpisode = findEpisodeReference(episodeId) || episode || {};
+    const immediateFailure = (refreshedEpisode.pipeline_status || "idle") === "failed" && refreshedEpisode.last_error;
+    const actionMessage = immediateFailure
+      ? queueActionImmediateFailureMessage(refreshedEpisode, result.start_stage || startStage)
+      : queueActionSuccessMessage(episode || refreshedEpisode, result.start_stage || startStage);
+    const actionTone = immediateFailure ? "error" : "success";
+    setEpisodeWorkflowActionState(episodeId, { pending: false, tone: actionTone, message: actionMessage });
+    renderApp();
+    setNotice(immediateFailure ? refreshedEpisode.last_error : actionMessage, actionTone);
+  } catch (error) {
+    try {
+      await refreshData();
+    } catch (refreshError) {
+      console.error(refreshError);
+    }
+    setEpisodeWorkflowActionState(episodeId, {
+      pending: false,
+      tone: "error",
+      message: error.message || "Could not start the workflow.",
+    });
+    renderApp();
+    setNotice(error.message || "Could not start the workflow.", "error");
+  }
 }
 
 async function createVoiceProfile(event) {
@@ -3471,7 +3864,7 @@ async function submitEpisode(event) {
   state.modal = { kind: null };
   await refreshData();
   renderApp();
-  setNotice("Episode created in Draft. Queue it explicitly from the board.", "success");
+  setNotice("Episode created in Draft. Start the workflow explicitly from the board.", "success");
 }
 
 async function saveSettings(event) {
@@ -3686,15 +4079,8 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (target.dataset.queueEpisode) {
-      resetEpisodeSupplementalState(target.dataset.queueEpisode);
-      await api('/api/episodes/' + encodeURIComponent(target.dataset.queueEpisode) + '/queue', {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ start_stage: target.dataset.stage || null }),
-      });
-      await refreshData();
-      renderApp();
-      setNotice("Episode queued.", "success");
+      target.disabled = true;
+      await triggerEpisodeWorkflowStart(target.dataset.queueEpisode, target.dataset.stage || null);
       return;
     }
     if (target.dataset.deleteEpisode) {
@@ -3804,7 +4190,7 @@ document.addEventListener("click", async (event) => {
       await refreshData();
       renderApp();
       setNotice(
-        "Queued " + (result.queued_count || 0) + " draft episode(s)." +
+        "Started " + (result.queued_count || 0) + " draft workflow(s)." +
         ((result.blocked_count || 0) ? " " + result.blocked_count + " blocked." : ""),
         (result.blocked_count || 0) ? "warn" : "success",
       );
@@ -3820,7 +4206,7 @@ document.addEventListener("click", async (event) => {
       await refreshData();
       renderApp();
       setNotice(
-        "Re-queued " + (result.queued_count || 0) + " failed episode(s)." +
+        "Restarted " + (result.queued_count || 0) + " failed workflow(s)." +
         ((result.blocked_count || 0) ? " " + result.blocked_count + " blocked." : ""),
         (result.blocked_count || 0) ? "warn" : "success",
       );
