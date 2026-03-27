@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 13 | **To Do**: 0 | **Doing**: 0 | **Done**: 13
+**Total**: 14 | **To Do**: 0 | **Doing**: 0 | **Done**: 14
 
 ## Tasks
 
@@ -23,8 +23,9 @@
   – "When i open this dropdown setup, it auto closes and i can..." `section.project-config-grid > details.surface.project-config-disclosure:nth-child(2)`
 12. [x] Freeform Rectangle Task – "this 2 could be on the lateral menu" `freeform`
 13. [x] Freeform Rectangle Task – "when i click on queue nothing happens, and im not sure wh..." `freeform`
+14. [x] Background Container – "i pressed play, the feed back was to slow, and there shou..." `section.kanban-column.project-kanban-column:nth-child(1) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
 
 ---
 
-_Generated: 27/03/2026, 16:22:00_
+_Generated: 27/03/2026, 20:48:42_
 _Source: moat-tasks-detail.json_

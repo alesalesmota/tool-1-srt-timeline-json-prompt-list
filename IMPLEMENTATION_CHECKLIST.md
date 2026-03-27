@@ -204,3 +204,12 @@
 - [x] Normalize readiness blocker copy from queue wording into workflow wording on the frontend without changing the API contract
 - [x] Update Drawbridge task `50815060-5efc-4251-8a89-61129d92331b` from `to do` -> `doing` -> `done` and sync `.moat/moat-tasks.md`
 - [x] Verify with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`124` passing), and Playwright smoke on the seeded ready/blocked niche projects plus a mobile-width overlay pass
+
+## Drawbridge Real Workflow Feedback On Project Kanban (2026-03-27)
+- [x] Add an always-visible inline workflow status row on episode cards using real episode payload fields instead of hover-only or overlay-only feedback
+- [x] Use the same computed workflow display stage for card status and kanban column placement so a started episode cannot remain visually stuck in `Draft`
+- [x] Map per-language card summaries to the real backend language status keys (`translation_status`, `tts_status`, `srt_status`, `timeline_status`)
+- [x] Shorten board auto-refresh to 1 second while any episode is `queued`, `running`, or `paused_for_tts`, with the existing 5-second idle fallback
+- [x] Make card error/status surfaces readable without hover by styling the inline status row and concise error block directly on the card
+- [x] Update Drawbridge task `59eb5c0d-3001-4ab3-97c4-566f5968fbfb` from `to do` -> `doing` -> `done` and sync `.moat/moat-tasks.md`
+- [x] Verify with `node --check tool1_dashboard/ui/app.js`, `python -m pytest tests/test_video_pipeline.py -k "queue_episode and not missing and not provider and not translation_profile and not voice_profile" -q`, `python -m pytest tests/test_video_pipeline.py -k "requeue_after_provider_config_change_restarts_from_failed_stage" -q`, and Playwright smoke on `http://127.0.0.1:8021/#/niche-projects/niche-20260326-133703-religi-o`

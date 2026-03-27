@@ -373,6 +373,51 @@ This addendum captures the workflow-launch cleanup that followed the earlier pro
 
 ---
 
+## 2026-03-27 Real Workflow Feedback On Project Kanban Addendum
+
+This addendum captures the follow-up Drawbridge pass that made the project board itself explain live workflow state instead of relying on hover-only controls or detail overlays.
+
+### Goals
+
+- move started cards out of `Draft` immediately on the board
+- keep card column placement and card copy derived from the same real workflow state
+- show a compact, always-visible in-card status line that reflects actual backend progress
+- tighten active-board polling so queue/running states feel live instead of delayed
+- avoid API-contract changes unless absolutely necessary
+
+### Implemented shape
+
+- Added a compact inline status row on every episode card that derives its copy from:
+  - `pipeline_status`
+  - `current_stage`
+  - `updated_at`
+  - `language_statuses`
+- Added a shared computed display-stage helper for cards and kanban placement
+  - if an episode is active and backend `current_stage` is still `draft`, the board now falls back to the real queued start stage so the card no longer appears stuck
+- Fixed per-language stage summaries to use the actual backend keys:
+  - `translation -> translation_status`
+  - `tts -> tts_status`
+  - `alignment -> srt_status`
+  - `timeline_mapping -> timeline_status`
+- Added active-board refresh throttling:
+  - `1000ms` while any episode is `queued`, `running`, or `paused_for_tts`
+  - `5000ms` otherwise
+- Synced the refresh throttle immediately after optimistic workflow start so the faster poll rate begins as soon as the user starts a workflow
+- Styled the inline workflow status and error surfaces directly on the card so critical state is readable without hover
+
+### Verification baseline
+
+- `node --check tool1_dashboard/ui/app.js`
+- `python -m pytest tests/test_video_pipeline.py -k "queue_episode and not missing and not provider and not translation_profile and not voice_profile" -q`
+- `python -m pytest tests/test_video_pipeline.py -k "requeue_after_provider_config_change_restarts_from_failed_stage" -q`
+- Playwright smoke on `http://127.0.0.1:8021/#/niche-projects/niche-20260326-133703-religi-o`
+- Live browser verification confirmed:
+  - a fresh draft card initially rendered `Ready to start workflow.` in the `Draft` column
+  - after workflow start, that same card moved out of `Draft` within roughly 100ms
+  - the card rendered inline running state in `Consistency Guide` instead of looking idle
+
+---
+
 ## Files to Modify (Critical)
 
 | File | Action |

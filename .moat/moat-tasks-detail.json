@@ -439,5 +439,18 @@
       },
       "type": "freeform"
     }
+  },
+  {
+    "id": "59eb5c0d-3001-4ab3-97c4-566f5968fbfb",
+    "title": "Background Container",
+    "comment": "i pressed play, \nthe feed back was to slow, and there should be a live minimal status that show exactly what is happening on the background,\nafter i pressed the play button, the card stood still in the draft colum, it seems stuck",
+    "selector": "section.kanban-column.project-kanban-column:nth-child(1) > div.kanban-card-list:nth-child(2) > div.episode-card.surface",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774640573498-e6c76i501.png",
+    "status": "done",
+    "timestamp": 1774640573636
   }
 ]
