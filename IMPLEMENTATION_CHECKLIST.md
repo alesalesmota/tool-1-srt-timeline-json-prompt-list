@@ -1,6 +1,12 @@
 # Implementation Checklist
 > Track progress across conversations. Update after each task.
 
+## Post-Phase Refinements (2026-03-28)
+- [x] Add workflow-control backend support for pause/resume and selected-step reruns
+- [x] Add stage-specific start guards so mid-pipeline restarts only run when prerequisite assets exist
+- [x] Add episode detail/overlay workflow-control UI with step selector and pause action
+- [x] Verify workflow-control changes (`python -m py_compile`, `node --check`, `python -m pytest tests/test_video_pipeline.py`)
+
 ## Pre-Implementation: Continuity Setup
 - [x] Save plan as `IMPLEMENTATION_PLAN.md` in repo
 - [x] Create this checklist (`IMPLEMENTATION_CHECKLIST.md`)

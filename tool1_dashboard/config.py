@@ -28,6 +28,7 @@ DEFAULT_PORT = int(os.environ.get("TOOL1_DASHBOARD_PORT", "8020"))
 BOARD_STATUSES = (
     "Draft",
     "Queued",
+    "Paused",
     "Running",
     "Review",
     "Done",
@@ -69,6 +70,7 @@ EPISODE_PER_LANGUAGE_STAGES = ("translation", "tts", "alignment", "timeline_mapp
 PIPELINE_STATUSES = (
     "idle",
     "queued",
+    "paused",
     "running",
     "review",
     "done",

@@ -1,5 +1,5 @@
 # Tool 1 Creator Studio — Reconstruction Plan
-> Last updated: 2026-03-27
+> Last updated: 2026-03-28
 
 ## Context
 
@@ -12,6 +12,11 @@ Tool 1 is the multilingual video planning pipeline for Creator Studio. The user 
 ---
 
 ## Current State Summary
+
+### Post-Phase Refinement (2026-03-28)
+- Workflow controls now support resume-from-stop, pause-at-safe-boundary, and selected-step reruns from the episode detail/overlay UI.
+- Backend queueing now defaults failed/paused episodes to their actual stopped stage instead of always falling back to `consistency_guide`.
+- Selected-step reruns can reset downstream outputs safely, and mid-pipeline starts now validate that prerequisite assets exist before queueing.
 
 ### What works (backend)
 - FastAPI app with ~50+ endpoints, SQLite database, service layer with worker loop

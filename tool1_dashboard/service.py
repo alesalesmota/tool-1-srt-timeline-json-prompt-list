@@ -287,7 +287,267 @@ class Tool1Service:
             if normalized and normalized not in normalized_languages:
                 normalized_languages.append(normalized)
         payload["configured_languages"] = normalized_languages
+        payload["pause_requested"] = bool(int(payload.get("pause_requested") or 0))
         return payload
+
+    @staticmethod
+    def _path_exists(value: Any) -> bool:
+        return bool(value) and Path(str(value)).exists()
+
+    @staticmethod
+    def _language_list_text(language_codes: list[str]) -> str:
+        cleaned = [str(code or "").strip() for code in language_codes if str(code or "").strip()]
+        return ", ".join(cleaned) if cleaned else "the configured languages"
+
+    def _default_episode_start_stage(self, episode: dict[str, Any]) -> str:
+        current_stage = str(episode.get("current_stage") or "").strip()
+        queued_from_stage = str(episode.get("queued_from_stage") or "").strip()
+        pipeline_status = str(episode.get("pipeline_status") or "idle").strip().lower()
+        if pipeline_status in {"failed", "paused"} and current_stage in EPISODE_RUNNABLE_STAGES:
+            return current_stage
+        if queued_from_stage in EPISODE_RUNNABLE_STAGES:
+            return queued_from_stage
+        if current_stage in EPISODE_RUNNABLE_STAGES:
+            return current_stage
+        return "consistency_guide"
+
+    def _next_runnable_stage(self, stage: str) -> str | None:
+        if stage not in EPISODE_RUNNABLE_STAGES:
+            return None
+        current_index = EPISODE_RUNNABLE_STAGES.index(stage)
+        next_index = current_index + 1
+        if next_index >= len(EPISODE_RUNNABLE_STAGES):
+            return None
+        return EPISODE_RUNNABLE_STAGES[next_index]
+
+    def _build_start_stage_blockers(self, episode: dict[str, Any], start_stage: str) -> list[dict[str, Any]]:
+        episode_id = episode["id"]
+        master_language = str(episode.get("master_language") or "en").strip() or "en"
+        configured_languages = self._parse_json_list(episode.get("configured_languages"))
+        language_statuses = {
+            status["language_code"]: status
+            for status in self.db.get_episode_language_statuses(episode_id)
+        }
+        blockers: list[dict[str, Any]] = []
+
+        if start_stage == "tts":
+            missing_scripts = [
+                language_code
+                for language_code in configured_languages
+                if language_code != master_language
+                and (
+                    str(language_statuses.get(language_code, {}).get("translation_status") or "").lower() != "done"
+                    or not self._path_exists(language_statuses.get(language_code, {}).get("script_path"))
+                )
+            ]
+            if missing_scripts:
+                blockers.append(self._queue_issue(
+                    "missing_translation_assets",
+                    (
+                        "Start from TTS requires translated scripts for "
+                        f"{self._language_list_text(missing_scripts)}."
+                    ),
+                    stage=start_stage,
+                ))
+
+        if start_stage == "alignment":
+            missing_alignment_inputs = [
+                language_code
+                for language_code in configured_languages
+                if not self._path_exists(language_statuses.get(language_code, {}).get("tts_audio_path"))
+                or not self._path_exists(language_statuses.get(language_code, {}).get("script_path"))
+            ]
+            if missing_alignment_inputs:
+                blockers.append(self._queue_issue(
+                    "missing_tts_assets",
+                    (
+                        "Start from alignment requires narration audio and script files for "
+                        f"{self._language_list_text(missing_alignment_inputs)}."
+                    ),
+                    stage=start_stage,
+                ))
+
+        if start_stage == "chunking":
+            master_status = language_statuses.get(master_language, {})
+            if not self._path_exists(master_status.get("srt_path")):
+                blockers.append(self._queue_issue(
+                    "missing_master_srt",
+                    "Start from chunking requires the master-language SRT from alignment.",
+                    stage=start_stage,
+                    language_code=master_language,
+                ))
+
+        if start_stage == "scene_planning" and not self._path_exists(episode.get("planning_manifest_path")):
+            blockers.append(self._queue_issue(
+                "missing_planning_manifest",
+                "Start from scene planning requires chunking output first.",
+                stage=start_stage,
+            ))
+
+        if start_stage in {"video_prompt_generation", "image_prompt_generation"}:
+            if not self._path_exists(episode.get("consistency_guide_path")):
+                blockers.append(self._queue_issue(
+                    "missing_consistency_guide",
+                    "Prompt generation requires a consistency guide first.",
+                    stage=start_stage,
+                ))
+            if not self._path_exists(episode.get("timeline_draft_path")):
+                blockers.append(self._queue_issue(
+                    "missing_timeline_draft",
+                    "Prompt generation requires a timeline draft first.",
+                    stage=start_stage,
+                ))
+
+        if start_stage == "timeline_mapping":
+            if not self._path_exists(episode.get("timeline_draft_path")):
+                blockers.append(self._queue_issue(
+                    "missing_timeline_draft",
+                    "Timeline mapping requires the master timeline draft first.",
+                    stage=start_stage,
+                ))
+            missing_timeline_inputs = [
+                language_code
+                for language_code in configured_languages
+                if not self._path_exists(language_statuses.get(language_code, {}).get("srt_path"))
+            ]
+            if missing_timeline_inputs:
+                blockers.append(self._queue_issue(
+                    "missing_srt_assets",
+                    (
+                        "Timeline mapping requires aligned SRT files for "
+                        f"{self._language_list_text(missing_timeline_inputs)}."
+                    ),
+                    stage=start_stage,
+                ))
+
+        return blockers
+
+    def _reset_episode_outputs_from_stage(self, episode_id: str, start_stage: str) -> None:
+        episode = self._hydrate_episode_record(self.db.get_episode(episode_id))
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        workspace = self._episode_workspace(episode)
+        master_language = str(episode.get("master_language") or "en").strip() or "en"
+        configured_languages = episode.get("configured_languages") or [master_language]
+        script_original_path = workspace / "script_original.txt"
+        if not script_original_path.exists():
+            write_text(script_original_path, episode.get("script_text") or "")
+
+        def reset_languages(*, include_languages: list[str], fields: dict[str, Any]) -> None:
+            for language_code in include_languages:
+                self.db.update_episode_language_status(
+                    episode_id,
+                    language_code,
+                    **(fields | {"error_message": None}),
+                )
+
+        episode_fields: dict[str, Any] = {
+            "review_ready": 0,
+            "last_error": None,
+            "pause_requested": 0,
+        }
+
+        if start_stage == "consistency_guide":
+            episode_fields.update({
+                "consistency_guide_path": None,
+                "visual_bible_validation_path": None,
+                "planning_manifest_path": None,
+                "timeline_draft_path": None,
+                "timeline_validation_path": None,
+                "prompt_list_draft_path": None,
+                "prompt_blueprint_path": None,
+                "prompt_validation_path": None,
+                "master_scenes_path": None,
+            })
+            reset_languages(
+                include_languages=configured_languages,
+                fields={"timeline_status": "pending", "timeline_path": None},
+            )
+        elif start_stage == "translation":
+            self.db.update_episode_language_status(
+                episode_id,
+                master_language,
+                translation_status="done",
+                script_path=str(script_original_path),
+                error_message=None,
+            )
+            reset_languages(
+                include_languages=[lang for lang in configured_languages if lang != master_language],
+                fields={
+                    "translation_status": "pending",
+                    "script_path": None,
+                    "tts_status": "pending",
+                    "tts_audio_path": None,
+                    "tts_job_id": None,
+                    "srt_status": "pending",
+                    "srt_path": None,
+                    "timeline_status": "pending",
+                    "timeline_path": None,
+                },
+            )
+        elif start_stage == "tts":
+            reset_languages(
+                include_languages=configured_languages,
+                fields={
+                    "tts_status": "pending",
+                    "tts_audio_path": None,
+                    "tts_job_id": None,
+                    "srt_status": "pending",
+                    "srt_path": None,
+                    "timeline_status": "pending",
+                    "timeline_path": None,
+                },
+            )
+        elif start_stage == "alignment":
+            reset_languages(
+                include_languages=configured_languages,
+                fields={
+                    "srt_status": "pending",
+                    "srt_path": None,
+                    "timeline_status": "pending",
+                    "timeline_path": None,
+                },
+            )
+        elif start_stage == "chunking":
+            episode_fields.update({
+                "planning_manifest_path": None,
+                "timeline_draft_path": None,
+                "timeline_validation_path": None,
+                "prompt_list_draft_path": None,
+                "prompt_blueprint_path": None,
+                "prompt_validation_path": None,
+                "master_scenes_path": None,
+            })
+            reset_languages(
+                include_languages=configured_languages,
+                fields={"timeline_status": "pending", "timeline_path": None},
+            )
+        elif start_stage == "scene_planning":
+            episode_fields.update({
+                "timeline_draft_path": None,
+                "timeline_validation_path": None,
+                "prompt_list_draft_path": None,
+                "prompt_blueprint_path": None,
+                "prompt_validation_path": None,
+                "master_scenes_path": None,
+            })
+            reset_languages(
+                include_languages=configured_languages,
+                fields={"timeline_status": "pending", "timeline_path": None},
+            )
+        elif start_stage in {"video_prompt_generation", "image_prompt_generation"}:
+            episode_fields.update({
+                "prompt_list_draft_path": None,
+                "prompt_blueprint_path": None,
+                "prompt_validation_path": None,
+            })
+        elif start_stage == "timeline_mapping":
+            reset_languages(
+                include_languages=configured_languages,
+                fields={"timeline_status": "pending", "timeline_path": None},
+            )
+
+        self.db.update_episode(episode_id, **episode_fields, updated_at=utc_now())
 
     @staticmethod
     def _queue_issue(
@@ -1855,11 +2115,20 @@ class Tool1Service:
             "worker_health": worker_health,
         }
 
-    def queue_episode(self, episode_id: str, start_stage: str | None = None) -> dict[str, Any]:
+    def queue_episode(
+        self,
+        episode_id: str,
+        start_stage: str | None = None,
+        *,
+        reset_outputs: bool = False,
+    ) -> dict[str, Any]:
         episode = self.db.get_episode(episode_id)
         if episode is None:
             raise FileNotFoundError("Episode not found.")
-        stage = start_stage or episode.get("queued_from_stage") or "consistency_guide"
+        episode = self._hydrate_episode_record(episode) or {}
+        if str(episode.get("pipeline_status") or "").lower() in {"queued", "running", "paused_for_tts"}:
+            raise ValueError("Episode workflow is already active. Pause it or wait for it to finish.")
+        stage = start_stage or self._default_episode_start_stage(episode)
         if stage not in EPISODE_RUNNABLE_STAGES:
             raise ValueError(f"Invalid start stage: {stage}")
         project = self._hydrate_project_record(self.db.get_niche_project(episode["niche_project_id"]))
@@ -1867,24 +2136,82 @@ class Tool1Service:
             project=project,
             episode=episode,
         )
+        stage_blockers = self._build_start_stage_blockers(episode, stage)
+        if stage_blockers:
+            queue_readiness = {
+                **queue_readiness,
+                "ok": False,
+                "blockers": [*(queue_readiness.get("blockers") or []), *stage_blockers],
+            }
         if not queue_readiness["ok"]:
             raise QueueBlockedError(
                 episode_id=episode_id,
                 start_stage=stage,
                 queue_readiness=queue_readiness,
             )
+        if reset_outputs:
+            self._reset_episode_outputs_from_stage(episode_id, stage)
         self.db.update_episode(
             episode_id,
             board_status="Queued",
             pipeline_status="queued",
             current_stage=stage,
             queued_from_stage=stage,
+            pause_requested=0,
             last_error=None,
             updated_at=utc_now(),
         )
         with self._condition:
             self._condition.notify()
-        return {"queued": True, "start_stage": stage}
+        return {"queued": True, "start_stage": stage, "reset_outputs": bool(reset_outputs)}
+
+    def pause_episode(self, episode_id: str) -> dict[str, Any]:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        episode = self._hydrate_episode_record(episode) or {}
+        pipeline_status = str(episode.get("pipeline_status") or "idle").lower()
+        resume_stage = self._default_episode_start_stage(episode)
+
+        if pipeline_status == "queued":
+            self.db.update_episode(
+                episode_id,
+                board_status="Paused",
+                pipeline_status="paused",
+                current_stage=resume_stage,
+                queued_from_stage=resume_stage,
+                pause_requested=0,
+                updated_at=utc_now(),
+            )
+            return {
+                "paused": True,
+                "pause_requested": False,
+                "resume_stage": resume_stage,
+                "message": f"Workflow paused before {resume_stage}.",
+            }
+
+        if pipeline_status in {"running", "paused_for_tts"}:
+            self.db.update_episode(
+                episode_id,
+                pause_requested=1,
+                updated_at=utc_now(),
+            )
+            return {
+                "paused": False,
+                "pause_requested": True,
+                "resume_stage": self._next_runnable_stage(str(episode.get("current_stage") or "")) or resume_stage,
+                "message": "Pause requested. The workflow will stop at the next safe boundary.",
+            }
+
+        if pipeline_status == "paused":
+            return {
+                "paused": True,
+                "pause_requested": False,
+                "resume_stage": resume_stage,
+                "message": f"Workflow already paused before {resume_stage}.",
+            }
+
+        raise ValueError("Episode workflow is not active.")
 
     def list_all_episodes_for_board(self) -> list[dict[str, Any]]:
         """Return all episodes with niche project title and per-language progress."""
@@ -2279,11 +2606,35 @@ class Tool1Service:
 
     # ── Episode pipeline processor ─────────────────────────────────────
 
+    def _pause_after_stage_if_requested(self, episode_id: str, completed_stage: str) -> bool:
+        episode = self._hydrate_episode_record(self.db.get_episode(episode_id))
+        if episode is None or not episode.get("pause_requested"):
+            return False
+        next_stage = self._next_runnable_stage(completed_stage)
+        if next_stage is None:
+            self.db.update_episode(episode_id, pause_requested=0, updated_at=utc_now())
+            return False
+        self.db.update_episode(
+            episode_id,
+            board_status="Paused",
+            pipeline_status="paused",
+            current_stage=next_stage,
+            queued_from_stage=next_stage,
+            pause_requested=0,
+            updated_at=utc_now(),
+        )
+        return True
+
     def _process_episode(self, episode: dict[str, Any]) -> None:
         """Process an episode through the unified TTS-first pipeline. All steps sequential."""
         episode_id = episode["id"]
-        start_stage = episode.get("queued_from_stage") or "consistency_guide"
-        self.db.update_episode(episode_id, board_status="Running", pipeline_status="running")
+        start_stage = self._default_episode_start_stage(episode)
+        self.db.update_episode(
+            episode_id,
+            board_status="Running",
+            pipeline_status="running",
+            pause_requested=0,
+        )
 
         stages = EPISODE_RUNNABLE_STAGES
         start_idx = stages.index(start_stage) if start_stage in stages else 0
@@ -2317,6 +2668,9 @@ class Tool1Service:
                 elif stage == "timeline_mapping":
                     self._episode_run_timeline_mapping(episode_id)
 
+                if self._pause_after_stage_if_requested(episode_id, stage):
+                    return
+
             # All stages complete
             self.db.update_episode(
                 episode_id,
@@ -2324,6 +2678,7 @@ class Tool1Service:
                 pipeline_status="review",
                 current_stage="review",
                 review_ready=1,
+                pause_requested=0,
                 updated_at=utc_now(),
             )
         except Exception as exc:
@@ -2332,6 +2687,7 @@ class Tool1Service:
                 board_status="Needs Attention",
                 pipeline_status="failed",
                 last_error=str(exc),
+                pause_requested=0,
                 updated_at=utc_now(),
             )
 
@@ -3179,14 +3535,28 @@ class Tool1Service:
                     board_status="Needs Attention",
                     pipeline_status="failed",
                     last_error="One or more TTS jobs failed.",
+                    pause_requested=0,
                 )
             elif all_tts_done:
-                # Resume pipeline at alignment
-                self.db.update_episode(
-                    episode_id,
-                    board_status="Queued",
-                    pipeline_status="queued",
-                    current_stage="alignment",
-                    queued_from_stage="alignment",
-                    updated_at=utc_now(),
-                )
+                refreshed_episode = self._hydrate_episode_record(self.db.get_episode(episode_id)) or {}
+                if refreshed_episode.get("pause_requested"):
+                    self.db.update_episode(
+                        episode_id,
+                        board_status="Paused",
+                        pipeline_status="paused",
+                        current_stage="alignment",
+                        queued_from_stage="alignment",
+                        pause_requested=0,
+                        updated_at=utc_now(),
+                    )
+                else:
+                    # Resume pipeline at alignment
+                    self.db.update_episode(
+                        episode_id,
+                        board_status="Queued",
+                        pipeline_status="queued",
+                        current_stage="alignment",
+                        queued_from_stage="alignment",
+                        pause_requested=0,
+                        updated_at=utc_now(),
+                    )

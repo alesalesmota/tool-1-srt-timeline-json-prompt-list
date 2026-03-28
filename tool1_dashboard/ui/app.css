@@ -2475,6 +2475,8 @@ details.editor-card summary::-webkit-details-marker {
   .translation-provider-grid { grid-template-columns: 1fr; }
   .translation-model-controls { grid-template-columns: 1fr; }
   .translation-model-list { grid-template-columns: 1fr; }
+  .workflow-control-grid { grid-template-columns: 1fr; }
+  .workflow-control-actions { align-items: stretch; }
 }
 
 /* ── Phase 6: Episode Board Enhancements ─────────────────────── */
@@ -2899,6 +2901,33 @@ details.editor-card summary::-webkit-details-marker {
 .queue-readiness-blocks {
   display: grid;
   gap: 6px;
+}
+
+.workflow-control-panel {
+  gap: 14px;
+}
+
+.workflow-control-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  align-items: end;
+}
+
+.workflow-stage-field {
+  margin: 0;
+}
+
+.workflow-control-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.workflow-control-helper {
+  margin: 0;
+  line-height: 1.45;
 }
 
 .project-config-grid {

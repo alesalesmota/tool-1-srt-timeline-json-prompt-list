@@ -16,6 +16,9 @@ const EPISODE_PIPELINE_COLUMNS = [
 ];
 const EPISODE_STAGE_LABELS = Object.fromEntries(EPISODE_PIPELINE_COLUMNS.map((c) => [c.id, c.label]));
 const EPISODE_PER_LANG_STAGES = ["translation", "tts", "alignment", "timeline_mapping"];
+const EPISODE_RUNNABLE_STAGE_IDS = EPISODE_PIPELINE_COLUMNS
+  .map((column) => column.id)
+  .filter((columnId) => !["draft", "review", "export", "needs_attention"].includes(columnId));
 
 const PROVIDERS = ["claude", "codex", "openai"];
 const DEFAULT_MODEL_CATALOG = {
@@ -133,6 +136,7 @@ const state = {
   boardEpisodes: [],
   episodeDetail: null,
   episodeWorkflowActions: {},
+  episodeWorkflowStageSelections: {},
   translationPreview: null,
   isLoadingRoute: false,
   isRefreshingData: false,
@@ -485,11 +489,36 @@ function updateEpisodeReferences(episodeId, updater) {
 }
 
 function episodeQueueStartStage(episode, explicitStage = null) {
-  return explicitStage || episode?.queued_from_stage || "consistency_guide";
+  if (explicitStage) return explicitStage;
+  const pipelineStatus = String(episode?.pipeline_status || "idle").toLowerCase();
+  const currentStage = String(episode?.current_stage || "").trim();
+  if (["failed", "paused"].includes(pipelineStatus) && EPISODE_RUNNABLE_STAGE_IDS.includes(currentStage)) {
+    return currentStage;
+  }
+  const queuedStage = String(episode?.queued_from_stage || "").trim();
+  if (EPISODE_RUNNABLE_STAGE_IDS.includes(queuedStage)) return queuedStage;
+  if (EPISODE_RUNNABLE_STAGE_IDS.includes(currentStage)) return currentStage;
+  return "consistency_guide";
 }
 
 function stageLabel(stage) {
   return EPISODE_STAGE_LABELS[stage] || titleCase(stage || "workflow");
+}
+
+function isWorkflowActiveStatus(status) {
+  return ["queued", "running", "paused_for_tts"].includes(String(status || "idle").toLowerCase());
+}
+
+function pauseRequestedCopy(episode) {
+  const pipelineStatus = String(episode?.pipeline_status || "idle").toLowerCase();
+  if (pipelineStatus === "paused_for_tts") {
+    return "Pause requested. The workflow will stop after narration finishes.";
+  }
+  const currentStage = stageLabel(episode?.current_stage || episodeDisplayStage(episode) || episodeQueueStartStage(episode));
+  if (pipelineStatus === "queued") {
+    return `Pause requested. The workflow will stop before ${currentStage}.`;
+  }
+  return `Pause requested. The workflow will stop after ${currentStage}.`;
 }
 
 function stageActivityLabel(stage) {
@@ -519,7 +548,7 @@ function episodeDisplayStage(episode) {
     if (EPISODE_PIPELINE_COLUMNS.some((column) => column.id === queuedStage)) return queuedStage;
   }
   if (EPISODE_PIPELINE_COLUMNS.some((column) => column.id === currentStage)) return currentStage;
-  if (["queued", "running", "paused_for_tts"].includes(pipelineStatus)) {
+  if (["queued", "running", "paused", "paused_for_tts"].includes(pipelineStatus)) {
     const queuedStage = episodeQueueStartStage(episode);
     if (EPISODE_PIPELINE_COLUMNS.some((column) => column.id === queuedStage)) return queuedStage;
   }
@@ -604,10 +633,12 @@ function episodeCardStatusTone(episode) {
   if (pipelineStatus === "failed") return "error";
   if (pipelineStatus === "review" || pipelineStatus === "done") return "success";
   if (pipelineStatus === "queued") return "warn";
+  if (pipelineStatus === "paused") return "warn";
   if (pipelineStatus === "paused_for_tts") {
     return activeTtsJob(episode)?.worker_active ? "active" : "warn";
   }
   if (pipelineStatus === "running") return "active";
+  if (episode?.pause_requested) return "warn";
   if (episode?.queue_readiness?.ok === false) return "warn";
   return "neutral";
 }
@@ -618,9 +649,11 @@ function episodeWorkflowStatusCopy(episode) {
   const displayStage = episodeDisplayStage(episode);
   const counts = perLanguageStageCounts(episode.language_statuses, displayStage);
   const liveTtsCopy = activeTtsJobCopy(activeTtsJob(episode));
+  if (episode.pause_requested && isWorkflowActiveStatus(pipelineStatus)) return pauseRequestedCopy(episode);
   if (pipelineStatus === "failed") return `Stopped in ${stageLabel(displayStage)}.`;
   if (pipelineStatus === "done") return "Export completed.";
   if (pipelineStatus === "review") return "Ready for review.";
+  if (pipelineStatus === "paused") return `Paused before ${stageLabel(displayStage)}.`;
   if (pipelineStatus === "paused_for_tts") {
     const baseCopy = counts?.total ? perLanguageStageSummary("tts", counts) : "Waiting for TTS jobs to finish.";
     return joinStatusCopy(baseCopy, liveTtsCopy);
@@ -680,6 +713,7 @@ function optimisticQueuedEpisodeRecord(episode, startStage) {
     pipeline_status: "queued",
     current_stage: startStage,
     queued_from_stage: startStage,
+    pause_requested: false,
     last_error: null,
     updated_at: new Date().toISOString(),
   };
@@ -1209,6 +1243,7 @@ function pipelineTone(status) {
   if (status === "completed" || status === "done") return "success";
   if (status === "failed" || status === "error") return "error";
   if (status === "queued") return "warn";
+  if (status === "paused") return "warn";
   if (status === "paused_for_tts") return "warn";
   return "neutral";
 }
@@ -2215,8 +2250,9 @@ function langProgressHtml(langStatuses, stage) {
 }
 
 function queueActionLabel(ep) {
-  if ((ep.pipeline_status || "idle") === "failed") return "Restart workflow";
-  if ((ep.pipeline_status || "idle") === "review") return "Restart workflow";
+  if ((ep.pipeline_status || "idle") === "paused") return "Resume workflow";
+  if ((ep.pipeline_status || "idle") === "failed") return "Resume workflow";
+  if ((ep.pipeline_status || "idle") === "review") return "Run again";
   if ((ep.pipeline_status || "idle") === "done") return "Run again";
   return "Start workflow";
 }
@@ -2226,31 +2262,34 @@ function readinessMessages(readiness, limit = 99) {
 }
 
 function queueActionPendingLabel(ep) {
-  if ((ep.pipeline_status || "idle") === "failed") return "Restarting workflow";
-  if ((ep.pipeline_status || "idle") === "review") return "Restarting workflow";
+  if ((ep.pipeline_status || "idle") === "paused") return "Resuming workflow";
+  if ((ep.pipeline_status || "idle") === "failed") return "Resuming workflow";
+  if ((ep.pipeline_status || "idle") === "review") return "Starting workflow again";
   if ((ep.pipeline_status || "idle") === "done") return "Starting workflow again";
   return "Starting workflow";
 }
 
 function queueActionPendingMessage(ep, startStage) {
   const startCopy = stageLabel(startStage);
-  if ((ep.pipeline_status || "idle") === "failed") return `Restarting the workflow from ${startCopy}.`;
-  if ((ep.pipeline_status || "idle") === "review") return `Restarting the workflow from ${startCopy}.`;
+  if ((ep.pipeline_status || "idle") === "paused") return `Resuming the workflow from ${startCopy}.`;
+  if ((ep.pipeline_status || "idle") === "failed") return `Resuming the workflow from ${startCopy}.`;
+  if ((ep.pipeline_status || "idle") === "review") return `Starting the workflow again from ${startCopy}.`;
   if ((ep.pipeline_status || "idle") === "done") return `Starting the workflow again from ${startCopy}.`;
   return `Starting the workflow from ${startCopy}.`;
 }
 
 function queueActionSuccessMessage(ep, startStage) {
   const startCopy = stageLabel(startStage);
-  if ((ep.pipeline_status || "idle") === "failed") return `Workflow restarted. Waiting for ${startCopy}.`;
-  if ((ep.pipeline_status || "idle") === "review") return `Workflow restarted. Waiting for ${startCopy}.`;
+  if ((ep.pipeline_status || "idle") === "paused") return `Workflow resumed. Waiting for ${startCopy}.`;
+  if ((ep.pipeline_status || "idle") === "failed") return `Workflow resumed. Waiting for ${startCopy}.`;
+  if ((ep.pipeline_status || "idle") === "review") return `Workflow started again. Waiting for ${startCopy}.`;
   if ((ep.pipeline_status || "idle") === "done") return `Workflow started again. Waiting for ${startCopy}.`;
   return `Workflow started. Waiting for ${startCopy}.`;
 }
 
 function queueActionReadyTitle(ep) {
   const label = queueActionLabel(ep);
-  if (label === "Restart workflow") return "Ready to restart";
+  if (label === "Resume workflow") return "Ready to resume";
   if (label === "Run again") return "Ready to run again";
   return "Ready to start";
 }
@@ -2292,7 +2331,31 @@ function reconcileEpisodeWorkflowActionStates() {
       }
       return;
     }
-    if (actionState.pending && !["queued", "running"].includes(status)) {
+    if (status === "paused") {
+      const pausedMessage = `Workflow paused. Ready to resume from ${stageLabel(episodeQueueStartStage(episode))}.`;
+      if (actionState.tone !== "warn" || actionState.message !== pausedMessage || actionState.pending) {
+        setEpisodeWorkflowActionState(episode.id, {
+          ...actionState,
+          pending: false,
+          tone: "warn",
+          message: pausedMessage,
+        });
+      }
+      return;
+    }
+    if (episode.pause_requested && isWorkflowActiveStatus(status)) {
+      const pauseMessage = pauseRequestedCopy(episode);
+      if (actionState.tone !== "warn" || actionState.message !== pauseMessage) {
+        setEpisodeWorkflowActionState(episode.id, {
+          ...actionState,
+          pending: false,
+          tone: "warn",
+          message: pauseMessage,
+        });
+      }
+      return;
+    }
+    if (actionState.pending && !["queued", "running", "paused_for_tts"].includes(status)) {
       setEpisodeWorkflowActionState(episode.id, {
         ...actionState,
         pending: false,
@@ -2306,6 +2369,8 @@ function queueActionStatusTooltip(ep) {
   const activeStage = stageLabel(episodeDisplayStage(ep) || ep.queued_from_stage || "consistency_guide");
   if (status === "queued") return `Workflow queued. Waiting for ${activeStage} to start.`;
   if (status === "running") return `Workflow running in ${activeStage}.`;
+  if (status === "paused") return `Workflow paused before ${activeStage}.`;
+  if (status === "paused_for_tts") return "Narration is still running. Pause will apply after TTS finishes.";
   return queueActionLabel(ep);
 }
 
@@ -2313,23 +2378,34 @@ function queueActionMeta(ep, readiness = ep.queue_readiness || { ok: true, block
   const actionState = episodeWorkflowActionState(ep.id);
   const status = ep.pipeline_status || "idle";
   const startStage = episodeQueueStartStage(ep);
-  const readyIcon = ["failed", "review", "done"].includes(status) ? "rerun" : "play";
+  const readyIcon = ["failed", "paused", "review", "done"].includes(status) ? "rerun" : "play";
   if (actionState?.pending) {
+    const isPauseAction = actionState.intent === "pause";
     return {
-      label: queueActionPendingLabel(ep),
-      tooltip: actionState.message || queueActionPendingMessage(ep, startStage),
+      label: isPauseAction ? "Pause requested" : queueActionPendingLabel(ep),
+      tooltip: actionState.message || (isPauseAction ? pauseRequestedCopy(ep) : queueActionPendingMessage(ep, startStage)),
       icon: "refresh",
       iconClass: "button-icon-spin",
       disabled: true,
       startStage,
     };
   }
-  if (status === "queued" || status === "running") {
+  if (ep.pause_requested && isWorkflowActiveStatus(status)) {
     return {
-      label: status === "running" ? "Workflow running" : "Workflow queued",
+      label: "Pause requested",
+      tooltip: pauseRequestedCopy(ep),
+      icon: "refresh",
+      iconClass: "button-icon-spin",
+      disabled: true,
+      startStage,
+    };
+  }
+  if (status === "queued" || status === "running" || status === "paused_for_tts") {
+    return {
+      label: status === "running" ? "Workflow running" : status === "paused_for_tts" ? "Narration running" : "Workflow queued",
       tooltip: queueActionStatusTooltip(ep),
       icon: "refresh",
-      iconClass: status === "running" ? "button-icon-spin" : "",
+      iconClass: ["running", "paused_for_tts"].includes(status) ? "button-icon-spin" : "",
       disabled: true,
       startStage,
     };
@@ -2410,6 +2486,102 @@ function renderEpisodeWorkflowNotice(episodeId) {
   const actionState = episodeWorkflowActionState(episodeId);
   if (!actionState?.message) return "";
   return `<div class="notice episode-workflow-feedback" data-tone="${esc(actionState.tone || "success")}">${esc(actionState.message)}</div>`;
+}
+
+function workflowStageSelectId(episodeId, surface = "detail") {
+  return domSafeId("workflow-stage", episodeId, surface);
+}
+
+function selectedWorkflowStage(episode) {
+  const episodeId = episode?.id;
+  if (episodeId && state.episodeWorkflowStageSelections?.[episodeId]) {
+    return state.episodeWorkflowStageSelections[episodeId];
+  }
+  return episodeQueueStartStage(episode);
+}
+
+function workflowStageOptions(selectedStage) {
+  return EPISODE_RUNNABLE_STAGE_IDS
+    .map((stageId) => `<option value="${esc(stageId)}" ${stageId === selectedStage ? "selected" : ""}>${esc(stageLabel(stageId))}</option>`)
+    .join("");
+}
+
+function workflowResumeButtonLabel(episode) {
+  const status = String(episode?.pipeline_status || "idle").toLowerCase();
+  if (status === "paused" || status === "failed") return "Resume from stop";
+  if (status === "review" || status === "done") return "Run again";
+  return "Start workflow";
+}
+
+function workflowSelectedStepButtonLabel(episode) {
+  const status = String(episode?.pipeline_status || "idle").toLowerCase();
+  if (status === "draft" || status === "idle") return "Start selected step";
+  return "Run selected step";
+}
+
+function renderEpisodeWorkflowControlPanel(
+  episode,
+  {
+    surface = "detail",
+    readiness = episode.queue_readiness || { ok: true, blockers: [], warnings: [] },
+  } = {},
+) {
+  const status = String(episode?.pipeline_status || "idle").toLowerCase();
+  const selectedStage = selectedWorkflowStage(episode);
+  const selectId = workflowStageSelectId(episode.id, surface);
+  const activeWorkflow = isWorkflowActiveStatus(status);
+  const tone = episode.pause_requested || activeWorkflow ? "warn" : readiness?.ok === false ? "error" : "success";
+  const startDisabled = activeWorkflow || readiness?.ok === false;
+  const selectedStepDisabled = activeWorkflow || readiness?.ok === false;
+  const pauseButton = activeWorkflow
+    ? `<button
+        type="button"
+        class="button button-ghost button-small"
+        data-pause-episode="${esc(episode.id)}"
+        ${episode.pause_requested ? "disabled" : ""}
+      >${esc(episode.pause_requested ? "Pause requested" : "Pause after current step")}</button>`
+    : "";
+  const helperCopy = activeWorkflow
+    ? (episode.pause_requested
+      ? pauseRequestedCopy(episode)
+      : status === "paused_for_tts"
+        ? "Narration is still running. A pause request will land before Alignment."
+        : "Pause stops at the next safe stage boundary so you can resume or rerun from a specific step.")
+    : "Selected step reruns that step and everything after it. Use it when you want to redo Translation, TTS, Consistency Guide, or a later stage.";
+
+  return `
+    <section class="project-readiness-panel workflow-control-panel" data-tone="${esc(tone)}">
+      <div class="project-readiness-head">
+        <span class="badge" data-tone="${esc(tone)}">Controls</span>
+        <strong>Workflow control</strong>
+      </div>
+      <div class="workflow-control-grid">
+        <label class="field workflow-stage-field">
+          <span class="field-label">Run from step</span>
+          <select id="${esc(selectId)}" data-workflow-stage-select="${esc(episode.id)}">${workflowStageOptions(selectedStage)}</select>
+        </label>
+        <div class="workflow-control-actions">
+          <button
+            type="button"
+            class="button button-primary button-small"
+            data-queue-episode="${esc(episode.id)}"
+            data-stage="${esc(selectedStage)}"
+            ${startDisabled ? "disabled" : ""}
+          >${esc(workflowResumeButtonLabel(episode))}</button>
+          <button
+            type="button"
+            class="button button-ghost button-small"
+            data-queue-episode="${esc(episode.id)}"
+            data-stage-select="${esc(selectId)}"
+            data-reset-outputs="true"
+            ${selectedStepDisabled ? "disabled" : ""}
+          >${esc(workflowSelectedStepButtonLabel(episode))}</button>
+          ${pauseButton}
+        </div>
+      </div>
+      <div class="helper workflow-control-helper">${esc(helperCopy)}</div>
+    </section>
+  `;
 }
 
 function renderReadinessNotice(readiness, { limit = 2, compact = false } = {}) {
@@ -2748,6 +2920,14 @@ function renderProviderConfigSection(project) {
 function workflowReadinessSectionOptions({ readiness, episode = null } = {}) {
   if (episode) {
     const status = episode.pipeline_status || "idle";
+    if (episode.pause_requested && isWorkflowActiveStatus(status)) {
+      return {
+        title: "Pause requested",
+        emptyCopy: pauseRequestedCopy(episode),
+        tone: "warn",
+        badgeLabel: "Pausing",
+      };
+    }
     if (status === "queued") {
       return {
         title: "Workflow in progress",
@@ -2762,6 +2942,22 @@ function workflowReadinessSectionOptions({ readiness, episode = null } = {}) {
         emptyCopy: queueActionStatusTooltip(episode),
         tone: "active",
         badgeLabel: "Running",
+      };
+    }
+    if (status === "paused_for_tts") {
+      return {
+        title: "Workflow in progress",
+        emptyCopy: "Narration is still running. Pause will apply after TTS finishes.",
+        tone: "warn",
+        badgeLabel: "TTS",
+      };
+    }
+    if (status === "paused") {
+      return {
+        title: "Workflow paused",
+        emptyCopy: `Ready to resume from ${stageLabel(episodeQueueStartStage(episode))}.`,
+        tone: "warn",
+        badgeLabel: "Paused",
       };
     }
     if (readiness?.ok === false) {
@@ -3156,6 +3352,7 @@ function renderEpisodeDetailOverlay() {
             ${episode.last_error ? '<div class="notice" data-tone="error">' + esc(episode.last_error) + '</div>' : ""}
             ${renderEpisodeWorkflowNotice(episode.id)}
             ${renderEpisodeWorkflowReadinessSection(episode, readiness)}
+            ${renderEpisodeWorkflowControlPanel(episode, { surface: "overlay", readiness })}
             <div class="board-modal-section">
               <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
                 <div class="eyebrow" style="margin:0;">Pipeline progress ${progressPct}%</div>
@@ -3327,6 +3524,7 @@ function renderEpisodeDetail() {
       </div>
 
       ${renderEpisodeWorkflowReadinessSection(episode, readiness)}
+      ${renderEpisodeWorkflowControlPanel(episode, { surface: "page", readiness })}
 
       <div class="surface" style="padding:16px;">
         <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -4071,12 +4269,21 @@ function closeEpisodeOverlay() {
   resetAutoRefresh();
 }
 
-async function triggerEpisodeWorkflowStart(episodeId, explicitStage = null) {
+async function triggerEpisodeWorkflowStart(episodeId, { explicitStage = null, resetOutputs = false } = {}) {
   const episode = findEpisodeReference(episodeId);
   const startStage = episodeQueueStartStage(episode, explicitStage);
   const pendingMessage = queueActionPendingMessage(episode || {}, startStage);
+  state.episodeWorkflowStageSelections = {
+    ...state.episodeWorkflowStageSelections,
+    [episodeId]: startStage,
+  };
   resetEpisodeSupplementalState(episodeId);
-  setEpisodeWorkflowActionState(episodeId, { pending: true, tone: "warn", message: pendingMessage });
+  setEpisodeWorkflowActionState(episodeId, {
+    intent: "start",
+    pending: true,
+    tone: "warn",
+    message: pendingMessage,
+  });
   if (episode) {
     applyOptimisticEpisodeWorkflowStart(episodeId, startStage);
   }
@@ -4086,7 +4293,10 @@ async function triggerEpisodeWorkflowStart(episodeId, explicitStage = null) {
     const result = await api(`/api/episodes/${encodeURIComponent(episodeId)}/queue`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ start_stage: explicitStage || null }),
+      body: JSON.stringify({
+        start_stage: explicitStage || null,
+        reset_outputs: Boolean(resetOutputs),
+      }),
     });
     await refreshData();
     const refreshedEpisode = findEpisodeReference(episodeId) || episode || {};
@@ -4095,7 +4305,12 @@ async function triggerEpisodeWorkflowStart(episodeId, explicitStage = null) {
       ? queueActionImmediateFailureMessage(refreshedEpisode, result.start_stage || startStage)
       : queueActionSuccessMessage(episode || refreshedEpisode, result.start_stage || startStage);
     const actionTone = immediateFailure ? "error" : "success";
-    setEpisodeWorkflowActionState(episodeId, { pending: false, tone: actionTone, message: actionMessage });
+    setEpisodeWorkflowActionState(episodeId, {
+      intent: "start",
+      pending: false,
+      tone: actionTone,
+      message: actionMessage,
+    });
     renderApp();
     setNotice(immediateFailure ? refreshedEpisode.last_error : actionMessage, actionTone);
   } catch (error) {
@@ -4105,12 +4320,61 @@ async function triggerEpisodeWorkflowStart(episodeId, explicitStage = null) {
       console.error(refreshError);
     }
     setEpisodeWorkflowActionState(episodeId, {
+      intent: "start",
       pending: false,
       tone: "error",
       message: error.message || "Could not start the workflow.",
     });
     renderApp();
     setNotice(error.message || "Could not start the workflow.", "error");
+  }
+}
+
+async function requestEpisodeWorkflowPause(episodeId) {
+  const episode = findEpisodeReference(episodeId);
+  const pendingMessage = pauseRequestedCopy(episode || {});
+  setEpisodeWorkflowActionState(episodeId, {
+    intent: "pause",
+    pending: true,
+    tone: "warn",
+    message: pendingMessage,
+  });
+  renderApp();
+  syncAutoRefreshInterval();
+  try {
+    const result = await api(`/api/episodes/${encodeURIComponent(episodeId)}/pause`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    await refreshData();
+    const refreshedEpisode = findEpisodeReference(episodeId) || episode || {};
+    const finalMessage = refreshedEpisode.pipeline_status === "paused"
+      ? `Workflow paused. Ready to resume from ${stageLabel(episodeQueueStartStage(refreshedEpisode))}.`
+      : (result.message || pauseRequestedCopy(refreshedEpisode || episode || {}));
+    const finalTone = refreshedEpisode.pipeline_status === "paused" ? "warn" : "warn";
+    setEpisodeWorkflowActionState(episodeId, {
+      intent: "pause",
+      pending: false,
+      tone: finalTone,
+      message: finalMessage,
+    });
+    renderApp();
+    setNotice(finalMessage, finalTone);
+  } catch (error) {
+    try {
+      await refreshData();
+    } catch (refreshError) {
+      console.error(refreshError);
+    }
+    setEpisodeWorkflowActionState(episodeId, {
+      intent: "pause",
+      pending: false,
+      tone: "error",
+      message: error.message || "Could not pause the workflow.",
+    });
+    renderApp();
+    setNotice(error.message || "Could not pause the workflow.", "error");
   }
 }
 
@@ -4494,7 +4758,7 @@ document.addEventListener("click", async (event) => {
     closeEpisodeOverlay();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-stage-provider-openai-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export], [data-project-config-toggle]");
+  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-stage-provider-openai-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-pause-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export], [data-project-config-toggle]");
   if (!target) return;
   event.preventDefault();
   try {
@@ -4651,7 +4915,18 @@ document.addEventListener("click", async (event) => {
     }
     if (target.dataset.queueEpisode) {
       target.disabled = true;
-      await triggerEpisodeWorkflowStart(target.dataset.queueEpisode, target.dataset.stage || null);
+      const selectedStage = target.dataset.stageSelect
+        ? document.getElementById(target.dataset.stageSelect)?.value || target.dataset.stage || null
+        : target.dataset.stage || null;
+      await triggerEpisodeWorkflowStart(target.dataset.queueEpisode, {
+        explicitStage: selectedStage,
+        resetOutputs: target.dataset.resetOutputs === "true",
+      });
+      return;
+    }
+    if (target.dataset.pauseEpisode) {
+      target.disabled = true;
+      await requestEpisodeWorkflowPause(target.dataset.pauseEpisode);
       return;
     }
     if (target.dataset.deleteEpisode) {
@@ -4885,6 +5160,13 @@ document.addEventListener("input", (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  if (event.target.dataset.workflowStageSelect) {
+    state.episodeWorkflowStageSelections = {
+      ...state.episodeWorkflowStageSelections,
+      [event.target.dataset.workflowStageSelect]: event.target.value,
+    };
+    return;
+  }
   if (event.target.id === "tp-model-sort") {
     captureTranslationProfileEditorDraft();
     refreshTranslationProfileEditorDom();

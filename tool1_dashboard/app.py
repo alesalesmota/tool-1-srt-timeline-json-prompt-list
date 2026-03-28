@@ -128,6 +128,11 @@ class EpisodeSubmitRequest(BaseModel):
 
 class EpisodeQueueRequest(BaseModel):
     start_stage: str | None = None
+    reset_outputs: bool = False
+
+
+class EpisodePauseRequest(BaseModel):
+    pass
 
 
 class LanguageRetryRequest(BaseModel):
@@ -339,11 +344,25 @@ async def episode_detail(episode_id: str) -> dict[str, Any]:
 @app.post("/api/episodes/{episode_id}/queue")
 async def queue_episode(episode_id: str, payload: EpisodeQueueRequest) -> dict[str, Any]:
     try:
-        return service.queue_episode(episode_id, payload.start_stage)
+        return service.queue_episode(
+            episode_id,
+            payload.start_stage,
+            reset_outputs=payload.reset_outputs,
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except QueueBlockedError as exc:
         raise HTTPException(status_code=400, detail=exc.to_detail()) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/episodes/{episode_id}/pause")
+async def pause_episode(episode_id: str, payload: EpisodePauseRequest | None = None) -> dict[str, Any]:
+    try:
+        return service.pause_episode(episode_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

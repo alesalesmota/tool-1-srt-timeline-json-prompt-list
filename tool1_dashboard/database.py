@@ -81,6 +81,7 @@ class Tool1Database:
                 pipeline_status TEXT NOT NULL DEFAULT 'idle',
                 current_stage TEXT NOT NULL DEFAULT 'draft',
                 queued_from_stage TEXT NOT NULL DEFAULT 'consistency_guide',
+                pause_requested INTEGER NOT NULL DEFAULT 0,
                 master_language TEXT NOT NULL DEFAULT 'en',
                 configured_languages TEXT NOT NULL DEFAULT '[]',
                 consistency_guide_path TEXT,
@@ -233,6 +234,11 @@ class Tool1Database:
                 connection,
                 "voice_profiles",
                 {"tts_config_json": "TEXT NOT NULL DEFAULT ''"},
+            )
+            self._ensure_columns(
+                connection,
+                "episodes",
+                {"pause_requested": "INTEGER NOT NULL DEFAULT 0"},
             )
             # Create index after ensuring column exists
             connection.execute(
