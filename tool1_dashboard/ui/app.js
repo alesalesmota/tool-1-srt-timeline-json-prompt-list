@@ -2207,7 +2207,7 @@ function renderEpisodeCard(ep, options = {}) {
       ${renderReadinessWarning(queueReadiness)}
       <div class="episode-card-footer">
         <span class="helper" style="font-size:0.7rem;opacity:0.5;">${esc(relativeTime(ep.updated_at))}</span>
-        <div class="episode-quick-actions" onclick="event.stopPropagation()">
+        <div class="episode-quick-actions">
           ${queueButton}
           ${renderEpisodeDeleteActionButton(ep.id, { className: "button-tiny episode-card-action" })}
         </div>
@@ -2565,6 +2565,130 @@ function renderEpisodeWorkflowReadinessSection(episode, readiness) {
   return renderQueueReadinessSection(readiness, workflowReadinessSectionOptions({ readiness, episode }));
 }
 
+function parseStageRunCommandPayload(run) {
+  if (!run?.command_json) return null;
+  if (typeof run.command_json === "object") return run.command_json;
+  try {
+    return JSON.parse(run.command_json);
+  } catch {
+    return null;
+  }
+}
+
+function stageRunDurationLabel(run) {
+  if (!run?.started_at) return "";
+  if (run.finished_at) {
+    return Math.round((new Date(run.finished_at) - new Date(run.started_at)) / 1000) + "s";
+  }
+  return "running…";
+}
+
+function stageRunPathLabel(path, segments = 4) {
+  const normalized = String(path || "").trim().replaceAll("\\", "/");
+  if (!normalized) return "";
+  const parts = normalized.split("/").filter(Boolean);
+  return parts.length > segments ? `.../${parts.slice(-segments).join("/")}` : normalized;
+}
+
+function stageRunCapturedOutput(run) {
+  const stdout = String(run?.stdout_preview || "").trim();
+  const stderr = String(run?.stderr_preview || "").trim();
+  if (stdout && stderr) return `$ stderr\n${stderr}\n\n$ stdout\n${stdout}`;
+  return stderr || stdout || "";
+}
+
+function stageRunSnapshotOutput(run, payload = null) {
+  const commandPayload = payload || parseStageRunCommandPayload(run);
+  const lines = [];
+  lines.push(`stage: ${stageLabel(run?.stage || "workflow")}`);
+  lines.push(`status: ${titleCase(run?.status || "unknown")}`);
+  if (run?.provider) lines.push(`provider: ${providerLabel(run.provider)}`);
+  if (commandPayload?.model) lines.push(`model: ${commandPayload.model}`);
+  const workdir = commandPayload?.workdir || run?.workdir;
+  if (workdir) lines.push(`workdir: ${stageRunPathLabel(workdir, 5)}`);
+  if (commandPayload?.artifact_dir) lines.push(`artifacts: ${stageRunPathLabel(commandPayload.artifact_dir, 5)}`);
+  if (Array.isArray(commandPayload?.schema_keys) && commandPayload.schema_keys.length) {
+    lines.push(`schema: ${commandPayload.schema_keys.join(", ")}`);
+  }
+  if (Array.isArray(commandPayload?.command) && commandPayload.command.length) {
+    lines.push(`command: ${commandPayload.command.join(" ")}`);
+  } else if (run?.status === "running") {
+    lines.push("Waiting for CLI output. The provider request is still active.");
+  }
+  return lines.join("\n");
+}
+
+function stageRunTerminalOutput(run, payload = null) {
+  return stageRunCapturedOutput(run) || stageRunSnapshotOutput(run, payload);
+}
+
+function primaryStageRun(stageRuns) {
+  if (!Array.isArray(stageRuns) || !stageRuns.length) return null;
+  return stageRuns.find((run) => run.status === "running") || stageRuns[0];
+}
+
+function renderStageRunActivityPanel(stageRuns) {
+  const run = primaryStageRun(stageRuns);
+  if (!run) return "";
+  const payload = parseStageRunCommandPayload(run);
+  const duration = stageRunDurationLabel(run);
+  const isRunning = run.status === "running";
+  const hasCapturedOutput = Boolean(stageRunCapturedOutput(run));
+  return `
+    <div class="board-modal-section live-run-section">
+      <div class="section-header" style="margin-bottom:12px;">
+        <div class="eyebrow" style="margin:0;">${isRunning ? "Live activity" : "Latest activity"}</div>
+        <div class="badge-row" style="margin:0;">
+          <span class="badge badge-${toneFromRunStatus(run.status)}">${esc(titleCase(run.status || "unknown"))}</span>
+          <span class="badge">${esc(stageLabel(run.stage || "workflow"))}</span>
+          ${run.provider ? '<span class="badge badge-small">' + esc(providerLabel(run.provider)) + '</span>' : ""}
+          ${payload?.model ? '<span class="badge badge-small">' + esc(payload.model) + '</span>' : ""}
+          ${duration ? '<span class="helper live-run-duration">' + esc(duration) + '</span>' : ""}
+        </div>
+      </div>
+      <div class="helper live-run-copy">
+        ${esc(
+          isRunning
+            ? `${stageLabel(run.stage || "workflow")} is still running in the background.`
+            : `${stageLabel(run.stage || "workflow")} ${String(run.status || "completed").toLowerCase()} ${relativeTime(run.finished_at || run.started_at)}.`
+        )}
+      </div>
+      ${!hasCapturedOutput ? '<div class="run-hint">No CLI output preview yet. Showing the active run snapshot so you can verify what is executing.</div>' : ""}
+      <pre class="run-output run-output-live">${esc(stageRunTerminalOutput(run, payload))}</pre>
+    </div>
+  `;
+}
+
+function renderStageRunCards(stageRuns, { limit = 30 } = {}) {
+  if (!Array.isArray(stageRuns) || !stageRuns.length) {
+    return '<p class="helper">No stage runs recorded yet.</p>';
+  }
+  return stageRuns.slice(0, limit).map((run) => {
+    const payload = parseStageRunCommandPayload(run);
+    const duration = stageRunDurationLabel(run);
+    const hasCapturedOutput = Boolean(stageRunCapturedOutput(run));
+    const shouldOpen = run.status === "running" || run.status === "failed";
+    return `<details class="run-detail-card"${shouldOpen ? " open" : ""}>
+      <summary>
+        <div class="run-detail-head">
+          <span class="badge badge-${toneFromRunStatus(run.status)}">${esc(run.stage || "?")}</span>
+          <span class="badge">${esc(run.status || "?")}</span>
+          ${run.provider ? '<span class="badge badge-small">' + esc(providerLabel(run.provider)) + '</span>' : ''}
+          ${payload?.model ? '<span class="badge badge-small">' + esc(payload.model) + '</span>' : ''}
+          ${run.language_code ? '<span class="badge badge-small">' + esc(run.language_code) + '</span>' : ''}
+          ${duration ? '<span class="helper" style="font-size:0.75rem;">' + esc(duration) + '</span>' : ''}
+          <span class="helper" style="font-size:0.75rem;margin-left:auto;">${esc(relativeTime(run.started_at))}</span>
+        </div>
+      </summary>
+      <div class="run-detail-body">
+        ${run.error_message ? '<div class="notice" data-tone="error" style="margin-top:6px;font-size:0.8rem;">' + esc(run.error_message) + '</div>' : ''}
+        ${!hasCapturedOutput ? '<div class="run-meta" style="margin-top:6px;">Showing the run snapshot because no CLI output preview is available yet.</div>' : ''}
+        <pre class="run-output">${esc(stageRunTerminalOutput(run, payload))}</pre>
+      </div>
+    </details>`;
+  }).join("");
+}
+
 function renderColumnHeading(col) {
   const label = esc(col.label);
   if (!col.copy) {
@@ -2691,7 +2815,7 @@ function renderEpisodeDetailOverlay() {
     if (!state.isLoadingRoute) return "";
     return `
       <div class="board-modal-backdrop" data-episode-overlay-backdrop="true">
-        <div class="board-modal-shell" onclick="event.stopPropagation()">
+        <div class="board-modal-shell">
           <div class="board-modal-head">
             <div>
               <h2 style="margin:0;">Loading episode</h2>
@@ -2749,31 +2873,12 @@ function renderEpisodeDetailOverlay() {
       '<td class="helper" style="font-size:0.75rem;">' + esc(ls.error_message || "") + '</td>' +
     '</tr>';
   }).join("");
-  const runsHtml = stageRuns.length ? stageRuns.slice(0, 30).map((r) => {
-    const duration = r.started_at && r.finished_at
-      ? Math.round((new Date(r.finished_at) - new Date(r.started_at)) / 1000) + "s"
-      : r.started_at && !r.finished_at ? "running…" : "";
-    return `<details class="run-detail-card">
-      <summary>
-        <div class="run-detail-head">
-          <span class="badge badge-${toneFromRunStatus(r.status)}">${esc(r.stage || "?")}</span>
-          <span class="badge">${esc(r.status || "?")}</span>
-          ${r.provider ? '<span class="badge badge-small">' + esc(r.provider) + '</span>' : ''}
-          ${duration ? '<span class="helper" style="font-size:0.75rem;">' + esc(duration) + '</span>' : ''}
-          <span class="helper" style="font-size:0.75rem;margin-left:auto;">${esc(relativeTime(r.started_at))}</span>
-        </div>
-      </summary>
-      <div class="run-detail-body">
-        ${r.error_message ? '<div class="notice" data-tone="error" style="margin-top:6px;font-size:0.8rem;">' + esc(r.error_message) + '</div>' : ''}
-        ${r.stdout_preview ? '<pre class="run-output">' + esc(r.stdout_preview) + '</pre>' : ''}
-        ${r.stderr_preview ? '<pre class="run-output">' + esc(r.stderr_preview) + '</pre>' : ''}
-      </div>
-    </details>`;
-  }).join("") : '<p class="helper">No stage runs recorded yet.</p>';
+  const liveRunHtml = renderStageRunActivityPanel(stageRuns);
+  const runsHtml = renderStageRunCards(stageRuns);
 
   return `
     <div class="board-modal-backdrop" data-episode-overlay-backdrop="true">
-      <div class="board-modal-shell" onclick="event.stopPropagation()">
+      <div class="board-modal-shell">
         <div class="board-modal-head">
           <div>
             <h2 style="margin:0;">${esc(episode.title || episode.id)}</h2>
@@ -2804,6 +2909,7 @@ function renderEpisodeDetailOverlay() {
               </div>
               <div class="stage-strip" style="margin-top:12px;">${stageStrip}</div>
             </div>
+            ${liveRunHtml}
             <div class="board-modal-section">
               <div class="section-header" style="margin-bottom:12px;">
                 <div class="eyebrow" style="margin:0;">Per-language status</div>
@@ -2919,27 +3025,8 @@ function renderEpisodeDetail() {
     </table>` : '<p class="helper">No language data.</p>';
 
   // Stage runs — expandable detail cards
-  const runsHtml = stageRuns.length ? stageRuns.slice(0, 30).map((r) => {
-    const duration = r.started_at && r.finished_at
-      ? Math.round((new Date(r.finished_at) - new Date(r.started_at)) / 1000) + "s"
-      : r.started_at && !r.finished_at ? "running…" : "";
-    return `<details class="run-detail-card">
-      <summary>
-        <div class="run-detail-head">
-          <span class="badge badge-${toneFromRunStatus(r.status)}">${esc(r.stage || "?")}</span>
-          <span class="badge">${esc(r.status || "?")}</span>
-          ${r.language_code ? '<span class="badge badge-small">' + esc(r.language_code) + '</span>' : ''}
-          ${duration ? '<span class="helper" style="font-size:0.75rem;">' + esc(duration) + '</span>' : ''}
-          <span class="helper" style="font-size:0.75rem;margin-left:auto;">${esc(relativeTime(r.started_at))}</span>
-        </div>
-      </summary>
-      <div class="run-detail-body">
-        ${r.provider ? '<div class="run-meta">Provider: <strong>' + esc(r.provider) + '</strong></div>' : ''}
-        ${r.error_message ? '<div class="notice" data-tone="error" style="margin-top:6px;font-size:0.8rem;">' + esc(r.error_message) + '</div>' : ''}
-        ${r.stdout_preview ? '<pre class="run-output">' + esc(r.stdout_preview) + '</pre>' : ''}
-      </div>
-    </details>`;
-  }).join("") : '<p class="helper">No stage runs recorded yet.</p>';
+  const liveRunHtml = renderStageRunActivityPanel(stageRuns);
+  const runsHtml = renderStageRunCards(stageRuns);
 
   const isRunning = episode.pipeline_status === "running";
   const queueActionButton = renderEpisodeWorkflowActionButton(episode, { className: "episode-detail-action", readiness });
@@ -2989,6 +3076,8 @@ function renderEpisodeDetail() {
         </div>
         <div class="stage-strip" style="margin-top:12px;">${stageStrip}</div>
       </div>
+
+      ${liveRunHtml}
 
       <div class="surface" style="padding:16px;">
         <div class="section-header" style="margin-bottom:12px;">

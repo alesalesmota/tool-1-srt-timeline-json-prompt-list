@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 18 | **To Do**: 2 | **Doing**: 0 | **Done**: 16
+**Total**: 18 | **To Do**: 0 | **Doing**: 0 | **Done**: 18
 
 ## Tasks
 
@@ -26,10 +26,10 @@
 14. [x] Background Container – "i pressed play, the feed back was to slow, and there shou..." `section.kanban-column.project-kanban-column:nth-child(1) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
 15. [x] Background Container – "when i scrool down on this section it auto goes back, lea..." `div.board-modal-shell > div.board-modal-layout:nth-child(2) > div.board-modal-main`
 16. [x] Background Container – "this card in on consistency guide, but its stats is talki..." `section.kanban-column.project-kanban-column:nth-child(2) > div.kanban-card-list:nth-child(2) > div.episode-card.surface:nth-child(1)`
-17. [ ] Background Container – "this card is stuck on consistency guide, but when i open ..." `div.board-modal-backdrop > div.board-modal-shell`
-18. [ ] Button: Close – "clicking its not working" `div.board-modal-backdrop > div.board-modal-shell > div.board-modal-head:nth-child(1) > button:nth-of-type(1)`
+17. [x] Background Container – "this card is stuck on consistency guide, but when i open ..." `div.board-modal-backdrop > div.board-modal-shell`
+18. [x] Button: Close – "clicking its not working" `div.board-modal-backdrop > div.board-modal-shell > div.board-modal-head:nth-child(1) > button:nth-of-type(1)`
 
 ---
 
-_Generated: 27/03/2026, 21:18:16_
+_Generated: 27/03/2026, 21:42:42_
 _Source: moat-tasks-detail.json_

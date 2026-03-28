@@ -2684,6 +2684,33 @@ details.editor-card summary::-webkit-details-marker {
   border-radius: 8px;
   background: var(--panel-strong);
   min-height: unset;
+  font-family: var(--font-mono);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.live-run-section {
+  gap: 12px;
+}
+
+.live-run-copy {
+  margin: 0 0 10px;
+}
+
+.live-run-duration {
+  margin-left: 4px;
+}
+
+.run-hint {
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.run-output-live {
+  min-height: 120px;
 }
 
 /* ── Phase 7: Niche Project Detail Enhancement ── */
