@@ -594,6 +594,89 @@ class Tool1Service:
             "warnings": warnings,
         }
 
+    @staticmethod
+    def _parse_tts_job_chunk_progress(progress: Any) -> tuple[int | None, int | None]:
+        text = " ".join(str(progress or "").split())
+        if not text:
+            return None, None
+        match = re.search(r"chunk\s+(\d+)\s*/\s*(\d+)", text, flags=re.IGNORECASE)
+        if not match:
+            return None, None
+        return int(match.group(1)), int(match.group(2))
+
+    def _build_tts_job_client_payload(self, job: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(job or {})
+        parsed_payload = self._parse_json_dict(payload.get("payload_json"))
+        texts = parsed_payload.get("texts")
+        total_chunks = len(texts) if isinstance(texts, list) else None
+        current_chunk, parsed_total = self._parse_tts_job_chunk_progress(payload.get("progress"))
+        if parsed_total:
+            total_chunks = parsed_total
+
+        status = str(payload.get("status") or "").strip().lower()
+        if status == "completed" and total_chunks and current_chunk is None:
+            current_chunk = total_chunks
+
+        percent = None
+        if total_chunks and current_chunk:
+            percent = max(0, min(100, round((current_chunk / total_chunks) * 100)))
+
+        return {
+            "job_id": payload.get("job_id"),
+            "status": status or None,
+            "progress": str(payload.get("progress") or "").strip() or None,
+            "current_chunk": current_chunk,
+            "total_chunks": total_chunks,
+            "percent": int(percent) if percent is not None else None,
+            "updated_at": payload.get("updated_at"),
+            "finished_at": payload.get("finished_at"),
+        }
+
+    def _decorate_language_statuses_with_tts(
+        self,
+        language_statuses: list[dict[str, Any]],
+        *,
+        worker_health: dict[str, Any] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        active_job: dict[str, Any] | None = None
+        active_worker_job_id = str((worker_health or {}).get("current_job_id") or "").strip()
+        active_worker_processing = str((worker_health or {}).get("status") or "").strip().lower() == "processing"
+
+        enriched_statuses: list[dict[str, Any]] = []
+        for lang_status in language_statuses:
+            payload = dict(lang_status)
+            job_id = str(payload.get("tts_job_id") or "").strip()
+            if not job_id:
+                enriched_statuses.append(payload)
+                continue
+
+            job = self.db.get_tts_job(job_id)
+            if not job:
+                enriched_statuses.append(payload)
+                continue
+
+            job_payload = self._build_tts_job_client_payload(job)
+            payload["tts_job_status"] = job_payload.get("status")
+            payload["tts_job_progress"] = job_payload.get("progress")
+            payload["tts_job_current_chunk"] = job_payload.get("current_chunk")
+            payload["tts_job_total_chunks"] = job_payload.get("total_chunks")
+            payload["tts_job_percent"] = job_payload.get("percent")
+            payload["tts_job_updated_at"] = job_payload.get("updated_at")
+            payload["tts_job_finished_at"] = job_payload.get("finished_at")
+
+            if job_payload.get("status") in {"queued", "processing"}:
+                candidate = {
+                    **job_payload,
+                    "language_code": payload.get("language_code"),
+                    "worker_active": active_worker_processing and active_worker_job_id == job_id,
+                }
+                if active_job is None or (candidate["worker_active"] and not active_job.get("worker_active")):
+                    active_job = candidate
+
+            enriched_statuses.append(payload)
+
+        return enriched_statuses, active_job
+
     def _decorate_episode_for_client(
         self,
         episode: dict[str, Any],
@@ -603,6 +686,7 @@ class Tool1Service:
         voice_profiles: dict[str, dict[str, Any]] | None = None,
         translation_profiles: dict[str, dict[str, Any]] | None = None,
         worker_health: dict[str, Any] | None = None,
+        active_tts_job: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = self._hydrate_episode_record(episode) or {}
         payload["queue_readiness"] = self._build_queue_readiness(
@@ -613,6 +697,7 @@ class Tool1Service:
             translation_profiles=translation_profiles,
             worker_health=worker_health,
         )
+        payload["active_tts_job"] = active_tts_job
         return payload
 
     def _decorate_stage_run_for_client(self, run: dict[str, Any]) -> dict[str, Any]:
@@ -1734,7 +1819,11 @@ class Tool1Service:
         episode = self.db.get_episode(episode_id)
         if episode is None:
             raise FileNotFoundError("Episode not found.")
-        lang_statuses = self.db.get_episode_language_statuses(episode_id)
+        worker_health = self.get_worker_health()
+        lang_statuses, active_tts_job = self._decorate_language_statuses_with_tts(
+            self.db.get_episode_language_statuses(episode_id),
+            worker_health=worker_health,
+        )
         stage_runs = [
             self._decorate_stage_run_for_client(run)
             for run in self.db.list_stage_runs(episode_id)
@@ -1749,18 +1838,6 @@ class Tool1Service:
             profile["id"]: profile
             for profile in self.list_translation_profiles()
         }
-
-        # Attach TTS job progress for each language with an active TTS job
-        for ls in lang_statuses:
-            tts_job_id = ls.get("tts_job_id")
-            if tts_job_id and ls.get("tts_status") in ("running", "pending"):
-                job = self.db.get_tts_job(tts_job_id)
-                if job:
-                    ls["tts_job_status"] = job.get("status")
-                    ls["tts_job_progress"] = job.get("progress")
-
-        # Include worker health
-        worker_health = self.get_worker_health()
         hydrated_episode = self._decorate_episode_for_client(
             episode,
             project=project,
@@ -1768,6 +1845,7 @@ class Tool1Service:
             voice_profiles=voice_profiles,
             translation_profiles=translation_profiles,
             worker_health=worker_health,
+            active_tts_job=active_tts_job,
         )
 
         return {
@@ -1824,7 +1902,10 @@ class Tool1Service:
         project_cache: dict[str, dict[str, Any] | None] = {}
         for ep in episodes:
             ep["configured_languages"] = self._parse_json_list(ep.get("configured_languages"))
-            lang_statuses = self.db.get_episode_language_statuses(ep["id"])
+            lang_statuses, active_tts_job = self._decorate_language_statuses_with_tts(
+                self.db.get_episode_language_statuses(ep["id"]),
+                worker_health=worker_health,
+            )
             ep["language_statuses"] = lang_statuses
             project_id = ep.get("niche_project_id")
             if project_id not in project_cache:
@@ -1836,6 +1917,7 @@ class Tool1Service:
                 voice_profiles=voice_profiles,
                 translation_profiles=translation_profiles,
                 worker_health=worker_health,
+                active_tts_job=active_tts_job,
             )
             ep.update(decorated)
         return episodes

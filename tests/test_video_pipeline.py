@@ -1437,6 +1437,87 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertEqual(payload["tts_config"]["chunk_max_chars"], 120)
                 self.assertEqual(payload["tts_config"]["silence_gap_seconds"], 0.18)
 
+    def test_episode_detail_and_board_include_live_tts_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                voice_profiles, _ = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    ["en"],
+                    master_language="en",
+                    include_translation_for=[],
+                )
+                profile_id = voice_profiles["en"]
+                project = service.create_niche_project(
+                    name="TTS Visibility",
+                    master_language="en",
+                    configured_languages=["en"],
+                    language_voice_profiles=voice_profiles,
+                )
+                episode = service.submit_episode(
+                    project["project"]["id"],
+                    title="Live TTS",
+                    script_text="Alpha beta gamma delta.",
+                )["episode"]
+                episode_id = episode["id"]
+
+                now = utc_now()
+                service.db.update_episode(
+                    episode_id,
+                    board_status="Running",
+                    pipeline_status="paused_for_tts",
+                    current_stage="tts",
+                    updated_at=now,
+                )
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "en",
+                    tts_status="running",
+                    tts_job_id="tts-job-live",
+                )
+                service.db.create_tts_job({
+                    "job_id": "tts-job-live",
+                    "build_id": episode_id,
+                    "job_type": "generate",
+                    "profile_id": profile_id,
+                    "status": "processing",
+                    "progress": "Generating chunk 2/4...",
+                    "result_path": None,
+                    "filename": "narration_en.wav",
+                    "payload_json": json.dumps({
+                        "texts": ["one", "two", "three", "four"],
+                        "chunked": True,
+                    }),
+                    "meta_json": "{}",
+                    "queue_priority": 10,
+                    "worker_id": "worker-live",
+                    "control_action": None,
+                    "error_message": None,
+                    "created_at": 10.0,
+                    "updated_at": 20.0,
+                    "finished_at": None,
+                })
+
+                detail = service.get_episode_detail(episode_id)
+                lang_status = detail["language_statuses"][0]
+                self.assertEqual(lang_status["tts_job_status"], "processing")
+                self.assertEqual(lang_status["tts_job_current_chunk"], 2)
+                self.assertEqual(lang_status["tts_job_total_chunks"], 4)
+                self.assertEqual(lang_status["tts_job_percent"], 50)
+
+                active_job = detail["episode"]["active_tts_job"]
+                self.assertIsNotNone(active_job)
+                self.assertEqual(active_job["language_code"], "en")
+                self.assertEqual(active_job["current_chunk"], 2)
+                self.assertEqual(active_job["total_chunks"], 4)
+                self.assertEqual(active_job["percent"], 50)
+
+                board_episode = service.list_all_episodes_for_board()[0]
+                self.assertEqual(board_episode["active_tts_job"]["job_id"], "tts-job-live")
+                self.assertEqual(board_episode["language_statuses"][0]["tts_job_percent"], 50)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -570,11 +570,43 @@ function perLanguageStageSummary(stage, counts) {
   return `${parts.join(", ")}.`;
 }
 
+function joinStatusCopy(base, extra) {
+  const left = String(base || "").trim().replace(/[.]+$/, "");
+  const right = String(extra || "").trim().replace(/[.]+$/, "");
+  if (!left) return right ? `${right}.` : "";
+  if (!right) return `${left}.`;
+  return `${left}. ${right}.`;
+}
+
+function activeTtsJob(episode) {
+  const job = episode?.active_tts_job;
+  if (!job) return null;
+  return ["queued", "processing"].includes(String(job.status || "").toLowerCase()) ? job : null;
+}
+
+function activeTtsJobCopy(job) {
+  if (!job) return "";
+  const language = String(job.language_code || "").trim().toUpperCase();
+  const prefix = language ? `${language} ` : "";
+  const currentChunk = Number(job.current_chunk);
+  const totalChunks = Number(job.total_chunks);
+  const percent = Number(job.percent);
+  if (Number.isFinite(currentChunk) && currentChunk > 0 && Number.isFinite(totalChunks) && totalChunks > 0) {
+    const pctSuffix = Number.isFinite(percent) ? ` (${Math.max(0, Math.min(100, Math.round(percent)))}%)` : "";
+    return `${prefix}chunk ${currentChunk}/${totalChunks}${pctSuffix}`;
+  }
+  if (job.progress) return `${prefix}${job.progress}`;
+  return language ? `${language} narration in progress` : "Narration in progress";
+}
+
 function episodeCardStatusTone(episode) {
   const pipelineStatus = episode?.pipeline_status || "idle";
   if (pipelineStatus === "failed") return "error";
   if (pipelineStatus === "review" || pipelineStatus === "done") return "success";
-  if (pipelineStatus === "queued" || pipelineStatus === "paused_for_tts") return "warn";
+  if (pipelineStatus === "queued") return "warn";
+  if (pipelineStatus === "paused_for_tts") {
+    return activeTtsJob(episode)?.worker_active ? "active" : "warn";
+  }
   if (pipelineStatus === "running") return "active";
   if (episode?.queue_readiness?.ok === false) return "warn";
   return "neutral";
@@ -585,16 +617,19 @@ function episodeWorkflowStatusCopy(episode) {
   const pipelineStatus = episode.pipeline_status || "idle";
   const displayStage = episodeDisplayStage(episode);
   const counts = perLanguageStageCounts(episode.language_statuses, displayStage);
+  const liveTtsCopy = activeTtsJobCopy(activeTtsJob(episode));
   if (pipelineStatus === "failed") return `Stopped in ${stageLabel(displayStage)}.`;
   if (pipelineStatus === "done") return "Export completed.";
   if (pipelineStatus === "review") return "Ready for review.";
   if (pipelineStatus === "paused_for_tts") {
-    return counts?.total ? perLanguageStageSummary("tts", counts) : "Waiting for TTS jobs to finish.";
+    const baseCopy = counts?.total ? perLanguageStageSummary("tts", counts) : "Waiting for TTS jobs to finish.";
+    return joinStatusCopy(baseCopy, liveTtsCopy);
   }
   if (pipelineStatus === "running") {
-    return EPISODE_PER_LANG_STAGES.includes(displayStage)
+    const baseCopy = EPISODE_PER_LANG_STAGES.includes(displayStage)
       ? perLanguageStageSummary(displayStage, counts)
       : `${stageActivityLabel(displayStage)}.`;
+    return displayStage === "tts" ? joinStatusCopy(baseCopy, liveTtsCopy) : baseCopy;
   }
   if (pipelineStatus === "queued") return `Waiting for worker to start ${stageLabel(displayStage)}.`;
   if (episode.queue_readiness?.ok === false) return "Workflow blocked until setup is fixed.";
@@ -610,6 +645,32 @@ function renderEpisodeWorkflowStatus(episode) {
       <span class="episode-card-status-dot" aria-hidden="true"></span>
       <span class="episode-card-status-copy">${esc(statusCopy)}</span>
     </div>`;
+}
+
+function renderActiveTtsProgress(episode) {
+  if (episodeDisplayStage(episode) !== "tts") return "";
+  const job = activeTtsJob(episode);
+  if (!job) return "";
+  const label = activeTtsJobCopy(job);
+  const percent = Number(job.percent);
+  const showBar = Number.isFinite(percent) && percent > 0;
+  return `
+    <div class="lang-progress tts-live-progress">
+      ${showBar ? `<div class="lang-progress-bar"><div class="lang-progress-fill" style="width:${Math.max(2, Math.min(100, Math.round(percent)))}%"></div></div>` : ""}
+      <span class="lang-progress-label">${esc(label)}</span>
+    </div>`;
+}
+
+function languageTtsJobCopy(langStatus) {
+  if (!langStatus) return "";
+  const currentChunk = Number(langStatus.tts_job_current_chunk);
+  const totalChunks = Number(langStatus.tts_job_total_chunks);
+  const percent = Number(langStatus.tts_job_percent);
+  if (Number.isFinite(currentChunk) && currentChunk > 0 && Number.isFinite(totalChunks) && totalChunks > 0) {
+    const pctSuffix = Number.isFinite(percent) ? ` (${Math.max(0, Math.min(100, Math.round(percent)))}%)` : "";
+    return `chunk ${currentChunk}/${totalChunks}${pctSuffix}`;
+  }
+  return String(langStatus.tts_job_progress || "").trim();
 }
 
 function optimisticQueuedEpisodeRecord(episode, startStage) {
@@ -2368,6 +2429,7 @@ function renderEpisodeCard(ep, options = {}) {
   const currentStage = episodeDisplayStage(ep);
   const isPerLang = EPISODE_PER_LANG_STAGES.includes(currentStage);
   const progress = isPerLang ? langProgressHtml(ep.language_statuses, currentStage) : "";
+  const activeTtsProgress = renderActiveTtsProgress(ep);
   const tone = pipelineTone(ep.pipeline_status);
   const error = ep.last_error ? `<div class="episode-card-error" title="${esc(ep.last_error)}">${esc(summarizeCardIssue(ep.last_error, 80))}</div>` : "";
   const nicheLabel = (ep.niche_project_title && showProjectLabel) ? `<span class="episode-card-niche">${esc(ep.niche_project_title)}</span>` : "";
@@ -2394,6 +2456,7 @@ function renderEpisodeCard(ep, options = {}) {
       </div>
       ${workflowStatus}
       ${progress}
+      ${activeTtsProgress}
       ${error}
       ${renderReadinessNotice(queueReadiness, { compact: true })}
       ${renderReadinessWarning(queueReadiness)}
@@ -3028,6 +3091,8 @@ function renderEpisodeDetailOverlay() {
   const stageRuns = detail.stage_runs || [];
   const currentStage = episode.current_stage || "draft";
   const readiness = episode.queue_readiness || { ok: true, blockers: [], warnings: [] };
+  const liveTtsJob = activeTtsJob(episode);
+  const activeTtsMarkup = renderActiveTtsProgress(episode);
   const allStages = EPISODE_PIPELINE_COLUMNS.filter((c) => c.id !== "needs_attention");
   const currentIdx = allStages.findIndex((c) => c.id === currentStage);
   const progressPct = allStages.length ? Math.max(0, Math.round(((currentIdx < 0 ? 0 : currentIdx + (episode.pipeline_status === "review" || episode.pipeline_status === "done" ? 1 : 0)) / allStages.length) * 100)) : 0;
@@ -3038,6 +3103,7 @@ function renderEpisodeDetailOverlay() {
     if (episode.pipeline_status === "done") st = "done";
     else if (i < currentIdx) st = "done";
     else if (i === currentIdx && episode.pipeline_status === "running") st = "active";
+    else if (i === currentIdx && episode.pipeline_status === "paused_for_tts" && liveTtsJob?.worker_active) st = "active";
     else if (i === currentIdx && (episode.pipeline_status === "review" || episode.pipeline_status === "done")) st = "done";
     else if (i === currentIdx && episode.pipeline_status === "failed") st = "failed";
     return '<div class="stage-strip-item" data-state="' + st + '" title="' + esc(s.label) + '">' + esc(s.short) + '</div>';
@@ -3051,7 +3117,8 @@ function renderEpisodeDetailOverlay() {
     const canRetryTranslation = !["running", "queued"].includes(episode.pipeline_status || "idle") && (ls.translation_status === "failed" || ls.translation_status === "skipped");
     const canRetryTts = !["running", "queued"].includes(episode.pipeline_status || "idle") && (ls.tts_status === "failed" || ls.tts_status === "skipped");
     const hasTranslation = ls.translation_status === "done" && ls.language_code !== (episode.master_language || "en");
-    const ttsProgress = ls.tts_job_progress ? ' <span class="helper" style="font-size:0.7rem;">(' + esc(ls.tts_job_progress) + ')</span>' : '';
+    const ttsProgressLabel = languageTtsJobCopy(ls);
+    const ttsProgress = ttsProgressLabel ? ' <span class="helper" style="font-size:0.7rem;">(' + esc(ttsProgressLabel) + ')</span>' : '';
     return '<tr>' +
       '<td><strong>' + esc(ls.language_code) + '</strong></td>' +
       '<td>' + langStatusBadge(ls.translation_status) +
@@ -3107,6 +3174,7 @@ function renderEpisodeDetailOverlay() {
               <div class="section-header" style="margin-bottom:12px;">
                 <div class="eyebrow" style="margin:0;">Per-language status</div>
               </div>
+              ${activeTtsMarkup}
               ${workerIssueMarkup}
               <table class="lang-table">
                 <thead><tr><th>Lang</th><th>Translation</th><th>TTS</th><th>SRT</th><th>Timeline</th><th>Error</th></tr></thead>
@@ -3158,6 +3226,8 @@ function renderEpisodeDetail() {
   const stageRuns = detail.stage_runs || [];
   const currentStage = episode.current_stage || "draft";
   const readiness = episode.queue_readiness || { ok: true, blockers: [], warnings: [] };
+  const liveTtsJob = activeTtsJob(episode);
+  const activeTtsMarkup = renderActiveTtsProgress(episode);
 
   // Pipeline progress bar
   const allStages = EPISODE_PIPELINE_COLUMNS.filter((c) => c.id !== "needs_attention");
@@ -3175,6 +3245,7 @@ function renderEpisodeDetail() {
     if (episode.pipeline_status === "done") st = "done";
     else if (i < currentIdx) st = "done";
     else if (i === currentIdx && episode.pipeline_status === "running") st = "active";
+    else if (i === currentIdx && episode.pipeline_status === "paused_for_tts" && liveTtsJob?.worker_active) st = "active";
     else if (i === currentIdx && (episode.pipeline_status === "review" || episode.pipeline_status === "done")) st = "done";
     else if (i === currentIdx && episode.pipeline_status === "failed") st = "failed";
     return '<div class="stage-strip-item" data-state="' + st + '" title="' + esc(s.label) + '">' + esc(s.short) + '</div>';
@@ -3194,7 +3265,8 @@ function renderEpisodeDetail() {
     const canRetryTranslation = isPipelineIdle && (ls.translation_status === "failed" || ls.translation_status === "skipped");
     const canRetryTts = isPipelineIdle && (ls.tts_status === "failed" || ls.tts_status === "skipped");
     const hasTranslation = ls.translation_status === "done" && ls.language_code !== (episode.master_language || "en");
-    const ttsProgress = ls.tts_job_progress ? ' <span class="helper" style="font-size:0.7rem;">(' + esc(ls.tts_job_progress) + ')</span>' : '';
+    const ttsProgressLabel = languageTtsJobCopy(ls);
+    const ttsProgress = ttsProgressLabel ? ' <span class="helper" style="font-size:0.7rem;">(' + esc(ttsProgressLabel) + ')</span>' : '';
 
     return '<tr>' +
       '<td><strong>' + esc(ls.language_code) + '</strong></td>' +
@@ -3276,6 +3348,7 @@ function renderEpisodeDetail() {
         <div class="section-header" style="margin-bottom:12px;">
           <div class="eyebrow" style="margin:0;">Per-language status</div>
         </div>
+        ${activeTtsMarkup}
         ${workerIssueMarkup}
         ${langTable}
       </div>
