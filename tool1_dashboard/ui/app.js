@@ -501,7 +501,7 @@ function episodeDisplayStage(episode) {
   if (!episode) return "draft";
   const currentStage = episode.current_stage || "";
   const pipelineStatus = episode.pipeline_status || "idle";
-  if (["queued", "paused_for_tts"].includes(pipelineStatus) || (pipelineStatus === "running" && currentStage === "draft")) {
+  if (pipelineStatus === "queued" || (pipelineStatus === "running" && currentStage === "draft")) {
     const queuedStage = episodeQueueStartStage(episode);
     if (EPISODE_PIPELINE_COLUMNS.some((column) => column.id === queuedStage)) return queuedStage;
   }

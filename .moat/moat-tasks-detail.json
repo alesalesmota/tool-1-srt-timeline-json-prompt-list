@@ -476,7 +476,7 @@
       "y": 0
     },
     "screenshotPath": "./screenshots/moat-1774656073633-p386p9vrg.png",
-    "status": "to do",
+    "status": "done",
     "timestamp": 1774656073803
   },
   {
@@ -491,5 +491,18 @@
     "screenshotPath": "./screenshots/moat-1774656189308-5xt38qv7q.png",
     "status": "to do",
     "timestamp": 1774656189462
+  },
+  {
+    "id": "6ce4ba6a-b683-4930-8f73-69dbcb887aae",
+    "title": "Button: Close",
+    "comment": "clicking its not working",
+    "selector": "div.board-modal-backdrop > div.board-modal-shell > div.board-modal-head:nth-child(1) > button:nth-of-type(1)",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774656642399-cp1qxrklf.png",
+    "status": "to do",
+    "timestamp": 1774656642581
   }
 ]
