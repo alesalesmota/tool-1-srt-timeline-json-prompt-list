@@ -65,6 +65,7 @@ const TRANSLATION_PROFILE_PROVIDER_CATALOG = [
 ];
 const REFRESH_INTERVAL_MS = 5000;
 const ACTIVE_REFRESH_INTERVAL_MS = 1000;
+const EPISODE_FILES_CACHE_TTL_MS = 3000;
 const HEALTH_CACHE_TTL_MS = 15000;
 const SETTINGS_CACHE_TTL_MS = 30000;
 const TARGET_LANGUAGES_CACHE_TTL_MS = 60000;
@@ -135,6 +136,7 @@ const state = {
   nicheProjectDetail: null,
   boardEpisodes: [],
   episodeDetail: null,
+  episodeFiles: {},
   episodeWorkflowActions: {},
   episodeWorkflowStageSelections: {},
   translationPreview: null,
@@ -327,6 +329,119 @@ function shortText(value, max = 140) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (text.length <= max) return text;
   return `${text.slice(0, max).trimEnd()}...`;
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${bytes.toFixed(0)} B`;
+  const units = ["KB", "MB", "GB"];
+  let size = bytes / 1024;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const digits = size >= 100 ? 0 : size >= 10 ? 1 : 2;
+  return `${size.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function baseEpisodeFilesState() {
+  return {
+    items: [],
+    loading: false,
+    error: "",
+    syncedAt: 0,
+    selectedPath: "",
+    previewByPath: {},
+  };
+}
+
+function episodeFilesState(episodeId) {
+  const current = state.episodeFiles?.[episodeId];
+  if (!current) return baseEpisodeFilesState();
+  return {
+    ...baseEpisodeFilesState(),
+    ...current,
+    previewByPath: { ...(current.previewByPath || {}) },
+  };
+}
+
+function setEpisodeFilesState(episodeId, nextState) {
+  if (!episodeId) return;
+  state.episodeFiles = {
+    ...(state.episodeFiles || {}),
+    [episodeId]: nextState,
+  };
+}
+
+function updateEpisodeFilesState(episodeId, updater) {
+  if (!episodeId || typeof updater !== "function") return baseEpisodeFilesState();
+  const nextState = updater(episodeFilesState(episodeId)) || episodeFilesState(episodeId);
+  setEpisodeFilesState(episodeId, nextState);
+  return nextState;
+}
+
+function episodeFileSignature(file) {
+  return `${Number(file?.size || 0)}:${String(file?.modified_at || "")}`;
+}
+
+function episodeFileDownloadUrl(episodeId, relativePath) {
+  return `/api/episodes/${encodeURIComponent(episodeId)}/files/download?path=${encodeURIComponent(relativePath)}`;
+}
+
+function episodeFilePreviewUrl(episodeId, relativePath) {
+  return `/api/episodes/${encodeURIComponent(episodeId)}/files/content?path=${encodeURIComponent(relativePath)}`;
+}
+
+function episodeFileBadgeTone(file) {
+  if (file?.is_empty) return "warn";
+  if (file?.preview_type === "audio") return "active";
+  if (file?.preview_type === "binary") return "neutral";
+  return "success";
+}
+
+function episodeFileTypeLabel(file) {
+  if (file?.is_empty) return "Empty";
+  if (file?.preview_type === "audio") return "Audio";
+  if (file?.preview_type === "json") return "JSON";
+  if (file?.preview_type === "binary") return file?.ext ? file.ext.replace(".", "").toUpperCase() : "Binary";
+  return "Text";
+}
+
+function episodeFileIcon(file) {
+  const ext = String(file?.ext || "").toLowerCase();
+  if (file?.preview_type === "audio") return "play";
+  if (ext === ".srt") return "timeline";
+  if (ext === ".json" || ext === ".jsonl") return "settings";
+  if (ext === ".txt" || ext === ".md" || ext === ".log" || ext === ".csv") return "prompts";
+  if (ext === ".zip") return "download";
+  return "open";
+}
+
+function pickEpisodeFileSelection(files = []) {
+  if (!files.length) return "";
+  const preferred = [...files].sort((left, right) => {
+    const leftRank = left.is_empty ? 1 : 0;
+    const rightRank = right.is_empty ? 1 : 0;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    const priority = {
+      ".srt": 0,
+      ".json": 1,
+      ".jsonl": 2,
+      ".txt": 3,
+      ".log": 4,
+      ".md": 5,
+      ".csv": 6,
+      ".wav": 7,
+      ".mp3": 8,
+      ".m4a": 9,
+      ".ogg": 10,
+      ".zip": 11,
+    };
+    return (priority[left.ext] ?? 99) - (priority[right.ext] ?? 99);
+  });
+  return preferred[0]?.relative_path || "";
 }
 
 function summarizeCardIssue(value, max = 120) {
@@ -805,9 +920,13 @@ function renderProjectConfigDisclosure({ projectId, panelName, label, body, isOp
 
 function ensureEpisodeSupplementalDataLoaded(episodeId, { force = false } = {}) {
   if (!episodeId) return;
-  if (force || state.lastEpisodeFilesLoadedFor !== episodeId) {
+  const fileState = episodeFilesState(episodeId);
+  const fileCacheIsFresh = fileState.syncedAt && (Date.now() - fileState.syncedAt) < EPISODE_FILES_CACHE_TTL_MS;
+  if (force || state.lastEpisodeFilesLoadedFor !== episodeId || (!fileState.loading && !fileCacheIsFresh)) {
     state.lastEpisodeFilesLoadedFor = episodeId;
     loadEpisodeFiles(episodeId);
+  } else {
+    syncEpisodeFilesSection(episodeId);
   }
   if (force || state.lastEpisodeReviewLoadedFor !== episodeId) {
     state.lastEpisodeReviewLoadedFor = episodeId;
@@ -3380,13 +3499,7 @@ function renderEpisodeDetailOverlay() {
             </div>
             <div id="episode-review-section" class="board-modal-section"></div>
             <div class="board-modal-section">
-              <div style="display:flex;justify-content:space-between;align-items:center;">
-                <div class="eyebrow">Output files</div>
-                <button type="button" class="button button-ghost button-small" onclick="loadEpisodeFiles('${esc(episode.id)}')">Refresh files</button>
-              </div>
-              <div id="episode-files-list" class="output-files-grid" style="margin-top:10px;">
-                <p class="helper">Loading output files…</p>
-              </div>
+              <div id="episode-files-shell">${renderEpisodeFilesSection(episode.id)}</div>
             </div>
           </div>
           <aside class="board-modal-side">
@@ -3494,16 +3607,10 @@ function renderEpisodeDetail() {
   const queueActionButton = renderEpisodeWorkflowActionButton(episode, { className: "episode-detail-action", readiness });
   const deleteActionButton = renderEpisodeDeleteActionButton(episode.id, { className: "episode-detail-action" });
 
-  // Output files section (lazy-loaded)
+  // Output files section
   const filesSection = `
     <div class="detail-section">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <div class="eyebrow">Output files</div>
-        <button type="button" class="button button-ghost button-small" onclick="loadEpisodeFiles('${esc(episode.id)}')">Refresh files</button>
-      </div>
-      <div id="episode-files-list" class="output-files-grid" style="margin-top:10px;">
-        <p class="helper">Click "Refresh files" to load output files.</p>
-      </div>
+      <div id="episode-files-shell">${renderEpisodeFilesSection(episode.id)}</div>
     </div>`;
 
   const reviewSection = '<div id="episode-review-section" class="detail-section"></div>';
@@ -3571,33 +3678,265 @@ function renderEpisodeDetail() {
   ensureEpisodeSupplementalDataLoaded(episode.id);
 }
 
-async function loadEpisodeFiles(episodeId) {
-  const container = $("episode-files-list");
+function renderEpisodeFilePreviewBody(episodeId, selectedFile, previewState) {
+  if (!selectedFile) {
+    return '<p class="helper">Pick a file on the left to inspect its contents.</p>';
+  }
+  if (previewState?.loading) {
+    return '<p class="helper">Loading file preview…</p>';
+  }
+  if (previewState?.error) {
+    return '<div class="profile-inline-message" data-tone="error">' + esc(previewState.error) + '</div>';
+  }
+
+  const preview = previewState?.data;
+  if (!preview) {
+    return '<p class="helper">Preview will appear here as soon as the file metadata finishes syncing.</p>';
+  }
+  if (preview.preview_type === "audio") {
+    return `
+      <div class="episode-file-preview-empty">
+        <audio class="profile-audio-player episode-file-audio-player" controls src="${esc(episodeFileDownloadUrl(episodeId, selectedFile.relative_path))}"></audio>
+        <p class="helper">Audio preview ready. Download keeps the original file name.</p>
+      </div>
+    `;
+  }
+  if (preview.preview_type === "empty") {
+    return '<div class="episode-file-preview-empty">' + esc(preview.summary || "This file exists but does not contain data yet.") + '</div>';
+  }
+  if (preview.preview_type === "binary") {
+    return '<div class="episode-file-preview-empty">' + esc(preview.summary || "Preview is not available for this file type.") + '</div>';
+  }
+  return `
+    ${preview.truncated ? '<div class="helper" style="margin-bottom:8px;">Preview truncated for performance.</div>' : ""}
+    <pre class="run-output episode-file-preview-output">${esc(preview.text || "")}</pre>
+  `;
+}
+
+function renderEpisodeFilesSection(episodeId) {
+  const fileState = episodeFilesState(episodeId);
+  const files = fileState.items || [];
+  const selectedPath = files.some((file) => file.relative_path === fileState.selectedPath)
+    ? fileState.selectedPath
+    : pickEpisodeFileSelection(files);
+  const selectedFile = files.find((file) => file.relative_path === selectedPath) || null;
+  const previewState = selectedFile ? fileState.previewByPath?.[selectedFile.relative_path] || null : null;
+  const populatedCount = files.filter((file) => !file.is_empty).length;
+  const emptyCount = files.filter((file) => file.is_empty).length;
+  const syncCopy = fileState.loading
+    ? "Auto-syncing file outputs right now."
+    : fileState.syncedAt
+      ? `Auto-sync on. Last scan ${relativeTime(fileState.syncedAt)}.`
+      : "Auto-sync on. Waiting for the first file scan.";
+
+  const listMarkup = files.map((file) => {
+    const isSelected = file.relative_path === selectedPath;
+    const freshnessCopy = file.modified_at ? `Updated ${relativeTime(file.modified_at)}` : "Timestamp unavailable";
+    const pathCopy = file.directory ? file.relative_path : file.name;
+    return `
+      <button
+        type="button"
+        class="episode-file-row"
+        data-selected="${isSelected ? "true" : "false"}"
+        data-open-episode-file="${esc(file.relative_path)}"
+        data-episode-file-episode="${esc(episodeId)}"
+        title="${esc(file.relative_path)}"
+      >
+        <span class="episode-file-row-icon">${iconMarkup(episodeFileIcon(file))}</span>
+        <span class="episode-file-row-copy">
+          <span class="episode-file-row-head">
+            <span class="episode-file-row-name">${esc(file.name)}</span>
+            <span class="badge-row">
+              ${statusBadge(episodeFileTypeLabel(file), episodeFileBadgeTone(file))}
+            </span>
+          </span>
+          <span class="episode-file-row-meta">${esc(file.parent_label)} • ${esc(formatBytes(file.size))} • ${esc(freshnessCopy)}</span>
+          ${file.directory ? '<span class="episode-file-row-path">' + esc(pathCopy) + '</span>' : ""}
+        </span>
+      </button>
+    `;
+  }).join("");
+
+  return `
+    <section class="episode-files-shell">
+      <div class="episode-files-header">
+        <div>
+          <div class="eyebrow">Output files</div>
+          <p class="episode-files-copy">${esc(syncCopy)}</p>
+        </div>
+        <div class="badge-row">
+          ${statusBadge(`${files.length} file${files.length === 1 ? "" : "s"}`, files.length ? "active" : "warn")}
+          ${files.length ? statusBadge(`${populatedCount} with data`, populatedCount ? "success" : "warn") : ""}
+          ${emptyCount ? statusBadge(`${emptyCount} empty`, "warn") : ""}
+        </div>
+      </div>
+      ${fileState.error ? '<div class="profile-inline-message" data-tone="error">' + esc(fileState.error) + '</div>' : ""}
+      ${!files.length ? `
+        <div class="episode-file-preview-empty">
+          No workflow files yet. This panel updates automatically while the episode is open.
+        </div>
+      ` : `
+        <div class="episode-files-layout">
+          <div class="episode-files-list" role="listbox" aria-label="Episode output files">
+            ${listMarkup}
+          </div>
+          <div class="episode-file-preview-card">
+            ${selectedFile ? `
+              <div class="episode-file-preview-head">
+                <div>
+                  <div class="eyebrow">Preview</div>
+                  <div class="episode-file-preview-title">${esc(selectedFile.name)}</div>
+                  <div class="helper">${esc(selectedFile.relative_path)} • ${esc(formatBytes(selectedFile.size))} • ${esc(formatDate(selectedFile.modified_at))}</div>
+                </div>
+                <button
+                  type="button"
+                  class="button button-ghost button-small has-icon"
+                  data-download-episode-file="${esc(selectedFile.relative_path)}"
+                  data-episode-file-episode="${esc(episodeId)}"
+                >${iconContent("download", "Download")}</button>
+              </div>
+            ` : ""}
+            ${renderEpisodeFilePreviewBody(episodeId, selectedFile, previewState)}
+          </div>
+        </div>
+      `}
+    </section>
+  `;
+}
+
+function syncEpisodeFilesSection(episodeId) {
+  const container = $("episode-files-shell");
   if (!container) return;
-  container.innerHTML = '<p class="helper">Loading…</p>';
+  container.innerHTML = renderEpisodeFilesSection(episodeId);
+}
+
+async function ensureEpisodeFilePreviewLoaded(episodeId, relativePath) {
+  if (!episodeId || !relativePath) return;
+  const fileState = episodeFilesState(episodeId);
+  const file = (fileState.items || []).find((entry) => entry.relative_path === relativePath);
+  if (!file) return;
+
+  const signature = episodeFileSignature(file);
+  const currentPreview = fileState.previewByPath?.[relativePath];
+  if (currentPreview?.loading) return;
+  if (currentPreview?.fileSignature === signature && currentPreview?.data) return;
+
+  updateEpisodeFilesState(episodeId, (current) => ({
+    ...current,
+    previewByPath: {
+      ...current.previewByPath,
+      [relativePath]: {
+        ...(current.previewByPath?.[relativePath] || {}),
+        loading: true,
+        error: "",
+        data: null,
+        fileSignature: signature,
+      },
+    },
+  }));
+  syncEpisodeFilesSection(episodeId);
+
+  try {
+    const preview = await api(episodeFilePreviewUrl(episodeId, relativePath));
+    updateEpisodeFilesState(episodeId, (current) => ({
+      ...current,
+      previewByPath: {
+        ...current.previewByPath,
+        [relativePath]: {
+          loading: false,
+          error: "",
+          data: preview,
+          fileSignature: signature,
+        },
+      },
+    }));
+  } catch (err) {
+    updateEpisodeFilesState(episodeId, (current) => ({
+      ...current,
+      previewByPath: {
+        ...current.previewByPath,
+        [relativePath]: {
+          ...(current.previewByPath?.[relativePath] || {}),
+          loading: false,
+          error: err.message,
+          data: null,
+          fileSignature: signature,
+        },
+      },
+    }));
+  }
+  syncEpisodeFilesSection(episodeId);
+}
+
+async function openEpisodeFilePreview(episodeId, relativePath) {
+  if (!episodeId || !relativePath) return;
+  updateEpisodeFilesState(episodeId, (current) => ({
+    ...current,
+    selectedPath: relativePath,
+  }));
+  syncEpisodeFilesSection(episodeId);
+  await ensureEpisodeFilePreviewLoaded(episodeId, relativePath);
+}
+
+async function loadEpisodeFiles(episodeId) {
+  if (!episodeId) return;
+  const initialState = episodeFilesState(episodeId);
+  if (initialState.loading) {
+    syncEpisodeFilesSection(episodeId);
+    return;
+  }
+
+  updateEpisodeFilesState(episodeId, (current) => ({
+    ...current,
+    loading: true,
+    error: "",
+  }));
+  syncEpisodeFilesSection(episodeId);
+
   try {
     const data = await api("/api/episodes/" + encodeURIComponent(episodeId) + "/files");
     const files = data.files || [];
-    if (!files.length) {
-      container.innerHTML = '<p class="helper">No output files yet.</p>';
-      return;
-    }
-    const fileIcons = { ".srt": "timeline", ".json": "settings", ".txt": "prompts", ".wav": "play", ".mp3": "play" };
-    container.innerHTML = files.map((f) => {
-      const sizeKb = (f.size / 1024).toFixed(1);
-      const icon = fileIcons[f.ext] || "open";
-      return '<div class="output-file-card">' +
-        '<div class="output-file-info">' +
-          iconMarkup(icon) +
-          '<div>' +
-            '<div class="output-file-name">' + esc(f.name) + '</div>' +
-            '<div class="helper" style="font-size:0.7rem;">' + sizeKb + ' KB</div>' +
-          '</div>' +
-        '</div>' +
-      '</div>';
-    }).join("");
+    const currentState = episodeFilesState(episodeId);
+    const selectedPath = files.some((file) => file.relative_path === currentState.selectedPath)
+      ? currentState.selectedPath
+      : pickEpisodeFileSelection(files);
+    const nextPreviewByPath = { ...(currentState.previewByPath || {}) };
+    const nextFileMap = new Map(files.map((file) => [file.relative_path, file]));
+
+    Object.keys(nextPreviewByPath).forEach((relativePath) => {
+      const file = nextFileMap.get(relativePath);
+      if (!file) {
+        delete nextPreviewByPath[relativePath];
+        return;
+      }
+      const cachedPreview = nextPreviewByPath[relativePath];
+      if (cachedPreview?.fileSignature && cachedPreview.fileSignature !== episodeFileSignature(file)) {
+        delete nextPreviewByPath[relativePath];
+      }
+    });
+
+    setEpisodeFilesState(episodeId, {
+      ...currentState,
+      items: files,
+      loading: false,
+      error: "",
+      syncedAt: Date.now(),
+      selectedPath,
+      previewByPath: nextPreviewByPath,
+    });
   } catch (err) {
-    container.innerHTML = '<p class="helper" style="color:var(--clr-error);">' + esc(err.message) + '</p>';
+    updateEpisodeFilesState(episodeId, (current) => ({
+      ...current,
+      loading: false,
+      error: err.message,
+      syncedAt: Date.now(),
+    }));
+  }
+
+  syncEpisodeFilesSection(episodeId);
+  const refreshedState = episodeFilesState(episodeId);
+  if (refreshedState.selectedPath) {
+    ensureEpisodeFilePreviewLoaded(episodeId, refreshedState.selectedPath);
   }
 }
 
@@ -4758,7 +5097,7 @@ document.addEventListener("click", async (event) => {
     closeEpisodeOverlay();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-stage-provider-openai-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-pause-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export], [data-project-config-toggle]");
+  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-stage-provider-openai-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-pause-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-open-episode-file], [data-download-episode-file], [data-save-review], [data-finalize-export], [data-download-export], [data-project-config-toggle]");
   if (!target) return;
   event.preventDefault();
   try {
@@ -4801,6 +5140,17 @@ document.addEventListener("click", async (event) => {
     if (target.dataset.themeToggle) {
       applyTheme(state.theme === "dark" ? "light" : "dark");
       renderApp();
+      return;
+    }
+    if (target.dataset.openEpisodeFile) {
+      const episodeId = target.dataset.episodeFileEpisode || state.episodeOverlayId || state.episodeDetail?.episode?.id;
+      await openEpisodeFilePreview(episodeId, target.dataset.openEpisodeFile);
+      return;
+    }
+    if (target.dataset.downloadEpisodeFile) {
+      const episodeId = target.dataset.episodeFileEpisode || state.episodeOverlayId || state.episodeDetail?.episode?.id;
+      if (!episodeId) throw new Error("Episode file is unavailable.");
+      window.open(episodeFileDownloadUrl(episodeId, target.dataset.downloadEpisodeFile), "_blank", "noopener");
       return;
     }
     if (target.dataset.projectConfigToggle) {

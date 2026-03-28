@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 19 | **To Do**: 0 | **Doing**: 0 | **Done**: 19
+**Total**: 21 | **To Do**: 1 | **Doing**: 0 | **Done**: 20
 
 ## Tasks
 
@@ -29,8 +29,12 @@
 17. [x] Background Container – "this card is stuck on consistency guide, but when i open ..." `div.board-modal-backdrop > div.board-modal-shell`
 18. [x] Button: Close – "clicking its not working" `div.board-modal-backdrop > div.board-modal-shell > div.board-modal-head:nth-child(1) > button:nth-of-type(1)`
 19. [x] Background Container – "something is wrong on this step of the consistency guide,..." `div.board-modal-backdrop > div.board-modal-shell`
+20. [x] Background Container – "this area has a lot of bug, this refresh button doesnt ma..." `div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(8)`
+21. [ ] aside: Quick actions
+              
+  – "this lateral menu is very confusing, im not sure its even..." `div.board-modal-shell > div.board-modal-layout:nth-child(2) > aside.board-modal-side`
 
 ---
 
-_Generated: 27/03/2026, 22:00:42_
+_Generated: 28/03/2026, 15:00:41_
 _Source: moat-tasks-detail.json_

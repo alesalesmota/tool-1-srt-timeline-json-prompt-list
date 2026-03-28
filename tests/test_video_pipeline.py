@@ -587,6 +587,102 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                 finally:
                     self.app_module.service = original
 
+    def test_episode_files_api_lists_duplicate_names_and_supports_preview_download(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en"])
+                    episode_id = episode["id"]
+                    workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+
+                    root_stderr_path = workspace / "stderr.txt"
+                    root_stderr_path.write_text("root stderr output", encoding="utf-8")
+
+                    nested_stderr_path = workspace / "runs" / "consistency_guide" / "stderr.txt"
+                    nested_stderr_path.parent.mkdir(parents=True, exist_ok=True)
+                    nested_stderr_path.write_text("", encoding="utf-8")
+
+                    guide_path = workspace / "consistency_guide.json"
+                    guide_path.write_text(
+                        json.dumps(
+                            {
+                                "world_style": {"look": "Painterly realism"},
+                                "continuity_rules": ["Keep the same robe silhouette."],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+
+                    archive_path = workspace / "artifacts.zip"
+                    archive_path.write_bytes(b"PK\x03\x04demo")
+
+                    files_resp = client.get(f"/api/episodes/{episode_id}/files")
+                    self.assertEqual(files_resp.status_code, 200)
+                    files_by_path = {
+                        item["relative_path"]: item
+                        for item in files_resp.json()["files"]
+                    }
+
+                    self.assertIn("stderr.txt", files_by_path)
+                    self.assertIn("runs/consistency_guide/stderr.txt", files_by_path)
+                    self.assertIn("consistency_guide.json", files_by_path)
+                    self.assertIn("artifacts.zip", files_by_path)
+                    self.assertEqual(files_by_path["stderr.txt"]["preview_type"], "text")
+                    self.assertFalse(files_by_path["stderr.txt"]["is_empty"])
+                    self.assertEqual(
+                        files_by_path["runs/consistency_guide/stderr.txt"]["preview_type"],
+                        "empty",
+                    )
+                    self.assertTrue(files_by_path["runs/consistency_guide/stderr.txt"]["is_empty"])
+                    self.assertEqual(files_by_path["runs/consistency_guide/stderr.txt"]["directory"], "runs/consistency_guide")
+                    self.assertEqual(files_by_path["artifacts.zip"]["preview_type"], "binary")
+
+                    guide_preview = client.get(
+                        f"/api/episodes/{episode_id}/files/content",
+                        params={"path": "consistency_guide.json"},
+                    )
+                    self.assertEqual(guide_preview.status_code, 200)
+                    guide_payload = guide_preview.json()
+                    self.assertEqual(guide_payload["preview_type"], "json")
+                    self.assertIn('\n  "world_style"', guide_payload["text"])
+                    self.assertFalse(guide_payload["truncated"])
+
+                    empty_preview = client.get(
+                        f"/api/episodes/{episode_id}/files/content",
+                        params={"path": "runs/consistency_guide/stderr.txt"},
+                    )
+                    self.assertEqual(empty_preview.status_code, 200)
+                    self.assertEqual(empty_preview.json()["preview_type"], "empty")
+                    self.assertEqual(
+                        empty_preview.json()["summary"],
+                        "This file exists but does not contain data yet.",
+                    )
+
+                    binary_preview = client.get(
+                        f"/api/episodes/{episode_id}/files/content",
+                        params={"path": "artifacts.zip"},
+                    )
+                    self.assertEqual(binary_preview.status_code, 200)
+                    self.assertEqual(binary_preview.json()["preview_type"], "binary")
+                    self.assertEqual(
+                        binary_preview.json()["summary"],
+                        "Preview is not available for this file type.",
+                    )
+
+                    download_resp = client.get(
+                        f"/api/episodes/{episode_id}/files/download",
+                        params={"path": "stderr.txt"},
+                    )
+                    self.assertEqual(download_resp.status_code, 200)
+                    self.assertEqual(download_resp.content, b"root stderr output")
+                    self.assertIn("stderr.txt", download_resp.headers["content-disposition"])
+                    self.assertTrue(download_resp.headers["content-type"].startswith("text/plain"))
+                finally:
+                    self.app_module.service = original
+
     def test_submit_episode_to_nonexistent_project(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

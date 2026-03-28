@@ -517,5 +517,31 @@
     "screenshotPath": "./screenshots/moat-1774658806487-w5beypiwx.png",
     "status": "done",
     "timestamp": 1774658806686
+  },
+  {
+    "id": "aa307bb4-b047-471f-b2af-2c11ff11c294",
+    "title": "Background Container",
+    "comment": "this area has a lot of bug, this refresh button doesnt make sense, it should show the files live regardless, when i click on anyfile it doesnt show anything, its not clear what has data what is empty",
+    "selector": "div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(8)",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774718935562-j9huqoa85.png",
+    "status": "done",
+    "timestamp": 1774718935703
+  },
+  {
+    "id": "af1c2d7c-8cf1-4201-afe8-275b64c5cb66",
+    "title": "aside: Quick actions\n              \n ",
+    "comment": "this lateral menu is very confusing, im not sure its even needed considering i already have similar information in the main section",
+    "selector": "div.board-modal-shell > div.board-modal-layout:nth-child(2) > aside.board-modal-side",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774719071133-9l4gnnyb9.png",
+    "status": "to do",
+    "timestamp": 1774719071287
   }
 ]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import mimetypes
 import re
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,7 @@ from pydantic import BaseModel
 
 from .config import (
     IMAGE_PROMPT_STAGE,
+    MAX_PREVIEW_CHARS,
     SCENE_STAGE,
     UI_DIR,
     VIDEO_PROMPT_STAGE,
@@ -158,6 +161,11 @@ app.add_middleware(
 app.mount("/ui", StaticFiles(directory=UI_DIR), name="ui")
 
 
+TEXT_PREVIEW_EXTENSIONS = {".csv", ".json", ".jsonl", ".log", ".md", ".srt", ".txt"}
+AUDIO_PREVIEW_EXTENSIONS = {".m4a", ".mp3", ".ogg", ".wav"}
+OUTPUT_FILE_EXTENSIONS = TEXT_PREVIEW_EXTENSIONS | AUDIO_PREVIEW_EXTENSIONS | {".zip"}
+
+
 def _ui_asset_version() -> str:
     css_path = UI_DIR / "app.css"
     js_path = UI_DIR / "app.js"
@@ -190,6 +198,97 @@ async def startup() -> None:
 async def shutdown() -> None:
     service.stop_worker()
     service.tts_manager.stop_worker()
+
+
+def _episode_workspace_dir(episode_id: str) -> Path | None:
+    detail = service.get_episode_detail(episode_id)
+    workspace_dir = str(detail["episode"].get("workspace_dir", "")).strip()
+    if not workspace_dir:
+        return None
+    workspace = Path(workspace_dir)
+    return workspace if workspace.exists() else None
+
+
+def _resolve_episode_file_path(workspace_dir: Path, relative_path: str) -> Path:
+    rel_path = Path(str(relative_path or "").strip())
+    if not rel_path.parts or rel_path.is_absolute():
+        raise HTTPException(status_code=400, detail="Invalid file path.")
+
+    workspace_root = workspace_dir.resolve()
+    candidate = (workspace_root / rel_path).resolve()
+    try:
+        candidate.relative_to(workspace_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid file path.") from exc
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Output file not found.")
+    return candidate
+
+
+def _episode_file_preview_type(file_path: Path, *, size: int | None = None) -> str:
+    file_size = file_path.stat().st_size if size is None else size
+    if file_size <= 0:
+        return "empty"
+    ext = file_path.suffix.lower()
+    if ext in AUDIO_PREVIEW_EXTENSIONS:
+        return "audio"
+    if ext == ".json":
+        return "json"
+    if ext in TEXT_PREVIEW_EXTENSIONS:
+        return "text"
+    return "binary"
+
+
+def _serialize_episode_file(workspace_dir: Path, file_path: Path) -> dict[str, Any]:
+    stat = file_path.stat()
+    relative_path = file_path.relative_to(workspace_dir).as_posix()
+    parent = Path(relative_path).parent.as_posix()
+    return {
+        "relative_path": relative_path,
+        "name": file_path.name,
+        "directory": "" if parent in {"", "."} else parent,
+        "parent_label": "workspace root" if parent in {"", "."} else parent,
+        "size": stat.st_size,
+        "ext": file_path.suffix.lower(),
+        "modified_at": stat.st_mtime,
+        "preview_type": _episode_file_preview_type(file_path, size=stat.st_size),
+        "is_empty": stat.st_size <= 0,
+    }
+
+
+def _episode_file_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    ext_priority = {
+        ".srt": 0,
+        ".json": 1,
+        ".jsonl": 2,
+        ".txt": 3,
+        ".log": 4,
+        ".md": 5,
+        ".csv": 6,
+        ".wav": 7,
+        ".mp3": 8,
+        ".m4a": 9,
+        ".ogg": 10,
+        ".zip": 11,
+    }
+    return (
+        item["is_empty"],
+        item["directory"] != "",
+        ext_priority.get(item["ext"], 99),
+        item["relative_path"].lower(),
+    )
+
+
+def _collect_episode_output_files(workspace_dir: Path) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    for file_path in workspace_dir.rglob("*"):
+        if not file_path.is_file():
+            continue
+        if file_path.suffix.lower() not in OUTPUT_FILE_EXTENSIONS:
+            continue
+        files.append(_serialize_episode_file(workspace_dir, file_path))
+    files.sort(key=_episode_file_sort_key)
+    return files
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -386,45 +485,78 @@ async def board_episodes() -> dict[str, Any]:
 async def episode_files(episode_id: str) -> dict[str, Any]:
     """List output files in the episode workspace for preview."""
     try:
-        detail = service.get_episode_detail(episode_id)
+        workspace_dir = _episode_workspace_dir(episode_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    episode = detail["episode"]
-    workspace_dir = episode.get("workspace_dir", "")
-    files: list[dict[str, Any]] = []
+    if not workspace_dir:
+        return {"files": []}
+    return {"files": _collect_episode_output_files(workspace_dir)}
 
-    if workspace_dir:
-        from pathlib import Path
-        ws = Path(workspace_dir)
-        if ws.exists():
-            # Collect key output files
-            patterns = ["*.srt", "*.json", "*.txt", "*.wav", "*.mp3"]
-            seen: set[str] = set()
-            for pattern in patterns:
-                for fp in ws.glob(pattern):
-                    if fp.name not in seen:
-                        seen.add(fp.name)
-                        files.append({
-                            "name": fp.name,
-                            "size": fp.stat().st_size,
-                            "ext": fp.suffix,
-                            "path": str(fp),
-                        })
-            # Also check subdirs (runs/, alignment/)
-            for fp in ws.rglob("*"):
-                if fp.is_file() and fp.suffix in {".srt", ".json", ".txt"} and fp.name not in seen:
-                    seen.add(fp.name)
-                    rel = str(fp.relative_to(ws)).replace("\\", "/")
-                    files.append({
-                        "name": rel,
-                        "size": fp.stat().st_size,
-                        "ext": fp.suffix,
-                        "path": str(fp),
-                    })
-            files.sort(key=lambda f: f["name"])
 
-    return {"files": files}
+@app.get("/api/episodes/{episode_id}/files/content")
+async def episode_file_content(episode_id: str, path: str) -> dict[str, Any]:
+    try:
+        workspace_dir = _episode_workspace_dir(episode_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if not workspace_dir:
+        raise HTTPException(status_code=404, detail="Episode workspace not found.")
+
+    file_path = _resolve_episode_file_path(workspace_dir, path)
+    file_meta = _serialize_episode_file(workspace_dir, file_path)
+    preview_type = file_meta["preview_type"]
+    response: dict[str, Any] = {
+        "file": file_meta,
+        "preview_type": preview_type,
+    }
+
+    if preview_type == "empty":
+        response["summary"] = "This file exists but does not contain data yet."
+        return response
+
+    if preview_type == "audio":
+        response["summary"] = "Audio preview available."
+        return response
+
+    if preview_type == "binary":
+        response["summary"] = "Preview is not available for this file type."
+        return response
+
+    raw_text = file_path.read_text(encoding="utf-8", errors="replace")
+    text = raw_text
+    if file_path.suffix.lower() == ".json":
+        try:
+            text = json.dumps(json.loads(raw_text), indent=2, ensure_ascii=False)
+        except json.JSONDecodeError:
+            text = raw_text
+    truncated = len(text) > MAX_PREVIEW_CHARS
+    if truncated:
+        text = text[:MAX_PREVIEW_CHARS].rstrip() + "\n\n... (preview truncated)"
+
+    response["text"] = text
+    response["truncated"] = truncated
+    return response
+
+
+@app.get("/api/episodes/{episode_id}/files/download")
+async def download_episode_file(episode_id: str, path: str) -> FileResponse:
+    try:
+        workspace_dir = _episode_workspace_dir(episode_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if not workspace_dir:
+        raise HTTPException(status_code=404, detail="Episode workspace not found.")
+
+    file_path = _resolve_episode_file_path(workspace_dir, path)
+    media_type = mimetypes.guess_type(file_path.name)[0]
+    return FileResponse(
+        str(file_path),
+        filename=file_path.name,
+        media_type=media_type,
+    )
 
 
 @app.post("/api/episodes/{episode_id}/retry-language")
