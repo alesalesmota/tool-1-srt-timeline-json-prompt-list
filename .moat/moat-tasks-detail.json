@@ -452,5 +452,44 @@
     "screenshotPath": "./screenshots/moat-1774640573498-e6c76i501.png",
     "status": "done",
     "timestamp": 1774640573636
+  },
+  {
+    "id": "6231b7e3-4db0-4737-aeba-263c50f9c8e4",
+    "title": "Background Container",
+    "comment": "when i scrool down on this section it auto goes back, leaving me unable to check the bottom of the screen",
+    "selector": "div.board-modal-shell > div.board-modal-layout:nth-child(2) > div.board-modal-main",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774655745531-x56w2s48p.png",
+    "status": "done",
+    "timestamp": 1774655745699
+  },
+  {
+    "id": "c8c55d24-9d9e-4968-9f1c-cfcda8ae9015",
+    "title": "Background Container",
+    "comment": "this card in on consistency guide, but its stats is talking about a tts tool, i believe its in the wrong place, wish mean its possible the cards jumping to the proper colums of the workflow is not working, also im not sure its actually working on the background",
+    "selector": "section.kanban-column.project-kanban-column:nth-child(2) > div.kanban-card-list:nth-child(2) > div.episode-card.surface:nth-child(1)",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774656073633-p386p9vrg.png",
+    "status": "to do",
+    "timestamp": 1774656073803
+  },
+  {
+    "id": "275ffc02-250f-47a6-a8ee-67d2485c9476",
+    "title": "Background Container",
+    "comment": "this card is stuck on consistency guide, but when i open its windows to check details of whats happening i dont see anything else, it should show the cli working in a box or something, that way i can verify if its actually working",
+    "selector": "div.board-modal-backdrop > div.board-modal-shell",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774656189308-5xt38qv7q.png",
+    "status": "to do",
+    "timestamp": 1774656189462
   }
 ]

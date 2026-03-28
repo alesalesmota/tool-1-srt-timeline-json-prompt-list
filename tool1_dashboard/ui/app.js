@@ -114,6 +114,8 @@ const state = {
   autoPlayedVoiceTestJobs: {},
   episodeOverlayId: null,
   boardScrollLeft: 0,
+  modalMainScrollTop: 0,
+  modalSideScrollTop: 0,
   voiceProfiles: [],
   translationProfiles: [],
   targetLanguages: [],
@@ -3156,22 +3158,49 @@ function langStatusBadge(status) {
 
 function captureDashboardScroll() {
   const board = $("pipeline-board");
-  if (!board) return;
-  state.boardScrollLeft = board.scrollLeft || 0;
+  if (board) {
+    state.boardScrollLeft = board.scrollLeft || 0;
+  }
+  const modalMain = document.querySelector(".board-modal-main");
+  if (modalMain) {
+    state.modalMainScrollTop = modalMain.scrollTop || 0;
+  }
+  const modalSide = document.querySelector(".board-modal-side");
+  if (modalSide) {
+    state.modalSideScrollTop = modalSide.scrollTop || 0;
+  }
 }
 
 function restoreDashboardScroll() {
-  if (!["pipeline-board", "niche-project", "episode"].includes(state.route.view)) return;
-  const board = $("pipeline-board");
-  if (!board) return;
-  board.scrollLeft = state.boardScrollLeft || 0;
-  board.addEventListener(
-    "scroll",
-    () => {
-      state.boardScrollLeft = board.scrollLeft || 0;
-    },
-    { passive: true }
-  );
+  if (["pipeline-board", "niche-project", "episode"].includes(state.route.view)) {
+    const board = $("pipeline-board");
+    if (board) {
+      board.scrollLeft = state.boardScrollLeft || 0;
+      board.addEventListener(
+        "scroll",
+        () => {
+          state.boardScrollLeft = board.scrollLeft || 0;
+        },
+        { passive: true }
+      );
+    }
+  }
+
+  const modalMain = document.querySelector(".board-modal-main");
+  if (modalMain) {
+    modalMain.scrollTop = state.modalMainScrollTop || 0;
+    modalMain.addEventListener("scroll", () => {
+      state.modalMainScrollTop = modalMain.scrollTop || 0;
+    }, { passive: true });
+  }
+
+  const modalSide = document.querySelector(".board-modal-side");
+  if (modalSide) {
+    modalSide.scrollTop = state.modalSideScrollTop || 0;
+    modalSide.addEventListener("scroll", () => {
+      state.modalSideScrollTop = modalSide.scrollTop || 0;
+    }, { passive: true });
+  }
 }
 
 function renderSettings() {
