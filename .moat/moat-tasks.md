@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 18 | **To Do**: 0 | **Doing**: 0 | **Done**: 18
+**Total**: 19 | **To Do**: 1 | **Doing**: 0 | **Done**: 18
 
 ## Tasks
 
@@ -28,8 +28,9 @@
 16. [x] Background Container – "this card in on consistency guide, but its stats is talki..." `section.kanban-column.project-kanban-column:nth-child(2) > div.kanban-card-list:nth-child(2) > div.episode-card.surface:nth-child(1)`
 17. [x] Background Container – "this card is stuck on consistency guide, but when i open ..." `div.board-modal-backdrop > div.board-modal-shell`
 18. [x] Button: Close – "clicking its not working" `div.board-modal-backdrop > div.board-modal-shell > div.board-modal-head:nth-child(1) > button:nth-of-type(1)`
+19. [ ] Background Container – "something is wrong on this step of the consistency guide,..." `div.board-modal-backdrop > div.board-modal-shell`
 
 ---
 
-_Generated: 27/03/2026, 21:42:42_
+_Generated: 27/03/2026, 21:47:04_
 _Source: moat-tasks-detail.json_

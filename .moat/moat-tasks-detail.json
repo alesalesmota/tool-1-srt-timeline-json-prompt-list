@@ -504,5 +504,18 @@
     "screenshotPath": "./screenshots/moat-1774656642399-cp1qxrklf.png",
     "status": "done",
     "timestamp": 1774656642581
+  },
+  {
+    "id": "bed62041-17fa-48de-b21e-6f0101a1af97",
+    "title": "Background Container",
+    "comment": "something is wrong on this step of the consistency guide, it shouldnt take this long to output a style guide",
+    "selector": "div.board-modal-backdrop > div.board-modal-shell",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774658806487-w5beypiwx.png",
+    "status": "to do",
+    "timestamp": 1774658806686
   }
 ]
