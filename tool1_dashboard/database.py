@@ -325,6 +325,15 @@ class Tool1Database:
                 payload[row["key"]] = row["value"]
         return payload
 
+    def get_setting(self, key: str, default: Any = None) -> Any:
+        row = self._fetchone("SELECT value FROM settings WHERE key = ?", (key,))
+        if row is None:
+            return default
+        try:
+            return json.loads(row["value"])
+        except json.JSONDecodeError:
+            return row["value"]
+
     # ── templates ───────────────────────────────────────────────────
 
     def upsert_template(self, stage: str, provider: str, path: str, body: str, template_hash: str) -> None:

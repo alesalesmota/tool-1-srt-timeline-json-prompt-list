@@ -213,6 +213,9 @@ Rules:
 """,
 }
 
+for stage in TEMPLATE_STAGES:
+    DEFAULT_TEMPLATES[(stage, "openai")] = DEFAULT_TEMPLATES[(stage, "codex")]
+
 
 class TemplateStore:
     def __init__(self, db: Tool1Database) -> None:

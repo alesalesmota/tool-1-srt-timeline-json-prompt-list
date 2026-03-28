@@ -22,17 +22,19 @@ class FakeCliRunner:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    def probe(self) -> dict[str, object]:
+    def probe(self, *, force: bool = False) -> dict[str, object]:
         return {
             "codex": {"available": True, "logged_in": True},
             "claude": {"available": True, "logged_in": True},
+            "openai": {"available": True, "logged_in": False},
         }
 
-    def run_structured(self, *, provider, model, system_prompt, user_prompt, schema, workdir, artifact_dir):
+    def run_structured(self, *, provider, model, api_key=None, system_prompt, user_prompt, schema, workdir, artifact_dir):
         artifact_dir.mkdir(parents=True, exist_ok=True)
         self.calls.append({
             "provider": provider,
             "model": model,
+            "api_key": api_key,
             "schema": schema,
             "workdir": str(workdir),
             "artifact_dir": str(artifact_dir),
@@ -120,7 +122,7 @@ class ProbeStateCliRunner(FakeCliRunner):
         super().__init__()
         self._probe_state = probe_state or super().probe()
 
-    def probe(self) -> dict[str, object]:
+    def probe(self, *, force: bool = False) -> dict[str, object]:
         return self._probe_state
 
 
@@ -136,11 +138,12 @@ class FailingProviderCliRunner(ProbeStateCliRunner):
         self.fail_provider = fail_provider
         self.fail_message = fail_message
 
-    def run_structured(self, *, provider, model, system_prompt, user_prompt, schema, workdir, artifact_dir):
+    def run_structured(self, *, provider, model, api_key=None, system_prompt, user_prompt, schema, workdir, artifact_dir):
         artifact_dir.mkdir(parents=True, exist_ok=True)
         self.calls.append({
             "provider": provider,
             "model": model,
+            "api_key": api_key,
             "schema": schema,
             "workdir": str(workdir),
             "artifact_dir": str(artifact_dir),
@@ -154,6 +157,7 @@ class FailingProviderCliRunner(ProbeStateCliRunner):
         return super().run_structured(
             provider=provider,
             model=model,
+            api_key=api_key,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             schema=schema,
@@ -501,6 +505,41 @@ class TranslationProfileApiTests(unittest.TestCase):
                 finally:
                     self.app_module.service = original
 
+    def test_discover_openai_stage_models_with_inline_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                recorder: list[dict[str, object]] = []
+                fake_response = FakeAsyncResponse(200, {
+                    "data": [
+                        {"id": "gpt-5.4-mini", "owned_by": "openai"},
+                        {"id": "gpt-4.1-mini", "owned_by": "openai"},
+                    ]
+                })
+                try:
+                    with patch(
+                        "tool1_dashboard.service.httpx.AsyncClient",
+                        side_effect=lambda *args, **kwargs: FakeAsyncClient(fake_response, recorder),
+                    ):
+                        resp = client.post("/api/providers/openai/discover", json={"api_key": "sk-inline"})
+                    self.assertEqual(resp.status_code, 200)
+                    payload = resp.json()
+                    self.assertEqual(payload["recommended_model"], "gpt-5.4-mini")
+                    self.assertFalse(payload["api_key_saved"])
+                    self.assertEqual(recorder[0]["headers"]["Authorization"], "Bearer sk-inline")
+
+                    settings = client.get("/api/settings").json()
+                    self.assertEqual(
+                        [item["value"] for item in settings["model_catalog"]["openai"]],
+                        ["gpt-5.4-mini", "gpt-4.1-mini"],
+                    )
+                    self.assertFalse(settings["settings"]["stage_provider_openai_has_api_key"])
+                    self.assertEqual(settings["settings"]["stage_provider_openai_model_count"], 2)
+                finally:
+                    self.app_module.service = original
+
 
 class EpisodeSubmissionApiTests(unittest.TestCase):
     """Tests for episode submission, detail, queue, and board endpoints."""
@@ -784,6 +823,30 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                 finally:
                     self.app_module.service = original
 
+    def test_queue_episode_rejects_when_openai_stage_key_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                runner = ProbeStateCliRunner(probe_state={
+                    "codex": {"available": True, "logged_in": True},
+                    "claude": {"available": True, "logged_in": True},
+                })
+                service = _make_service(temp_path, cli_runner=runner)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    voice_profiles, _ = _build_profile_assignments(service, temp_path, ["en"], include_translation_for=[])
+                    _, episode = self._create_niche_and_episode(client, langs=["en"], project_payload={
+                        "language_voice_profiles": voice_profiles,
+                        "visual_bible_provider": "openai",
+                        "visual_bible_model": "gpt-5.4-mini",
+                    })
+                    resp = client.post(f"/api/episodes/{episode['id']}/queue", json={})
+                    self.assertEqual(resp.status_code, 400)
+                    blockers = resp.json()["detail"]["queue_readiness"]["blockers"]
+                    self.assertTrue(any(item["code"] == "provider_api_key_required" for item in blockers))
+                finally:
+                    self.app_module.service = original
+
     def test_delete_episode(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -887,6 +950,29 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 guide = json.loads(guide_path.read_text(encoding="utf-8"))
                 self.assertIn("world_style", guide)
                 self.assertIn("characters", guide)
+
+    def test_consistency_guide_openai_provider_uses_saved_stage_api_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service, pid, runner = self._setup(
+                    temp_path,
+                    visual_bible_provider="openai",
+                    visual_bible_model="gpt-5.4-mini",
+                )
+                service.db.set_setting("stage_provider_openai_api_key", "sk-stage")
+                episode_result = service.submit_episode(
+                    pid,
+                    title="OpenAI Guide",
+                    script_text="Abraham waits in the desert.\n\nIshmael watches the horizon.",
+                )
+                episode_id = episode_result["episode"]["id"]
+
+                service._episode_run_consistency_guide(episode_id)
+
+                self.assertEqual(len(runner.calls), 1)
+                self.assertEqual(runner.calls[0]["provider"], "openai")
+                self.assertEqual(runner.calls[0]["api_key"], "sk-stage")
 
     def test_provider_failure_keeps_episode_failed_at_stage_with_stage_run_log(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

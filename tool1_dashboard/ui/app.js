@@ -17,7 +17,7 @@ const EPISODE_PIPELINE_COLUMNS = [
 const EPISODE_STAGE_LABELS = Object.fromEntries(EPISODE_PIPELINE_COLUMNS.map((c) => [c.id, c.label]));
 const EPISODE_PER_LANG_STAGES = ["translation", "tts", "alignment", "timeline_mapping"];
 
-const PROVIDERS = ["claude", "codex"];
+const PROVIDERS = ["claude", "codex", "openai"];
 const DEFAULT_MODEL_CATALOG = {
   claude: [
     { value: "haiku", label: "Haiku" },
@@ -29,6 +29,12 @@ const DEFAULT_MODEL_CATALOG = {
     { value: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
     { value: "gpt-5.2-codex", label: "GPT-5.2 Codex" },
     { value: "gpt-5.1-codex-mini", label: "GPT-5.1 Codex Mini" },
+  ],
+  openai: [
+    { value: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
+    { value: "gpt-5.4", label: "GPT-5.4" },
+    { value: "gpt-4o-mini", label: "GPT-4o Mini" },
+    { value: "gpt-4.1-mini", label: "GPT-4.1 Mini" },
   ],
 };
 const TRANSLATION_PROFILE_PROVIDER_CATALOG = [
@@ -109,6 +115,7 @@ const state = {
   notice: { text: "", tone: "neutral" },
   modal: { kind: null },
   translationProfileEditor: null,
+  stageProviderOpenAi: null,
   submittingVoiceTestProfileId: null,
   pendingVoiceTestJobs: {},
   autoPlayedVoiceTestJobs: {},
@@ -291,7 +298,13 @@ function toneFromRunStatus(status) {
 }
 
 function providerLabel(provider) {
-  return provider === "claude" ? "Claude CLI" : provider === "codex" ? "Codex CLI" : provider || "Unknown";
+  return provider === "claude"
+    ? "Claude CLI"
+    : provider === "codex"
+      ? "Codex CLI"
+      : provider === "openai"
+        ? "OpenAI API"
+        : provider || "Unknown";
 }
 
 function formatDate(value) {
@@ -1028,33 +1041,38 @@ function defaultModelForProvider(provider) {
   return modelCatalogFor(provider)[0]?.value || "";
 }
 
-function modelOptions(provider, selected) {
-  const options = modelCatalogFor(provider);
-  const preferred = selected || defaultModelForProvider(provider);
-  return options
-    .map(
-      (option) =>
-        `<option value="${esc(option.value)}" ${option.value === preferred ? "selected" : ""}>${esc(option.label)}</option>`
-    )
+function modelDatalistId(modelInputId) {
+  return `${modelInputId}-options`;
+}
+
+function modelOptions(provider) {
+  return modelCatalogFor(provider)
+    .map((option) => `<option value="${esc(option.value)}" label="${esc(option.label)}"></option>`)
     .join("");
 }
 
 function syncProviderModelSelect(providerSelectId, modelSelectId, preferredModel = "") {
   const providerSelect = $(providerSelectId);
   const modelSelect = $(modelSelectId);
-  if (!providerSelect || !modelSelect) return;
+  const modelDatalist = $(modelDatalistId(modelSelectId));
+  if (!providerSelect || !modelSelect || !modelDatalist) return;
   const provider = providerSelect.value || "claude";
   const options = modelCatalogFor(provider);
+  const previousProvider = modelSelect.dataset.provider || provider;
   const current = preferredModel || modelSelect.value || modelSelect.dataset.currentValue || "";
-  modelSelect.innerHTML = options
-    .map(
-      (option) =>
-        `<option value="${esc(option.value)}" ${option.value === current ? "selected" : ""}>${esc(option.label)}</option>`
-    )
-    .join("");
-  const valid = options.some((option) => option.value === current);
-  modelSelect.value = valid ? current : defaultModelForProvider(provider);
+  const knownForProvider = new Set(options.map((option) => option.value));
+  const knownForPreviousProvider = new Set(modelCatalogFor(previousProvider).map((option) => option.value));
+  modelDatalist.innerHTML = modelOptions(provider);
+  let nextValue = current;
+  if (!nextValue) {
+    nextValue = defaultModelForProvider(provider);
+  } else if (!preferredModel && !knownForProvider.has(nextValue) && knownForPreviousProvider.has(nextValue)) {
+    nextValue = defaultModelForProvider(provider);
+  }
+  modelSelect.placeholder = defaultModelForProvider(provider) || "Type a model id";
+  modelSelect.value = nextValue;
   modelSelect.dataset.currentValue = modelSelect.value;
+  modelSelect.dataset.provider = provider;
 }
 
 function syncAllProviderModelSelects() {
@@ -1106,8 +1124,19 @@ function renderStageSetupCard({
           <select id="${esc(providerId)}">${providerOptions(providerValue)}</select>
         </label>
         <label class="field">
-          <span class="field-label">Model</span>
-          <select id="${esc(modelId)}">${modelOptions(providerValue, modelValue)}</select>
+          <span class="field-label">Model id</span>
+          <input
+            id="${esc(modelId)}"
+            list="${esc(modelDatalistId(modelId))}"
+            value="${esc(modelValue || defaultModelForProvider(providerValue))}"
+            data-current-value="${esc(modelValue || defaultModelForProvider(providerValue))}"
+            data-provider="${esc(providerValue || "claude")}"
+            placeholder="${esc(defaultModelForProvider(providerValue) || "Type a model id")}"
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <datalist id="${esc(modelDatalistId(modelId))}">${modelOptions(providerValue)}</datalist>
+          <span class="helper">Pick a suggestion or type a newer model id manually.</span>
         </label>
       </div>
     `,
@@ -1868,6 +1897,169 @@ function renderTranslationProfileModal() {
   `;
 }
 
+function defaultStageProviderOpenAiStatus(stageProviderOpenAi = {}) {
+  const modelCount = Number(stageProviderOpenAi.modelCount || 0);
+  const recommendedModel = String(stageProviderOpenAi.recommendedModel || "").trim();
+  const lastSyncedAt = stageProviderOpenAi.lastSyncedAt
+    ? ` Last sync ${formatDate(stageProviderOpenAi.lastSyncedAt)}.`
+    : "";
+  if (stageProviderOpenAi.hasSavedApiKey && modelCount > 0) {
+    return `${modelCount} cached OpenAI model option${modelCount === 1 ? "" : "s"} ready for workflow stages.${recommendedModel ? ` Default ${recommendedModel}.` : ""}${lastSyncedAt}`.trim();
+  }
+  if (stageProviderOpenAi.hasSavedApiKey) {
+    return `Saved OpenAI key available for workflow stages. Refresh models to scan the current catalog.${lastSyncedAt}`.trim();
+  }
+  if (modelCount > 0) {
+    return `Cached OpenAI models are available, but workflow stages still need a saved API key.${lastSyncedAt}`.trim();
+  }
+  return "Paste an OpenAI API key to scan current models. Save settings to use OpenAI on scene planning, consistency guide, and prompt stages.";
+}
+
+function hydrateStageProviderOpenAiState(settings = {}, previous = null) {
+  const hasSavedApiKey = Boolean(settings.stage_provider_openai_has_api_key);
+  const stageProviderOpenAi = {
+    apiKeyDraft: String(previous?.apiKeyDraft || ""),
+    hasSavedApiKey,
+    apiKeyMasked: settings.stage_provider_openai_api_key_masked || "",
+    modelCount: Number(settings.stage_provider_openai_model_count || 0),
+    recommendedModel: settings.stage_provider_openai_recommended_model || "",
+    lastSyncedAt: settings.stage_provider_openai_last_synced_at || "",
+    isDiscovering: Boolean(previous?.isDiscovering),
+    discoveryError: previous?.isDiscovering ? String(previous?.discoveryError || "") : "",
+    discoveryStatus: previous?.isDiscovering ? String(previous?.discoveryStatus || "") : "",
+  };
+  if (!stageProviderOpenAi.discoveryStatus) {
+    stageProviderOpenAi.discoveryStatus = defaultStageProviderOpenAiStatus(stageProviderOpenAi);
+  }
+  return stageProviderOpenAi;
+}
+
+function activeStageProviderOpenAi() {
+  if (!state.stageProviderOpenAi) {
+    state.stageProviderOpenAi = hydrateStageProviderOpenAiState(state.settings || {}, null);
+  }
+  return state.stageProviderOpenAi;
+}
+
+function renderStageProviderOpenAiMeta(stageProviderOpenAi = state.stageProviderOpenAi) {
+  if (!stageProviderOpenAi) return "";
+  const badges = [
+    stageProviderOpenAi.hasSavedApiKey
+      ? statusBadge(`Saved key ${stageProviderOpenAi.apiKeyMasked}`, "active")
+      : statusBadge("No saved key", "warn"),
+    stageProviderOpenAi.modelCount
+      ? statusBadge(
+        `${stageProviderOpenAi.modelCount} cached model${stageProviderOpenAi.modelCount === 1 ? "" : "s"}`,
+        "success"
+      )
+      : "",
+    stageProviderOpenAi.recommendedModel
+      ? statusBadge(`Default ${stageProviderOpenAi.recommendedModel}`, "success")
+      : "",
+  ].filter(Boolean).join("");
+  const helperCopy = stageProviderOpenAi.lastSyncedAt
+    ? `Last model sync ${formatDate(stageProviderOpenAi.lastSyncedAt)}.`
+    : "Used by scene planning, consistency guide, video prompts, and image prompts when their provider is set to OpenAI API.";
+  return `
+    <div id="stage-provider-openai-meta" class="translation-key-meta">
+      ${badges}
+      <span class="helper">${esc(helperCopy)}</span>
+    </div>
+  `;
+}
+
+function renderStageProviderOpenAiStatus(stageProviderOpenAi = state.stageProviderOpenAi) {
+  if (!stageProviderOpenAi) return "";
+  if (stageProviderOpenAi.discoveryError) {
+    return `<div class="profile-inline-message" data-tone="error">${esc(stageProviderOpenAi.discoveryError)}</div>`;
+  }
+  if (stageProviderOpenAi.isDiscovering) {
+    return `<div class="profile-inline-message">Checking the OpenAI key and caching workflow-stage models...</div>`;
+  }
+  return `<div class="profile-inline-message">${esc(stageProviderOpenAi.discoveryStatus || defaultStageProviderOpenAiStatus(stageProviderOpenAi))}</div>`;
+}
+
+function captureStageProviderOpenAiDraft() {
+  const stageProviderOpenAi = activeStageProviderOpenAi();
+  const apiKeyInput = $("stage-provider-openai-api-key");
+  if (!apiKeyInput) return stageProviderOpenAi;
+  const previousDraft = stageProviderOpenAi.apiKeyDraft;
+  stageProviderOpenAi.apiKeyDraft = apiKeyInput.value;
+  if (stageProviderOpenAi.apiKeyDraft !== previousDraft) {
+    stageProviderOpenAi.discoveryError = "";
+    stageProviderOpenAi.discoveryStatus = stageProviderOpenAi.apiKeyDraft.trim()
+      ? "Unsaved OpenAI key ready. Refresh models to scan this account, then save settings to use it in workflow stages."
+      : defaultStageProviderOpenAiStatus(stageProviderOpenAi);
+  }
+  return stageProviderOpenAi;
+}
+
+function syncStageProviderOpenAiActionState() {
+  const stageProviderOpenAi = state.stageProviderOpenAi;
+  if (!stageProviderOpenAi) return;
+  const discoverButton = $("stage-provider-openai-discover-button");
+  if (!discoverButton) return;
+  const hasDraft = Boolean(String(stageProviderOpenAi.apiKeyDraft || "").trim());
+  const label = stageProviderOpenAi.isDiscovering
+    ? "Checking..."
+    : stageProviderOpenAi.modelCount > 0
+      ? "Refresh models"
+      : (hasDraft || stageProviderOpenAi.hasSavedApiKey ? "Check key" : "Check key");
+  discoverButton.disabled = stageProviderOpenAi.isDiscovering;
+  discoverButton.innerHTML = iconContent("refresh", label);
+}
+
+function refreshStageProviderOpenAiDom() {
+  const statusNode = $("stage-provider-openai-status");
+  if (statusNode) {
+    statusNode.innerHTML = renderStageProviderOpenAiStatus(state.stageProviderOpenAi);
+  }
+  syncStageProviderOpenAiActionState();
+}
+
+async function discoverStageProviderOpenAiModels() {
+  const stageProviderOpenAi = captureStageProviderOpenAiDraft();
+  if (!stageProviderOpenAi) return;
+  const apiKeyDraft = String(stageProviderOpenAi.apiKeyDraft || "").trim();
+  if (!apiKeyDraft && !stageProviderOpenAi.hasSavedApiKey) {
+    stageProviderOpenAi.discoveryError = "Paste an OpenAI API key first.";
+    stageProviderOpenAi.discoveryStatus = "";
+    refreshStageProviderOpenAiDom();
+    return;
+  }
+  stageProviderOpenAi.isDiscovering = true;
+  stageProviderOpenAi.discoveryError = "";
+  stageProviderOpenAi.discoveryStatus = apiKeyDraft
+    ? "Checking the pasted OpenAI key."
+    : "Checking the saved OpenAI key.";
+  refreshStageProviderOpenAiDom();
+  try {
+    const payload = {};
+    if (apiKeyDraft) payload.api_key = apiKeyDraft;
+    const result = await api("/api/providers/openai/discover", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await refreshData({ force: true });
+    state.stageProviderOpenAi = hydrateStageProviderOpenAiState(state.settings || {}, state.stageProviderOpenAi);
+    state.stageProviderOpenAi.apiKeyDraft = stageProviderOpenAi.apiKeyDraft;
+    state.stageProviderOpenAi.isDiscovering = false;
+    state.stageProviderOpenAi.discoveryError = "";
+    state.stageProviderOpenAi.discoveryStatus = result.from_saved_key
+      ? "Models loaded using the saved OpenAI key."
+      : result.api_key_saved
+        ? "Models loaded using the pasted OpenAI key. Save settings only if you want to replace the stored key."
+        : "Models loaded using the pasted OpenAI key. Save settings to use this key in workflow stages.";
+    renderApp();
+    setNotice(`Loaded ${result.models?.length || 0} OpenAI model${(result.models?.length || 0) === 1 ? "" : "s"}.`, "success");
+  } catch (error) {
+    stageProviderOpenAi.isDiscovering = false;
+    stageProviderOpenAi.discoveryError = error.message;
+    refreshStageProviderOpenAiDom();
+  }
+}
+
 function renderTranslationProfiles() {
   const profiles = state.translationProfiles || [];
   const cards = profiles
@@ -2479,6 +2671,7 @@ function renderProviderConfigSection(project) {
         <button type="button" class="button button-primary button-small has-icon" data-save-provider-config="${esc(project.id)}">${iconContent("save", "Save")}</button>
       </div>
       <div class="provider-config-grid">${cards}</div>
+      <div class="notice" style="margin-top:12px;">Model fields accept manual ids, so newer CLI models do not have to wait for a dashboard update. OpenAI stage models refresh from the shared key in Settings.</div>
       <div style="margin-top:10px;">
         <label class="field" style="max-width:200px;">
           <span class="field-label">Leading video scenes</span>
@@ -2613,7 +2806,7 @@ function stageRunSnapshotOutput(run, payload = null) {
   if (Array.isArray(commandPayload?.command) && commandPayload.command.length) {
     lines.push(`command: ${commandPayload.command.join(" ")}`);
   } else if (run?.status === "running") {
-    lines.push("Waiting for CLI output. The provider request is still active.");
+    lines.push("Waiting for provider output. The request is still active.");
   }
   return lines.join("\n");
 }
@@ -3294,6 +3487,8 @@ function restoreDashboardScroll() {
 
 function renderSettings() {
   const settings = state.settings || {};
+  const stageProviderOpenAi = activeStageProviderOpenAi();
+  const openaiHealth = state.health?.providers?.openai || {};
   $("view").innerHTML = `
     <section class="split-grid">
       <section class="surface">
@@ -3355,7 +3550,32 @@ function renderSettings() {
               `,
             })}
           </div>
+          <div class="notice" style="margin-top:14px;">CLI model catalogs can drift as local tools update. Use the suggestions when they help, but every stage model field also accepts manual ids.</div>
           <div class="workflow-setup-grid workflow-setup-grid-compact">
+            ${renderSetupCard({
+              icon: "refresh",
+              title: "OpenAI workflow access",
+              copy: "Shared key for scene planning, consistency guide, and prompt stages whenever their provider is set to OpenAI API.",
+              tone: stageProviderOpenAi.hasSavedApiKey ? "active" : "warn",
+              fields: `
+                <label class="field">
+                  <span class="field-label">OpenAI API key</span>
+                  <input
+                    id="stage-provider-openai-api-key"
+                    type="password"
+                    value="${esc(stageProviderOpenAi.apiKeyDraft)}"
+                    placeholder="${stageProviderOpenAi.hasSavedApiKey ? "Leave blank to keep the saved key" : "Paste an OpenAI key"}"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                </label>
+                ${renderStageProviderOpenAiMeta(stageProviderOpenAi)}
+                <div class="button-row translation-discovery-actions">
+                  <button type="button" class="button has-icon" id="stage-provider-openai-discover-button" data-stage-provider-openai-discover="true">${iconContent("refresh", stageProviderOpenAi.modelCount ? "Refresh models" : "Check key")}</button>
+                </div>
+                <div id="stage-provider-openai-status">${renderStageProviderOpenAiStatus(stageProviderOpenAi)}</div>
+              `,
+            })}
             ${renderSetupCard({
               icon: "prompts",
               title: "Prompt batches",
@@ -3414,6 +3634,11 @@ function renderSettings() {
             <div class="metric-label">Claude CLI</div>
             <div class="metric-value">${esc(state.health?.providers?.claude?.logged_in ? "Ready" : state.health?.providers?.claude?.available ? "Login" : "Missing")}</div>
             <div class="metric-copy">Used by default for planning and world-building steps.</div>
+          </article>
+          <article class="summary-card">
+            <div class="metric-label">OpenAI API</div>
+            <div class="metric-value">${esc(openaiHealth.has_api_key ? "Ready" : "Key needed")}</div>
+            <div class="metric-copy">${esc(openaiHealth.has_api_key ? `${openaiHealth.model_count || 0} cached stage model option${(openaiHealth.model_count || 0) === 1 ? "" : "s"}.` : "Shared key for workflow stages is not saved yet.")}</div>
           </article>
         </div>
         <div class="badge-row" style="margin-top:16px;">
@@ -3630,6 +3855,7 @@ async function refreshData({ preserveNotice = true, routeLoading = false, force 
       state.settings = settings.settings || {};
       state.modelCatalog = settings.model_catalog || DEFAULT_MODEL_CATALOG;
       state.templates = settings.templates || [];
+      state.stageProviderOpenAi = hydrateStageProviderOpenAiState(state.settings, state.stageProviderOpenAi);
       state.settingsFetchedAt = now;
     }
 
@@ -4129,6 +4355,8 @@ async function submitEpisode(event) {
 
 async function saveSettings(event) {
   event.preventDefault();
+  const stageProviderOpenAi = captureStageProviderOpenAiDraft();
+  const stageProviderOpenAiApiKey = String(stageProviderOpenAi?.apiKeyDraft || "").trim();
   await api("/api/settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -4145,9 +4373,15 @@ async function saveSettings(event) {
       planning_chunk_seconds: Number($("settings-chunk-seconds").value),
       planning_overlap_seconds: Number($("settings-overlap-seconds").value),
       prompt_batch_size: Number($("settings-batch-size").value),
+      stage_provider_openai_api_key: stageProviderOpenAiApiKey || null,
     }),
   });
-  await refreshData();
+  if (stageProviderOpenAi) {
+    stageProviderOpenAi.apiKeyDraft = "";
+    stageProviderOpenAi.discoveryError = "";
+    stageProviderOpenAi.isDiscovering = false;
+  }
+  await refreshData({ force: true });
   renderApp();
   setNotice("Settings saved.", "success");
 }
@@ -4187,7 +4421,7 @@ document.addEventListener("click", async (event) => {
     closeEpisodeOverlay();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export], [data-project-config-toggle]");
+  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-stage-provider-openai-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-save-review], [data-finalize-export], [data-download-export], [data-project-config-toggle]");
   if (!target) return;
   event.preventDefault();
   try {
@@ -4285,6 +4519,10 @@ document.addEventListener("click", async (event) => {
     }
     if (target.dataset.translationDiscover) {
       await discoverTranslationProfileModels();
+      return;
+    }
+    if (target.dataset.stageProviderOpenaiDiscover) {
+      await discoverStageProviderOpenAiModels();
       return;
     }
     if (target.dataset.selectTranslationModel) {
@@ -4565,6 +4803,11 @@ document.addEventListener("input", (event) => {
   if (event.target.id === "tp-model-search") {
     captureTranslationProfileEditorDraft();
     refreshTranslationProfileEditorDom();
+    return;
+  }
+  if (event.target.id === "stage-provider-openai-api-key") {
+    captureStageProviderOpenAiDraft();
+    refreshStageProviderOpenAiDom();
   }
 });
 

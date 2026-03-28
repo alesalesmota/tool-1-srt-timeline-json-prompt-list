@@ -33,6 +33,7 @@ class SettingsRequest(BaseModel):
     planning_chunk_seconds: int
     planning_overlap_seconds: int
     prompt_batch_size: int
+    stage_provider_openai_api_key: str | None = None
 
 
 class TemplateRequest(BaseModel):
@@ -56,6 +57,10 @@ class TranslationProfileUpdateRequest(BaseModel):
 class OpenAiModelDiscoveryRequest(BaseModel):
     api_key: str | None = None
     profile_id: str | None = None
+
+
+class StageProviderOpenAiDiscoveryRequest(BaseModel):
+    api_key: str | None = None
 
 
 class VoiceTestRequest(BaseModel):
@@ -521,6 +526,18 @@ async def discover_openai_translation_models(payload: OpenAiModelDiscoveryReques
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/providers/openai/discover")
+async def discover_openai_stage_provider_models(
+    payload: StageProviderOpenAiDiscoveryRequest,
+) -> dict[str, Any]:
+    try:
+        return await service.discover_openai_stage_provider_models(
+            api_key=payload.api_key or "",
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

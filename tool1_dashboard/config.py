@@ -100,7 +100,7 @@ TARGET_LANGUAGES = (
     {"code": "cs", "label": "Czech"},
 )
 
-PROVIDERS = ("claude", "codex")
+PROVIDERS = ("claude", "codex", "openai")
 MODEL_CATALOG = {
     "claude": (
         {"value": "haiku", "label": "Haiku"},
@@ -112,6 +112,12 @@ MODEL_CATALOG = {
         {"value": "gpt-5.4-mini", "label": "GPT-5.4 Mini"},
         {"value": "gpt-5.2-codex", "label": "GPT-5.2 Codex"},
         {"value": "gpt-5.1-codex-mini", "label": "GPT-5.1 Codex Mini"},
+    ),
+    "openai": (
+        {"value": "gpt-5.4-mini", "label": "GPT-5.4 Mini"},
+        {"value": "gpt-5.4", "label": "GPT-5.4"},
+        {"value": "gpt-4o-mini", "label": "GPT-4o Mini"},
+        {"value": "gpt-4.1-mini", "label": "GPT-4.1 Mini"},
     ),
 }
 SCENE_STAGE = "scene_planning"

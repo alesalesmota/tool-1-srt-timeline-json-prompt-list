@@ -58,6 +58,7 @@ from .srt_chunker.srt_io import parse_srt_text
 from .templates import TemplateStore
 from .translation_profiles import (
     is_runnable_translation_profile_provider,
+    mask_secret,
     normalize_openai_model,
     recommended_openai_model,
     sanitize_translation_profile,
@@ -93,6 +94,10 @@ QUEUE_PROVIDER_TARGETS = (
     ("image_prompt_generation", "Image Prompt Generation", "image_prompt_provider", "image_prompt_model"),
 )
 PROVIDER_STRUCTURED_STAGES = {stage for stage, *_ in QUEUE_PROVIDER_TARGETS}
+STAGE_PROVIDER_OPENAI_API_KEY_SETTING = "stage_provider_openai_api_key"
+STAGE_PROVIDER_OPENAI_MODELS_SETTING = "stage_provider_openai_models_json"
+STAGE_PROVIDER_OPENAI_RECOMMENDED_MODEL_SETTING = "stage_provider_openai_recommended_model"
+STAGE_PROVIDER_OPENAI_SYNCED_AT_SETTING = "stage_provider_openai_models_synced_at"
 
 
 class QueueBlockedError(ValueError):
@@ -324,6 +329,130 @@ class Tool1Service:
             ),
         }
 
+    def _stage_provider_openai_api_key(self) -> str:
+        return str(self.db.get_setting(STAGE_PROVIDER_OPENAI_API_KEY_SETTING, "") or "").strip()
+
+    def _stage_provider_openai_models(self) -> list[dict[str, Any]]:
+        raw = self.db.get_setting(STAGE_PROVIDER_OPENAI_MODELS_SETTING, "[]")
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return []
+        if not isinstance(parsed, list):
+            return []
+        models: list[dict[str, Any]] = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            model_id = str(item.get("id") or "").strip()
+            if not model_id:
+                continue
+            models.append(dict(item))
+        return models
+
+    def _stage_provider_model_catalog(self) -> dict[str, list[dict[str, str]]]:
+        catalog = {
+            provider: [
+                {
+                    "value": str(option.get("value") or "").strip(),
+                    "label": str(option.get("label") or option.get("value") or "").strip(),
+                }
+                for option in MODEL_CATALOG.get(provider, ())
+                if str(option.get("value") or "").strip()
+            ]
+            for provider in PROVIDERS
+        }
+        openai_models = self._stage_provider_openai_models()
+        if openai_models:
+            catalog["openai"] = [
+                {
+                    "value": str(model.get("id") or "").strip(),
+                    "label": " - ".join(
+                        part for part in (
+                            str(model.get("label") or model.get("id") or "").strip(),
+                            str(model.get("capability_label") or "").strip(),
+                        ) if part
+                    ),
+                }
+                for model in openai_models
+                if str(model.get("id") or "").strip()
+            ]
+        return catalog
+
+    def _provider_health(self, *, force: bool = False) -> dict[str, Any]:
+        payload = self.cli_runner.probe(force=force)
+        openai_key = self._stage_provider_openai_api_key()
+        openai_models = self._stage_provider_openai_models()
+        payload["openai"] = {
+            "available": True,
+            "logged_in": bool(openai_key),
+            "detail": (
+                f"Saved API key configured. {len(openai_models)} model option(s) cached."
+                if openai_key
+                else "No saved API key for OpenAI stage providers."
+            ),
+            "has_api_key": bool(openai_key),
+            "api_key_masked": mask_secret(openai_key),
+            "model_count": len(openai_models),
+        }
+        return payload
+
+    def _stage_provider_api_key(self, provider: str) -> str | None:
+        if str(provider or "").strip() == "openai":
+            return self._stage_provider_openai_api_key() or None
+        return None
+
+    async def _discover_openai_models_with_key(self, resolved_api_key: str) -> dict[str, Any]:
+        headers = {
+            "Authorization": f"Bearer {resolved_api_key}",
+            "Content-Type": "application/json",
+        }
+        timeout = httpx.Timeout(20.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get("https://api.openai.com/v1/models", headers=headers)
+
+        if response.status_code != 200:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            detail = str(payload.get("error", {}).get("message") or "").strip() or response.text[:240].strip()
+            if response.status_code == 401:
+                raise ValueError(f"OpenAI API key rejected. {detail}".strip())
+            raise ValueError(f"OpenAI model discovery failed. {detail}".strip())
+
+        payload = response.json()
+        raw_models = payload.get("data")
+        if not isinstance(raw_models, list):
+            raise ValueError("OpenAI model discovery returned an unexpected payload.")
+
+        normalized_models: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for raw_model in raw_models:
+            if not isinstance(raw_model, dict):
+                continue
+            normalized = normalize_openai_model(raw_model)
+            if not normalized:
+                continue
+            model_id = str(normalized.get("id") or "").strip()
+            if not model_id or model_id in seen_ids:
+                continue
+            seen_ids.add(model_id)
+            normalized_models.append(normalized)
+
+        normalized_models = sort_openai_models(normalized_models)
+        recommended_model = recommended_openai_model(normalized_models)
+        for model in normalized_models:
+            model["recommended"] = model.get("id") == recommended_model
+
+        if not normalized_models:
+            raise ValueError("No text-capable OpenAI models were available for this API key.")
+
+        return {
+            "models": normalized_models,
+            "recommended_model": recommended_model,
+        }
+
     def _build_queue_readiness(
         self,
         *,
@@ -347,7 +476,7 @@ class Tool1Service:
             ))
             return {"ok": False, "blockers": blockers, "warnings": warnings}
 
-        provider_health = provider_health or self.cli_runner.probe()
+        provider_health = provider_health or self._provider_health()
         voice_profiles = voice_profiles or {
             profile["id"]: profile
             for profile in self.list_voice_profiles()
@@ -433,7 +562,17 @@ class Tool1Service:
                     model=model or None,
                 ))
                 continue
-            if not health.get("logged_in"):
+            if provider == "openai" and not health.get("logged_in"):
+                blockers.append(self._queue_issue(
+                    "provider_api_key_required",
+                    f"{stage_label} is set to 'openai', but no OpenAI API key is saved for workflow stages.",
+                    project_id=project_id,
+                    stage=stage_key,
+                    provider=provider,
+                    model=model or None,
+                ))
+                continue
+            if provider != "openai" and not health.get("logged_in"):
                 blockers.append(self._queue_issue(
                     "provider_login_required",
                     f"{stage_label} is set to '{provider}', but the provider is not logged in.",
@@ -819,7 +958,7 @@ class Tool1Service:
     def get_health(self) -> dict[str, Any]:
         return {
             "alignment": alignment_health(),
-            "providers": self.cli_runner.probe(),
+            "providers": self._provider_health(),
             "languages": [
                 {
                     "code": profile.code,
@@ -835,6 +974,21 @@ class Tool1Service:
 
     def get_settings_payload(self) -> dict[str, Any]:
         settings = self._global_settings()
+        openai_api_key = self._stage_provider_openai_api_key()
+        openai_models = self._stage_provider_openai_models()
+        settings.pop(STAGE_PROVIDER_OPENAI_API_KEY_SETTING, None)
+        settings.pop(STAGE_PROVIDER_OPENAI_MODELS_SETTING, None)
+        settings.pop(STAGE_PROVIDER_OPENAI_RECOMMENDED_MODEL_SETTING, None)
+        settings.pop(STAGE_PROVIDER_OPENAI_SYNCED_AT_SETTING, None)
+        settings["stage_provider_openai_has_api_key"] = bool(openai_api_key)
+        settings["stage_provider_openai_api_key_masked"] = mask_secret(openai_api_key)
+        settings["stage_provider_openai_model_count"] = len(openai_models)
+        settings["stage_provider_openai_recommended_model"] = str(
+            self.db.get_setting(STAGE_PROVIDER_OPENAI_RECOMMENDED_MODEL_SETTING, "") or ""
+        ).strip()
+        settings["stage_provider_openai_last_synced_at"] = str(
+            self.db.get_setting(STAGE_PROVIDER_OPENAI_SYNCED_AT_SETTING, "") or ""
+        ).strip()
         settings["voice_tts_default_preset"] = DEFAULT_VOICE_TTS_PRESET
         settings["voice_tts_presets"] = voice_tts_presets_payload()
         settings["voice_tts_limits"] = voice_tts_limits_payload()
@@ -842,13 +996,18 @@ class Tool1Service:
             "settings": settings,
             "templates": self.templates.list_templates(),
             "agents_root": str(AGENTS_ROOT),
-            "model_catalog": MODEL_CATALOG,
+            "model_catalog": self._stage_provider_model_catalog(),
         }
 
     def save_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        openai_api_key = payload.pop(STAGE_PROVIDER_OPENAI_API_KEY_SETTING, None)
         for key in DEFAULT_SETTINGS:
             if key in payload:
                 self.db.set_setting(key, payload[key])
+        if openai_api_key is not None:
+            normalized_key = str(openai_api_key or "").strip()
+            if normalized_key:
+                self.db.set_setting(STAGE_PROVIDER_OPENAI_API_KEY_SETTING, normalized_key)
         return self.get_settings_payload()
 
     def save_template(self, stage: str, provider: str, body: str) -> dict[str, Any]:
@@ -1021,57 +1180,37 @@ class Tool1Service:
                 resolved_api_key = str(profile.get("api_key_ref") or "").strip()
         if not resolved_api_key:
             raise ValueError("Paste an OpenAI API key first.")
-
-        headers = {
-            "Authorization": f"Bearer {resolved_api_key}",
-            "Content-Type": "application/json",
-        }
-        timeout = httpx.Timeout(20.0, connect=10.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get("https://api.openai.com/v1/models", headers=headers)
-
-        if response.status_code != 200:
-            try:
-                payload = response.json()
-            except ValueError:
-                payload = {}
-            detail = str(payload.get("error", {}).get("message") or "").strip() or response.text[:240].strip()
-            if response.status_code == 401:
-                raise ValueError(f"OpenAI API key rejected. {detail}".strip())
-            raise ValueError(f"OpenAI model discovery failed. {detail}".strip())
-
-        payload = response.json()
-        raw_models = payload.get("data")
-        if not isinstance(raw_models, list):
-            raise ValueError("OpenAI model discovery returned an unexpected payload.")
-
-        normalized_models: list[dict[str, Any]] = []
-        seen_ids: set[str] = set()
-        for raw_model in raw_models:
-            if not isinstance(raw_model, dict):
-                continue
-            normalized = normalize_openai_model(raw_model)
-            if not normalized:
-                continue
-            model_id = str(normalized.get("id") or "").strip()
-            if not model_id or model_id in seen_ids:
-                continue
-            seen_ids.add(model_id)
-            normalized_models.append(normalized)
-
-        normalized_models = sort_openai_models(normalized_models)
-        recommended_model = recommended_openai_model(normalized_models)
-        for model in normalized_models:
-            model["recommended"] = model.get("id") == recommended_model
-
-        if not normalized_models:
-            raise ValueError("No text-capable OpenAI models were available for this API key.")
+        discovery = await self._discover_openai_models_with_key(resolved_api_key)
 
         return {
-            "models": normalized_models,
-            "recommended_model": recommended_model,
+            "models": discovery["models"],
+            "recommended_model": discovery["recommended_model"],
             "from_saved_key": bool(profile_id and not str(api_key or "").strip()),
             "profile_id": profile_id,
+        }
+
+    async def discover_openai_stage_provider_models(
+        self,
+        *,
+        api_key: str = "",
+    ) -> dict[str, Any]:
+        resolved_api_key = str(api_key or "").strip() or self._stage_provider_openai_api_key()
+        if not resolved_api_key:
+            raise ValueError("Paste an OpenAI API key first.")
+        discovery = await self._discover_openai_models_with_key(resolved_api_key)
+        self.db.set_setting(STAGE_PROVIDER_OPENAI_MODELS_SETTING, json.dumps(discovery["models"]))
+        self.db.set_setting(
+            STAGE_PROVIDER_OPENAI_RECOMMENDED_MODEL_SETTING,
+            str(discovery["recommended_model"] or "").strip(),
+        )
+        self.db.set_setting(STAGE_PROVIDER_OPENAI_SYNCED_AT_SETTING, utc_now())
+        return {
+            "models": discovery["models"],
+            "recommended_model": discovery["recommended_model"],
+            "from_saved_key": not str(api_key or "").strip(),
+            "api_key_saved": bool(self._stage_provider_openai_api_key()),
+            "api_key_masked": mask_secret(self._stage_provider_openai_api_key()),
+            "last_synced_at": str(self.db.get_setting(STAGE_PROVIDER_OPENAI_SYNCED_AT_SETTING, "") or ""),
         }
 
     def create_translation_profile(
@@ -1396,7 +1535,7 @@ class Tool1Service:
             raise FileNotFoundError("Niche project not found.")
         configured_langs = project.get("configured_languages") or []
         episodes = self.db.list_episodes(project_id)
-        provider_health = self.cli_runner.probe()
+        provider_health = self._provider_health()
         voice_profiles = {
             profile["id"]: profile
             for profile in self.list_voice_profiles()
@@ -1601,7 +1740,7 @@ class Tool1Service:
             for run in self.db.list_stage_runs(episode_id)
         ]
         project = self._hydrate_project_record(self.db.get_niche_project(episode["niche_project_id"]))
-        provider_health = self.cli_runner.probe()
+        provider_health = self._provider_health()
         voice_profiles = {
             profile["id"]: profile
             for profile in self.list_voice_profiles()
@@ -1672,7 +1811,7 @@ class Tool1Service:
     def list_all_episodes_for_board(self) -> list[dict[str, Any]]:
         """Return all episodes with niche project title and per-language progress."""
         episodes = self.db.list_all_episodes_for_board()
-        provider_health = self.cli_runner.probe()
+        provider_health = self._provider_health()
         voice_profiles = {
             profile["id"]: profile
             for profile in self.list_voice_profiles()
@@ -2174,6 +2313,7 @@ class Tool1Service:
             result = self.cli_runner.run_structured(
                 provider=provider,
                 model=config["visual_bible_model"],
+                api_key=self._stage_provider_api_key(provider),
                 system_prompt=template["body"],
                 user_prompt=user_prompt,
                 schema=schema,
@@ -2535,6 +2675,7 @@ class Tool1Service:
                 result = self.cli_runner.run_structured(
                     provider=provider,
                     model=config["scene_planning_model"],
+                    api_key=self._stage_provider_api_key(provider),
                     system_prompt=template["body"],
                     user_prompt=user_prompt,
                     schema=schema,
@@ -2672,6 +2813,7 @@ class Tool1Service:
                 result = self.cli_runner.run_structured(
                     provider=provider,
                     model=model,
+                    api_key=self._stage_provider_api_key(provider),
                     system_prompt=template["body"],
                     user_prompt=user_prompt,
                     schema=schema,

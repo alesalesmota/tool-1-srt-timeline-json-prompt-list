@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import httpx
 import json
 import os
 import shutil
@@ -138,6 +139,7 @@ class CliRunner:
         *,
         provider: str,
         model: str | None,
+        api_key: str | None = None,
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
@@ -152,7 +154,43 @@ class CliRunner:
         parsed_path = artifact_dir / "parsed.json"
         command_payload: dict[str, Any]
 
-        if provider == "claude":
+        if provider == "openai":
+            request_path = artifact_dir / "request.json"
+            request_payload = {
+                "model": model or "gpt-5.4-mini",
+                "instructions": system_prompt,
+                "input": user_prompt,
+                "store": False,
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": "structured_output",
+                        "strict": True,
+                        "schema": schema,
+                    }
+                },
+            }
+            write_json(request_path, request_payload)
+            response_data = self._run_openai_structured(
+                api_key=str(api_key or "").strip(),
+                request_payload=request_payload,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                timeout_seconds=self._structured_timeout_seconds,
+            )
+            raw_text = self._extract_openai_output_text(response_data)
+            parsed = self._parse_structured_response(raw_text or json.dumps(response_data))
+            command_payload = {
+                "provider": provider,
+                "endpoint": "https://api.openai.com/v1/responses",
+                "workdir": str(workdir),
+                "prompt_path": str(prompt_path),
+                "schema_path": str(schema_path),
+                "request_path": str(request_path),
+                "model": model or "gpt-5.4-mini",
+                "transport": "https",
+            }
+        elif provider == "claude":
             command = [
                 self.claude_bin,
                 "-p",
@@ -262,6 +300,88 @@ class CliRunner:
             "parsed_path": str(parsed_path),
             "command_payload": command_payload,
         }
+
+    @staticmethod
+    def _extract_openai_output_text(payload: dict[str, Any]) -> str:
+        direct = str(payload.get("output_text") or "").strip()
+        if direct:
+            return direct
+        output = payload.get("output")
+        if not isinstance(output, list):
+            return ""
+        parts: list[str] = []
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if not isinstance(content, list):
+                continue
+            for entry in content:
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("type") or "").strip() == "output_text":
+                    text = str(entry.get("text") or "").strip()
+                    if text:
+                        parts.append(text)
+        return "\n".join(parts).strip()
+
+    def _run_openai_structured(
+        self,
+        *,
+        api_key: str,
+        request_payload: dict[str, Any],
+        stdout_path: Path,
+        stderr_path: Path,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        if not api_key:
+            write_text(stderr_path, "OpenAI API key is required for this provider.")
+            raise CliExecutionError(
+                "OpenAI API key is required for this provider.",
+                stdout="",
+                stderr="OpenAI API key is required for this provider.",
+            )
+        timeout = httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 20.0))
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                response = client.post(
+                    "https://api.openai.com/v1/responses",
+                    headers=headers,
+                    json=request_payload,
+                )
+        except httpx.TimeoutException as exc:
+            message = f"OpenAI API request timed out after {int(timeout_seconds)} seconds."
+            write_text(stderr_path, message)
+            raise CliExecutionError(message, stdout="", stderr=message) from exc
+        except httpx.HTTPError as exc:
+            message = f"OpenAI API request failed. {exc}"
+            write_text(stderr_path, message)
+            raise CliExecutionError(message, stdout="", stderr=message) from exc
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            body = response.text
+            write_text(stdout_path, body)
+            message = "OpenAI API returned invalid JSON."
+            write_text(stderr_path, message)
+            raise CliExecutionError(message, stdout=body, stderr=message) from exc
+
+        write_json(stdout_path, payload)
+        write_text(stderr_path, "")
+        if response.status_code >= 400:
+            detail = str(payload.get("error", {}).get("message") or "").strip() or response.text[:240].strip()
+            if response.status_code == 401:
+                message = f"OpenAI API key rejected. {detail}".strip()
+            else:
+                message = f"OpenAI API execution failed. {detail}".strip()
+            write_text(stderr_path, message)
+            raise CliExecutionError(message, stdout=json.dumps(payload), stderr=message)
+        return payload
 
     @staticmethod
     def _run_streaming(

@@ -30,6 +30,36 @@ def _make_fake_popen(returncode: int, stdout_text: str, stderr_text: str, *, sid
     return fake_popen
 
 
+class FakeHttpxResponse:
+    def __init__(self, status_code: int, payload: dict[str, object], text: str = "") -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+
+class FakeHttpxClient:
+    def __init__(self, response: FakeHttpxResponse, recorder: list[dict[str, object]]) -> None:
+        self.response = response
+        self.recorder = recorder
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def post(self, url: str, *, headers: dict[str, str] | None = None, json: dict[str, object] | None = None):
+        self.recorder.append({
+            "url": url,
+            "headers": headers or {},
+            "json": json or {},
+        })
+        return self.response
+
+
 class CliRunnerTests(unittest.TestCase):
     def test_parse_structured_output_wrapper(self) -> None:
         runner = CliRunner()
@@ -164,6 +194,40 @@ class CliRunnerTests(unittest.TestCase):
         self.assertIn("Codex CLI execution timed out.", str(context.exception))
         self.assertIn("timed out after 30 seconds", str(context.exception))
         self.assertIn("timed out after 30 seconds", context.exception.stderr)
+
+    def test_openai_structured_request_uses_responses_api(self) -> None:
+        runner = CliRunner()
+        recorder: list[dict[str, object]] = []
+        response_payload = {
+            "output_text": json.dumps({
+                "scenes": [
+                    {"start": 0, "end": 1, "duration": 1, "text": "Opening scene"}
+                ]
+            })
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with patch(
+                "tool1_dashboard.providers.httpx.Client",
+                side_effect=lambda *args, **kwargs: FakeHttpxClient(FakeHttpxResponse(200, response_payload), recorder),
+            ):
+                result = runner.run_structured(
+                    provider="openai",
+                    model="gpt-5.4-mini",
+                    api_key="sk-stage",
+                    system_prompt="system",
+                    user_prompt="user",
+                    schema={"type": "object", "properties": {"scenes": {"type": "array"}}, "required": ["scenes"]},
+                    workdir=temp_path,
+                    artifact_dir=temp_path / "artifacts",
+                )
+
+        self.assertEqual(result["parsed"]["scenes"][0]["text"], "Opening scene")
+        self.assertEqual(recorder[0]["url"], "https://api.openai.com/v1/responses")
+        self.assertEqual(recorder[0]["headers"]["Authorization"], "Bearer sk-stage")
+        self.assertEqual(recorder[0]["json"]["text"]["format"]["type"], "json_schema")
+        self.assertEqual(recorder[0]["json"]["text"]["format"]["name"], "structured_output")
 
     def test_probe_uses_short_lived_cache(self) -> None:
         runner = CliRunner()
