@@ -25,6 +25,7 @@ class CliRunner:
         self.codex_bin = os.environ.get("TOOL1_CODEX_BIN") or shutil.which("codex") or "codex"
         self.claude_bin = os.environ.get("TOOL1_CLAUDE_BIN") or shutil.which("claude") or "claude"
         self._probe_ttl_seconds = float(os.environ.get("TOOL1_PROVIDER_PROBE_TTL_SECONDS", "10"))
+        self._structured_timeout_seconds = float(os.environ.get("TOOL1_PROVIDER_EXEC_TIMEOUT_SECONDS", "600"))
         self._probe_cache: dict[str, Any] | None = None
         self._probe_cached_at = 0.0
         self._probe_lock = threading.Lock()
@@ -165,7 +166,12 @@ class CliRunner:
                 json.dumps(schema, ensure_ascii=False),
             ]
             returncode, stdout_text, stderr_text = self._run_streaming(
-                command, user_prompt, stdout_path, stderr_path, workdir,
+                command,
+                user_prompt,
+                stdout_path,
+                stderr_path,
+                workdir,
+                timeout_seconds=self._structured_timeout_seconds,
             )
             if returncode != 0:
                 raise CliExecutionError(
@@ -221,7 +227,12 @@ class CliRunner:
                 "-",
             ]
             returncode, stdout_text, stderr_text = self._run_streaming(
-                command, combined_prompt, stdout_path, stderr_path, workdir,
+                command,
+                combined_prompt,
+                stdout_path,
+                stderr_path,
+                workdir,
+                timeout_seconds=self._structured_timeout_seconds,
             )
             if returncode != 0:
                 raise CliExecutionError(
@@ -259,6 +270,8 @@ class CliRunner:
         stdout_path: Path,
         stderr_path: Path,
         cwd: Path,
+        *,
+        timeout_seconds: float | None = None,
     ) -> tuple[int, str, str]:
         """Run a subprocess while streaming stdout/stderr to files in real-time."""
         with open(stdout_path, "w", encoding="utf-8", errors="replace") as out_f, \
@@ -279,10 +292,41 @@ class CliRunner:
                     proc.stdin.close()
                 except BrokenPipeError:
                     pass
-            proc.wait()
+            timed_out = False
+            try:
+                proc.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                timeout_message = f"CLI execution timed out after {int(timeout_seconds or 0)} seconds."
+                try:
+                    if os.name == "nt":
+                        subprocess.run(
+                            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace",
+                            timeout=10,
+                        )
+                    else:
+                        proc.kill()
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+                err_f.write(("\n" if err_f.tell() else "") + timeout_message + "\n")
+                err_f.flush()
         stdout_text = read_text(stdout_path)
         stderr_text = read_text(stderr_path)
-        return proc.returncode, stdout_text, stderr_text
+        returncode = proc.returncode
+        if timed_out and returncode is None:
+            returncode = -1
+        return returncode, stdout_text, stderr_text
 
     def _parse_structured_response(self, raw: str) -> dict[str, Any]:
         text = strip_json_fences(raw)
@@ -301,6 +345,8 @@ class CliRunner:
         if detail:
             if provider == "claude" and "hit your limit" in detail.lower():
                 return f"{label} limit reached. {detail}"
+            if "timed out after" in detail.lower():
+                return f"{label} CLI execution timed out. {detail}"
             return f"{label} CLI execution failed. {detail}"
         return f"{label} CLI execution failed."
 

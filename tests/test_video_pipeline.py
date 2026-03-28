@@ -4,6 +4,7 @@ import importlib
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -969,6 +970,47 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 detail = service.get_episode_detail(episode_id)
                 self.assertEqual(detail["stage_runs"][0]["status"], "completed")
                 self.assertEqual(detail["stage_runs"][0]["provider"], "codex")
+
+    def test_stale_running_provider_stage_is_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service, pid, _ = self._setup(temp_path)
+                episode_result = service.submit_episode(
+                    pid,
+                    title="Stale Guide",
+                    script_text="One paragraph. Two paragraph.",
+                )
+                episode_id = episode_result["episode"]["id"]
+                run_id = service.db.start_stage_run(
+                    episode_id=episode_id,
+                    stage="consistency_guide",
+                    provider="codex",
+                    template_hash=None,
+                    workdir=str(temp_path),
+                    command_payload={"provider": "codex", "model": "gpt-5.4-mini"},
+                    stdout_path=None,
+                    stderr_path=None,
+                )
+                stale_started_at = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+                service.db._execute("UPDATE stage_runs SET started_at = ? WHERE id = ?", (stale_started_at, run_id))
+                service.db.update_episode(
+                    episode_id,
+                    board_status="Running",
+                    pipeline_status="running",
+                    current_stage="consistency_guide",
+                )
+                service._provider_stage_stale_seconds = 60
+
+                service._check_stale_provider_stage_runs()
+
+                episode = service.db.get_episode(episode_id)
+                self.assertEqual(episode["pipeline_status"], "failed")
+                self.assertEqual(episode["board_status"], "Needs Attention")
+                self.assertIn("timed out after 60 seconds", episode["last_error"])
+                detail = service.get_episode_detail(episode_id)
+                self.assertEqual(detail["stage_runs"][0]["status"], "failed")
+                self.assertIn("timed out after 60 seconds", detail["stage_runs"][0]["error_message"])
 
     def test_translations_skip_without_profiles(self) -> None:
         """Translations skip languages that have no translation profile configured."""

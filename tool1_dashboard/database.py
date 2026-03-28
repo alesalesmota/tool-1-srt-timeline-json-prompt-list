@@ -426,6 +426,22 @@ class Tool1Database:
             (episode_id,),
         )
 
+    def list_running_stage_runs(self) -> list[dict[str, Any]]:
+        return self._fetchall(
+            """
+            SELECT
+                sr.*,
+                e.pipeline_status,
+                e.current_stage,
+                e.board_status,
+                e.updated_at AS episode_updated_at
+            FROM stage_runs sr
+            JOIN episodes e ON e.id = sr.episode_id
+            WHERE sr.status = 'running'
+            ORDER BY sr.started_at ASC
+            """
+        )
+
     # ── niche projects ──────────────────────────────────────────────
 
     def create_niche_project(self, payload: dict[str, Any]) -> None:

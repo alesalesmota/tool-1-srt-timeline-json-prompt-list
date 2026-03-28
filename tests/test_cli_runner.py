@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from io import StringIO
@@ -124,6 +125,45 @@ class CliRunnerTests(unittest.TestCase):
                     )
         self.assertIn("Claude limit reached.", str(context.exception))
         self.assertIn("You've hit your limit", str(context.exception))
+
+    def test_codex_timeout_surfaces_real_message(self) -> None:
+        runner = CliRunner()
+        runner._structured_timeout_seconds = 30
+
+        def fake(command, *, stdin, stdout, stderr, text, encoding, errors, cwd, **kwargs):
+            if stdout and hasattr(stdout, "write"):
+                stdout.write("")
+            if stderr and hasattr(stderr, "write"):
+                stderr.write("")
+            proc = MagicMock()
+            proc.pid = 4321
+            proc.returncode = None
+            proc.stdin = MagicMock()
+            proc.stdin.write = MagicMock()
+            proc.stdin.close = MagicMock()
+            proc.wait = MagicMock(side_effect=[
+                subprocess.TimeoutExpired(cmd=command, timeout=runner._structured_timeout_seconds),
+                None,
+            ])
+            return proc
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with patch("tool1_dashboard.providers.subprocess.Popen", side_effect=fake):
+                with patch("tool1_dashboard.providers.subprocess.run", return_value=MagicMock(returncode=0)):
+                    with self.assertRaises(CliExecutionError) as context:
+                        runner.run_structured(
+                            provider="codex",
+                            model="gpt-5.4-mini",
+                            system_prompt="system",
+                            user_prompt="user",
+                            schema={"type": "object", "properties": {"prompts": {"type": "array"}}, "required": ["prompts"]},
+                            workdir=temp_path,
+                            artifact_dir=temp_path / "artifacts",
+                        )
+        self.assertIn("Codex CLI execution timed out.", str(context.exception))
+        self.assertIn("timed out after 30 seconds", str(context.exception))
+        self.assertIn("timed out after 30 seconds", context.exception.stderr)
 
     def test_probe_uses_short_lived_cache(self) -> None:
         runner = CliRunner()

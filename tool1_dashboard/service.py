@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import httpx
 import json
+import os
 import re
 import shutil
 import threading
@@ -90,6 +92,7 @@ QUEUE_PROVIDER_TARGETS = (
     ("video_prompt_generation", "Video Prompt Generation", "video_prompt_provider", "video_prompt_model"),
     ("image_prompt_generation", "Image Prompt Generation", "image_prompt_provider", "image_prompt_model"),
 )
+PROVIDER_STRUCTURED_STAGES = {stage for stage, *_ in QUEUE_PROVIDER_TARGETS}
 
 
 class QueueBlockedError(ValueError):
@@ -133,6 +136,9 @@ class Tool1Service:
         self._condition = threading.Condition()
         self._stop_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
+        self._provider_stage_stale_seconds = float(
+            os.environ.get("TOOL1_PROVIDER_STAGE_STALE_SECONDS", "900")
+        )
         self.db.initialize()
         self.templates.ensure_defaults()
         ensure_dir(EPISODES_ROOT)
@@ -159,8 +165,53 @@ class Tool1Service:
                 self._process_episode(episode)
                 continue
             self._check_paused_tts_episodes()
+            self._check_stale_provider_stage_runs()
             with self._condition:
                 self._condition.wait(timeout=1.0)
+
+    @staticmethod
+    def _timestamp_age_seconds(value: Any) -> float | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds())
+
+    def _check_stale_provider_stage_runs(self) -> None:
+        """Fail stale provider-driven stage runs so the workflow can be retried."""
+        for run in self.db.list_running_stage_runs():
+            stage = str(run.get("stage") or "")
+            if stage not in PROVIDER_STRUCTURED_STAGES:
+                continue
+            if run.get("pipeline_status") != "running" or run.get("current_stage") != stage:
+                continue
+            age_seconds = self._timestamp_age_seconds(run.get("started_at"))
+            if age_seconds is None or age_seconds < self._provider_stage_stale_seconds:
+                continue
+            timeout_seconds = int(self._provider_stage_stale_seconds)
+            stage_label = stage.replace("_", " ").title()
+            error_message = (
+                f"{stage_label} timed out after {timeout_seconds} seconds. "
+                "The provider CLI did not finish, so the workflow was marked failed."
+            )
+            self.db.finish_stage_run(
+                int(run["id"]),
+                status="failed",
+                exit_code=1,
+                error_text=error_message,
+            )
+            self.db.update_episode(
+                run["episode_id"],
+                board_status="Needs Attention",
+                pipeline_status="failed",
+                current_stage=stage,
+                last_error=error_message,
+                updated_at=utc_now(),
+            )
 
     @staticmethod
     def _safe_delete_path(path: Path, allowed_root: Path) -> None:
