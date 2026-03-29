@@ -556,5 +556,18 @@
     "screenshotPath": "./screenshots/moat-1774744913312-n5nh0n0wy.png",
     "status": "done",
     "timestamp": 1774744913463
+  },
+  {
+    "id": "b95c47b9-0881-418b-b806-f7a47518e09c",
+    "title": "Container (listbox)",
+    "comment": "i cant scroll down here it push me back to the top",
+    "selector": "div[aria-label=\"Episode output files\"]",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774747010156-diyg5o15q.png",
+    "status": "done",
+    "timestamp": 1774747010300
   }
 ]

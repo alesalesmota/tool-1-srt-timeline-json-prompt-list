@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 22 | **To Do**: 0 | **Doing**: 0 | **Done**: 22
+**Total**: 23 | **To Do**: 0 | **Doing**: 0 | **Done**: 23
 
 ## Tasks
 
@@ -34,8 +34,9 @@
               
   – "this lateral menu is very confusing, im not sure its even..." `div.board-modal-shell > div.board-modal-layout:nth-child(2) > aside.board-modal-side`
 22. [x] Background Container – "there is something weird, this card is stuck in this runn..." `section.kanban-column.project-kanban-column:nth-child(4) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
+23. [x] Container (listbox) – "i cant scroll down here it push me back to the top" `div[aria-label="Episode output files"]`
 
 ---
 
-_Generated: 28/03/2026, 22:10:40_
+_Generated: 28/03/2026, 22:34:58_
 _Source: moat-tasks-detail.json_

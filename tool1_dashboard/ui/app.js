@@ -352,6 +352,7 @@ function baseEpisodeFilesState() {
     error: "",
     syncedAt: 0,
     selectedPath: "",
+    listScrollTop: 0,
     previewByPath: {},
   };
 }
@@ -379,6 +380,40 @@ function updateEpisodeFilesState(episodeId, updater) {
   const nextState = updater(episodeFilesState(episodeId)) || episodeFilesState(episodeId);
   setEpisodeFilesState(episodeId, nextState);
   return nextState;
+}
+
+function setEpisodeFilesListScrollTop(episodeId, scrollTop) {
+  if (!episodeId) return;
+  const nextScrollTop = Math.max(0, Number(scrollTop) || 0);
+  updateEpisodeFilesState(episodeId, (current) => {
+    if ((current.listScrollTop || 0) === nextScrollTop) return current;
+    return {
+      ...current,
+      listScrollTop: nextScrollTop,
+    };
+  });
+}
+
+function captureEpisodeFilesListScroll(root = document) {
+  if (!root?.querySelectorAll) return;
+  root.querySelectorAll(".episode-files-list[data-episode-id]").forEach((listEl) => {
+    setEpisodeFilesListScrollTop(listEl.dataset.episodeId || "", listEl.scrollTop || 0);
+  });
+}
+
+function restoreEpisodeFilesListScroll(root = document) {
+  if (!root?.querySelectorAll) return;
+  root.querySelectorAll(".episode-files-list[data-episode-id]").forEach((listEl) => {
+    const episodeId = listEl.dataset.episodeId || "";
+    if (!episodeId) return;
+    listEl.scrollTop = episodeFilesState(episodeId).listScrollTop || 0;
+    listEl.dataset.scrollReady = "true";
+    if (listEl.dataset.scrollBound === "true") return;
+    listEl.dataset.scrollBound = "true";
+    listEl.addEventListener("scroll", () => {
+      setEpisodeFilesListScrollTop(episodeId, listEl.scrollTop || 0);
+    }, { passive: true });
+  });
 }
 
 function episodeFileSignature(file) {
@@ -3769,7 +3804,7 @@ function renderEpisodeFilesSection(episodeId) {
         </div>
       ` : `
         <div class="episode-files-layout">
-          <div class="episode-files-list" role="listbox" aria-label="Episode output files">
+          <div class="episode-files-list" role="listbox" aria-label="Episode output files" data-episode-id="${esc(episodeId)}">
             ${listMarkup}
           </div>
           <div class="episode-file-preview-card">
@@ -3799,7 +3834,12 @@ function renderEpisodeFilesSection(episodeId) {
 function syncEpisodeFilesSection(episodeId) {
   const container = $("episode-files-shell");
   if (!container) return;
+  const currentList = container.querySelector(".episode-files-list[data-episode-id]");
+  if (currentList?.dataset.scrollReady === "true") {
+    setEpisodeFilesListScrollTop(episodeId, currentList.scrollTop || 0);
+  }
   container.innerHTML = renderEpisodeFilesSection(episodeId);
+  restoreEpisodeFilesListScroll(container);
 }
 
 async function ensureEpisodeFilePreviewLoaded(episodeId, relativePath) {
@@ -4049,6 +4089,7 @@ function captureDashboardScroll() {
   if (modalMain) {
     state.modalMainScrollTop = modalMain.scrollTop || 0;
   }
+  captureEpisodeFilesListScroll();
 }
 
 function restoreDashboardScroll() {
@@ -4073,6 +4114,7 @@ function restoreDashboardScroll() {
       state.modalMainScrollTop = modalMain.scrollTop || 0;
     }, { passive: true });
   }
+  restoreEpisodeFilesListScroll();
 }
 
 function renderSettings() {
