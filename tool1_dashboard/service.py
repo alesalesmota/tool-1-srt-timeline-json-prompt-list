@@ -164,7 +164,23 @@ class Tool1Service:
         if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=2)
 
+    def _quiesce_stale_episodes(self) -> None:
+        """On startup, transition lingering paused_for_tts episodes to paused
+        so that nothing auto-resumes without explicit user action."""
+        stale = self.db.list_paused_tts_episodes()
+        for ep in stale:
+            self.db.update_episode(
+                ep["id"],
+                board_status="Paused",
+                pipeline_status="paused",
+                current_stage="tts",
+                queued_from_stage="tts",
+                pause_requested=0,
+                updated_at=utc_now(),
+            )
+
     def _worker_loop(self) -> None:
+        self._quiesce_stale_episodes()
         while not self._stop_event.is_set():
             episode = self.db.next_queued_episode()
             if episode is not None:

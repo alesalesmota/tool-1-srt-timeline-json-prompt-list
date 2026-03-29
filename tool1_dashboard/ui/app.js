@@ -3973,11 +3973,9 @@ function renderEpisodeFilesSection(episodeId) {
   const previewState = selectedFile ? fileState.previewByPath?.[selectedFile.relative_path] || null : null;
   const populatedCount = files.filter((file) => !file.is_empty).length;
   const emptyCount = files.filter((file) => file.is_empty).length;
-  const syncCopy = fileState.loading
-    ? "Auto-syncing file outputs right now."
-    : fileState.syncedAt
-      ? `Auto-sync on. Last scan ${relativeTime(fileState.syncedAt)}.`
-      : "Auto-sync on. Waiting for the first file scan.";
+  const syncCopy = fileState.syncedAt
+    ? `Auto-sync on. Last scan ${relativeTime(fileState.syncedAt)}.`
+    : "Auto-sync on. Waiting for the first file scan.";
 
   const listMarkup = files.map((file) => {
     const isSelected = file.relative_path === selectedPath;
@@ -4146,7 +4144,6 @@ async function loadEpisodeFiles(episodeId) {
     loading: true,
     error: "",
   }));
-  syncEpisodeFilesSection(episodeId);
 
   try {
     const data = await api("/api/episodes/" + encodeURIComponent(episodeId) + "/files");
@@ -4203,11 +4200,17 @@ async function loadReviewData(episodeId) {
   if (!detail) return;
   const ep = detail.episode;
   
+  container.style.display = "block";
   if (!["review", "export", "done"].includes(ep.pipeline_status)) {
-    container.style.display = "none";
+    const stage = stageLabel(ep.current_stage || ep.queued_from_stage || "consistency_guide");
+    container.innerHTML = `
+      <div class="section-header" style="margin-bottom:12px;">
+        <div class="eyebrow">Phase 9: Review & Export</div>
+      </div>
+      <p class="helper">Review data will appear here after the pipeline reaches the review stage. Currently at: ${esc(stage)}.</p>
+    `;
     return;
   }
-  container.style.display = "block";
   
   container.innerHTML = '<p class="helper">Loading review data…</p>';
   try {

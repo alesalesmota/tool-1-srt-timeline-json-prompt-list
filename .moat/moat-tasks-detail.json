@@ -1,576 +1,5 @@
 [
   {
-    "id": "62e61bbe-f886-4fd0-b278-f01fc5fb46cb",
-    "title": "Freeform Rectangle Task",
-    "comment": "here is actually create episode",
-    "selector": "freeform",
-    "boundingRect": {
-      "x": 1698,
-      "y": 97,
-      "w": 159,
-      "h": 81
-    },
-    "screenshotPath": "./screenshots/moat-1774538479838-u1h2b3l6z.png",
-    "status": "done",
-    "timestamp": 1774538479992,
-    "boundingBox": {
-      "xyxy": {
-        "x1": 1698,
-        "y1": 97,
-        "x2": 1857,
-        "y2": 178
-      },
-      "xywh": {
-        "x": 1698,
-        "y": 97,
-        "width": 159,
-        "height": 81
-      },
-      "normalized": {
-        "x": 0.884375,
-        "y": 0.10264550264550265,
-        "width": 0.0828125,
-        "height": 0.08571428571428572
-      },
-      "viewport": {
-        "width": 1920,
-        "height": 945
-      },
-      "type": "freeform"
-    }
-  },
-  {
-    "id": "6ba787de-fd66-437c-9943-b6d9e883b539",
-    "title": "Freeform Rectangle Task",
-    "comment": "the target language is very messi here, maybe a box where i type, some language options appear, and i choose, once i choose it add to a list below",
-    "selector": "freeform",
-    "boundingRect": {
-      "x": 598,
-      "y": 220,
-      "w": 731,
-      "h": 501
-    },
-    "screenshotPath": "./screenshots/moat-1774540492876-bu41429k5.png",
-    "status": "done",
-    "timestamp": 1774540493021,
-    "boundingBox": {
-      "xyxy": {
-        "x1": 598,
-        "y1": 220,
-        "x2": 1329,
-        "y2": 721
-      },
-      "xywh": {
-        "x": 598,
-        "y": 220,
-        "width": 731,
-        "height": 501
-      },
-      "normalized": {
-        "x": 0.31145833333333334,
-        "y": 0.2328042328042328,
-        "width": 0.3807291666666667,
-        "height": 0.5301587301587302
-      },
-      "viewport": {
-        "width": 1920,
-        "height": 945
-      },
-      "type": "freeform"
-    }
-  },
-  {
-    "id": "7d498a2a-e35b-4119-8e5c-1aceabff3ab0",
-    "title": "Freeform Rectangle Task",
-    "comment": "this could be just a + sign, when i hove the mouse i see the button explanation",
-    "selector": "freeform",
-    "boundingRect": {
-      "x": 300,
-      "y": 299,
-      "w": 139,
-      "h": 79
-    },
-    "screenshotPath": "./screenshots/moat-1774541720346-yzv2rn7s7.png",
-    "status": "done",
-    "timestamp": 1774541720492,
-    "boundingBox": {
-      "xyxy": {
-        "x1": 300,
-        "y1": 299,
-        "x2": 439,
-        "y2": 378
-      },
-      "xywh": {
-        "x": 300,
-        "y": 299,
-        "width": 139,
-        "height": 79
-      },
-      "normalized": {
-        "x": 0.15625,
-        "y": 0.3164021164021164,
-        "width": 0.07239583333333334,
-        "height": 0.0835978835978836
-      },
-      "viewport": {
-        "width": 1920,
-        "height": 945
-      },
-      "type": "freeform"
-    }
-  },
-  {
-    "id": "cf55fd24-b14e-438c-bdd5-35c387488d78",
-    "title": "Freeform Rectangle Task",
-    "comment": "for every colum, this colum explanation can happen when i hover the mouse on the name title of colum, instead of appearing here and ocupying space",
-    "selector": "freeform",
-    "boundingRect": {
-      "x": 126,
-      "y": 293,
-      "w": 174,
-      "h": 138
-    },
-    "screenshotPath": "./screenshots/moat-1774541784027-26amwh0sc.png",
-    "status": "done",
-    "timestamp": 1774541784176,
-    "boundingBox": {
-      "xyxy": {
-        "x1": 126,
-        "y1": 293,
-        "x2": 300,
-        "y2": 431
-      },
-      "xywh": {
-        "x": 126,
-        "y": 293,
-        "width": 174,
-        "height": 138
-      },
-      "normalized": {
-        "x": 0.065625,
-        "y": 0.3100529100529101,
-        "width": 0.090625,
-        "height": 0.14603174603174604
-      },
-      "viewport": {
-        "width": 1920,
-        "height": 945
-      },
-      "type": "freeform"
-    }
-  },
-  {
-    "id": "a25f2b9c-ef12-4704-bdfd-35a35ef49350",
-    "title": "Freeform Rectangle Task",
-    "comment": "the voice clone and testing is unintuitive, i added the voice and clicked on test, and outside the card i see some status, i see this stale but i dont know what it means, but this informations related to the card should happen inside the card, because imagine if i had other voices profiles created, i also wanna hear the resulted test, i actually dont know if the voice clone profile worked",
-    "selector": "freeform",
-    "boundingRect": {
-      "x": 2,
-      "y": 5,
-      "w": 1915,
-      "h": 733
-    },
-    "screenshotPath": "./screenshots/moat-1774543697163-re74t0o9r.png",
-    "status": "done",
-    "timestamp": 1774543697316,
-    "boundingBox": {
-      "xyxy": {
-        "x1": 2,
-        "y1": 5,
-        "x2": 1917,
-        "y2": 738
-      },
-      "xywh": {
-        "x": 2,
-        "y": 5,
-        "width": 1915,
-        "height": 733
-      },
-      "normalized": {
-        "x": 0.0010416666666666667,
-        "y": 0.005291005291005291,
-        "width": 0.9973958333333334,
-        "height": 0.7756613756613756
-      },
-      "viewport": {
-        "width": 1920,
-        "height": 945
-      },
-      "type": "freeform"
-    }
-  },
-  {
-    "id": "29eb90f2-dd37-4ab3-bff5-4c680c72abd1",
-    "title": "Freeform Rectangle Task",
-    "comment": "this UI elements are looking bad, and bad coded acroos all play testing steps, pls review and fix, also the play button can be a smal minimal play button without text, the explanation appear only when i hover the mouse",
-    "selector": "freeform",
-    "boundingRect": {
-      "x": 89,
-      "y": 130,
-      "w": 435,
-      "h": 243
-    },
-    "screenshotPath": "./screenshots/moat-1774562175580-fpyomfb6m.png",
-    "status": "done",
-    "timestamp": 1774562175751,
-    "boundingBox": {
-      "xyxy": {
-        "x1": 89,
-        "y1": 130,
-        "x2": 524,
-        "y2": 373
-      },
-      "xywh": {
-        "x": 89,
-        "y": 130,
-        "width": 435,
-        "height": 243
-      },
-      "normalized": {
-        "x": 0.04635416666666667,
-        "y": 0.13756613756613756,
-        "width": 0.2265625,
-        "height": 0.2571428571428571
-      },
-      "viewport": {
-        "width": 1920,
-        "height": 945
-      },
-      "type": "freeform"
-    }
-  },
-  {
-    "id": "9d96f21b-ec71-4952-8c5a-bce15f8b75fc",
-    "title": "Colored Container",
-    "comment": "so here in this section we have many, imrpovement to make\n\n1 first i want clarification on CLI use\nand API use\n\nother important thing\nif i set up a api use, once i paste and set the api, the app recognizes it and tells me the available model\n\nplus i also need some sort and filtering\nif possible even informations like\nprice use (can be just a score)\nso i know the cheap and expensive models in comparison\ni want to see those details when i hover the mouse above the model\n\nyou can set for now just openai support like it is for the api key",
-    "selector": "#view > div.modal-backdrop:nth-child(2)",
-    "boundingRect": {
-      "x": 0,
-      "y": 0,
-      "w": 1920,
-      "h": 945
-    },
-    "screenshotPath": "./screenshots/moat-1774565805926-0i30f81ot.png",
-    "status": "done",
-    "timestamp": 1774565806084
-  },
-  {
-    "id": "602e53e2-c0c4-4ee7-a726-b16ea6b76ea9",
-    "title": "Freeform Rectangle Task",
-    "comment": "the information that appear in this section when i hover the mouse, doesnt make sense. the way you designed, its better to have the information on the card already, or compact the card with way less information. Also this grid layout ocupy way to much unecessary space, may a list format gives me a better sence of order, also the price evaluation is not very helpfull, a better detailed price rating would be better, i mean betwen models that are 1/5 wich one would be the cheapest, there is no way to tell, also does 1/5 means cheaper or exepnsive? hard to tell, \nthe name of the model appear 2 times on the card,  the description you created should focus on detailing any type of model speciality, for example i know codex is a term for coding, there is agentic models, image models, videos this type of specifications could be more usefull",
-    "selector": "freeform",
-    "boundingRect": {
-      "x": 794,
-      "y": 394,
-      "w": 327,
-      "h": 183
-    },
-    "screenshotPath": "./screenshots/moat-1774630762887-72tzuurw9.png",
-    "status": "done",
-    "timestamp": 1774630763026,
-    "boundingBox": {
-      "xyxy": {
-        "x1": 794,
-        "y1": 394,
-        "x2": 1121,
-        "y2": 577
-      },
-      "xywh": {
-        "x": 794,
-        "y": 394,
-        "width": 327,
-        "height": 183
-      },
-      "normalized": {
-        "x": 0.41354166666666664,
-        "y": 0.41693121693121693,
-        "width": 0.1703125,
-        "height": 0.19365079365079366
-      },
-      "viewport": {
-        "width": 1920,
-        "height": 945
-      },
-      "type": "freeform"
-    }
-  },
-  {
-    "id": "07a5ddf5-14fc-45f8-89fb-2bbdd8ced2b1",
-    "title": "Freeform Rectangle Task",
-    "comment": "i see 2 times \"Translation Profile\"\nThis description is not needed\n, notice the spanish box, clearly seeable UI issues, if em\ni belive in the card is only usefull to appear \"Spanish\", \"OpenAI API\", \"model\", once i click on the card i can see other details, also a status showing if its ready or not to work well.",
-    "selector": "freeform",
-    "boundingRect": {
-      "x": 88,
-      "y": 16,
-      "w": 1050,
-      "h": 487
-    },
-    "screenshotPath": "./screenshots/moat-1774631012285-vyftt6g4e.png",
-    "status": "done",
-    "timestamp": 1774631012420,
-    "boundingBox": {
-      "xyxy": {
-        "x1": 88,
-        "y1": 16,
-        "x2": 1138,
-        "y2": 503
-      },
-      "xywh": {
-        "x": 88,
-        "y": 16,
-        "width": 1050,
-        "height": 487
-      },
-      "normalized": {
-        "x": 0.04583333333333333,
-        "y": 0.016931216931216932,
-        "width": 0.546875,
-        "height": 0.5153439153439153
-      },
-      "viewport": {
-        "width": 1920,
-        "height": 945
-      },
-      "type": "freeform"
-    }
-  },
-  {
-    "id": "a17fdd50-b72a-4df2-9a4e-5ef2f914fbb2",
-    "title": "details: Language setup\n        \n    \n ",
-    "comment": "once i open this dropdown setup, it auto closes, and im not able to set up anything",
-    "selector": "section.project-config-grid > details.surface.project-config-disclosure:nth-child(1)",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774631630122-rloq3mx0c.png",
-    "status": "done",
-    "timestamp": 1774631630257
-  },
-  {
-    "id": "1b7ec1b8-bfe3-4325-9172-d27a81296d94",
-    "title": "details: Provider setup\n        \n    \n ",
-    "comment": "When i open this dropdown setup, it auto closes and i cant set up anything",
-    "selector": "section.project-config-grid > details.surface.project-config-disclosure:nth-child(2)",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774631700475-4tdvfi64g.png",
-    "status": "done",
-    "timestamp": 1774631700612
-  },
-  {
-    "id": "ee8b37dd-c563-495b-8ffc-0ef2a80d1603",
-    "title": "Freeform Rectangle Task",
-    "comment": "this 2 could be on the lateral menu",
-    "selector": "freeform",
-    "boundingRect": {
-      "x": 1767,
-      "y": 5,
-      "w": 119,
-      "h": 76
-    },
-    "screenshotPath": "./screenshots/moat-1774633999459-gevz7g72g.png",
-    "status": "done",
-    "timestamp": 1774633999612,
-    "boundingBox": {
-      "xyxy": {
-        "x1": 1767,
-        "y1": 5,
-        "x2": 1886,
-        "y2": 81
-      },
-      "xywh": {
-        "x": 1767,
-        "y": 5,
-        "width": 119,
-        "height": 76
-      },
-      "normalized": {
-        "x": 0.9203125,
-        "y": 0.005291005291005291,
-        "width": 0.06197916666666667,
-        "height": 0.08042328042328042
-      },
-      "viewport": {
-        "width": 1920,
-        "height": 945
-      },
-      "type": "freeform"
-    }
-  },
-  {
-    "id": "50815060-5efc-4251-8a89-61129d92331b",
-    "title": "Freeform Rectangle Task",
-    "comment": "when i click on queue nothing happens, and im not sure what queue means, i hope is to start the workflow, if thats the case a \"start\" would be better, if not we are missing a start button",
-    "selector": "freeform",
-    "boundingRect": {
-      "x": 366,
-      "y": 18,
-      "w": 1179,
-      "h": 662
-    },
-    "screenshotPath": "./screenshots/moat-1774635563622-39uyhxgi4.png",
-    "status": "done",
-    "timestamp": 1774635563792,
-    "boundingBox": {
-      "xyxy": {
-        "x1": 366,
-        "y1": 18,
-        "x2": 1545,
-        "y2": 680
-      },
-      "xywh": {
-        "x": 366,
-        "y": 18,
-        "width": 1179,
-        "height": 662
-      },
-      "normalized": {
-        "x": 0.190625,
-        "y": 0.01904761904761905,
-        "width": 0.6140625,
-        "height": 0.7005291005291006
-      },
-      "viewport": {
-        "width": 1920,
-        "height": 945
-      },
-      "type": "freeform"
-    }
-  },
-  {
-    "id": "59eb5c0d-3001-4ab3-97c4-566f5968fbfb",
-    "title": "Background Container",
-    "comment": "i pressed play, \nthe feed back was to slow, and there should be a live minimal status that show exactly what is happening on the background,\nafter i pressed the play button, the card stood still in the draft colum, it seems stuck",
-    "selector": "section.kanban-column.project-kanban-column:nth-child(1) > div.kanban-card-list:nth-child(2) > div.episode-card.surface",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774640573498-e6c76i501.png",
-    "status": "done",
-    "timestamp": 1774640573636
-  },
-  {
-    "id": "6231b7e3-4db0-4737-aeba-263c50f9c8e4",
-    "title": "Background Container",
-    "comment": "when i scrool down on this section it auto goes back, leaving me unable to check the bottom of the screen",
-    "selector": "div.board-modal-shell > div.board-modal-layout:nth-child(2) > div.board-modal-main",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774655745531-x56w2s48p.png",
-    "status": "done",
-    "timestamp": 1774655745699
-  },
-  {
-    "id": "c8c55d24-9d9e-4968-9f1c-cfcda8ae9015",
-    "title": "Background Container",
-    "comment": "this card in on consistency guide, but its stats is talking about a tts tool, i believe its in the wrong place, wish mean its possible the cards jumping to the proper colums of the workflow is not working, also im not sure its actually working on the background",
-    "selector": "section.kanban-column.project-kanban-column:nth-child(2) > div.kanban-card-list:nth-child(2) > div.episode-card.surface:nth-child(1)",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774656073633-p386p9vrg.png",
-    "status": "done",
-    "timestamp": 1774656073803
-  },
-  {
-    "id": "275ffc02-250f-47a6-a8ee-67d2485c9476",
-    "title": "Background Container",
-    "comment": "this card is stuck on consistency guide, but when i open its windows to check details of whats happening i dont see anything else, it should show the cli working in a box or something, that way i can verify if its actually working",
-    "selector": "div.board-modal-backdrop > div.board-modal-shell",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774656189308-5xt38qv7q.png",
-    "status": "done",
-    "timestamp": 1774656189462
-  },
-  {
-    "id": "6ce4ba6a-b683-4930-8f73-69dbcb887aae",
-    "title": "Button: Close",
-    "comment": "clicking its not working",
-    "selector": "div.board-modal-backdrop > div.board-modal-shell > div.board-modal-head:nth-child(1) > button:nth-of-type(1)",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774656642399-cp1qxrklf.png",
-    "status": "done",
-    "timestamp": 1774656642581
-  },
-  {
-    "id": "bed62041-17fa-48de-b21e-6f0101a1af97",
-    "title": "Background Container",
-    "comment": "something is wrong on this step of the consistency guide, it shouldnt take this long to output a style guide",
-    "selector": "div.board-modal-backdrop > div.board-modal-shell",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774658806487-w5beypiwx.png",
-    "status": "done",
-    "timestamp": 1774658806686
-  },
-  {
-    "id": "aa307bb4-b047-471f-b2af-2c11ff11c294",
-    "title": "Background Container",
-    "comment": "this area has a lot of bug, this refresh button doesnt make sense, it should show the files live regardless, when i click on anyfile it doesnt show anything, its not clear what has data what is empty",
-    "selector": "div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(8)",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774718935562-j9huqoa85.png",
-    "status": "done",
-    "timestamp": 1774718935703
-  },
-  {
-    "id": "af1c2d7c-8cf1-4201-afe8-275b64c5cb66",
-    "title": "aside: Quick actions\n              \n ",
-    "comment": "this lateral menu is very confusing, im not sure its even needed considering i already have similar information in the main section",
-    "selector": "div.board-modal-shell > div.board-modal-layout:nth-child(2) > aside.board-modal-side",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774719071133-9l4gnnyb9.png",
-    "status": "done",
-    "timestamp": 1774719071287
-  },
-  {
-    "id": "3b8aaf0a-895d-46b1-9da1-c37ed66806a4",
-    "title": "Background Container",
-    "comment": "there is something weird, this card is stuck in this running state. But thats not possible because i closed the app and just started, and also its stuck in this state for a long time.  I belive nothing is happening in the back ground. I really think you should check not only this step. But do a really deep plan to check if every step of the workflow is working properly and showing properly in the front end.",
-    "selector": "section.kanban-column.project-kanban-column:nth-child(4) > div.kanban-card-list:nth-child(2) > div.episode-card.surface",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774744913312-n5nh0n0wy.png",
-    "status": "done",
-    "timestamp": 1774744913463
-  },
-  {
-    "id": "b95c47b9-0881-418b-b806-f7a47518e09c",
-    "title": "Container (listbox)",
-    "comment": "i cant scroll down here it push me back to the top",
-    "selector": "div[aria-label=\"Episode output files\"]",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774747010156-diyg5o15q.png",
-    "status": "done",
-    "timestamp": 1774747010300
-  },
-  {
     "id": "8ddc7f63-8e07-49b3-afdb-39262c561496",
     "title": "Background Container",
     "comment": "this tts voice generation for es (spanish) is stuck in the 17/328 forever, i believe the tts generation is not working",
@@ -608,5 +37,124 @@
     "screenshotPath": "./screenshots/moat-1774751513460-9oo7erw17.png",
     "status": "done",
     "timestamp": 1774751520245
+  },
+  {
+    "id": "199abafd-e456-41cb-81ff-692bd5343e2b",
+    "title": "Freeform Rectangle Task",
+    "comment": "this text is glitching between auto-sync and auto-syincing",
+    "selector": "freeform",
+    "boundingRect": {
+      "x": 405,
+      "y": 510,
+      "w": 217,
+      "h": 42
+    },
+    "screenshotPath": "./screenshots/moat-1774757100139-5we30dgda.png",
+    "status": "done",
+    "timestamp": 1774757106540,
+    "boundingBox": {
+      "xyxy": {
+        "x1": 405,
+        "y1": 510,
+        "x2": 622,
+        "y2": 552
+      },
+      "xywh": {
+        "x": 405,
+        "y": 510,
+        "width": 217,
+        "height": 42
+      },
+      "normalized": {
+        "x": 0.2109375,
+        "y": 0.5396825396825397,
+        "width": 0.11302083333333333,
+        "height": 0.044444444444444446
+      },
+      "viewport": {
+        "width": 1920,
+        "height": 945
+      },
+      "type": "freeform"
+    }
+  },
+  {
+    "id": "cb450090-37b4-4d38-8a4f-81137525f350",
+    "title": "Container #episode-review-section",
+    "comment": "i see nothing in this section",
+    "selector": "#episode-review-section",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774764873546-8019iplyo.png",
+    "status": "done",
+    "timestamp": 1774764873856
+  },
+  {
+    "id": "aabf0c61-0713-4f9e-a515-b55bb273ec58",
+    "title": "span: Narration running",
+    "comment": "its showing this \"running\" state even though the app just started and i didnt press any play button",
+    "selector": "div:nth-child(1) > div.episode-detail-actions:nth-child(2) > span.tooltip-anchor.button-tooltip-shell:nth-child(1)",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774800018313-x003jv297.png",
+    "status": "done",
+    "timestamp": 1774800018477
+  },
+  {
+    "id": "91ed4e8d-978f-452e-b4eb-2b53f75129c4",
+    "title": "Freeform Rectangle Task",
+    "comment": "the button start workflow is locked, even though i just start the aplication and nothing is running",
+    "selector": "freeform",
+    "boundingRect": {
+      "x": 679,
+      "y": 269,
+      "w": 151,
+      "h": 58
+    },
+    "screenshotPath": "./screenshots/moat-1774800177589-ife1f9dc2.png",
+    "status": "done",
+    "timestamp": 1774800177751,
+    "boundingBox": {
+      "xyxy": {
+        "x1": 679,
+        "y1": 269,
+        "x2": 830,
+        "y2": 327
+      },
+      "xywh": {
+        "x": 679,
+        "y": 269,
+        "width": 151,
+        "height": 58
+      },
+      "normalized": {
+        "x": 0.3536458333333333,
+        "y": 0.28465608465608466,
+        "width": 0.07864583333333333,
+        "height": 0.061375661375661375
+      },
+      "viewport": {
+        "width": 1920,
+        "height": 945
+      },
+      "type": "freeform"
+    }
+  },
+  {
+    "id": "973e7325-4bb8-497f-a322-fab2dd9c96bf",
+    "title": "Background Container",
+    "comment": "the process started running automatically, when i opened the tool 1, thats not intended to happen, i should decide when to start once i open the aplication, by pressing the start workflow button",
+    "selector": "section.kanban-column.project-kanban-column:nth-child(4) > div.kanban-card-list:nth-child(2) > div.episode-card.surface",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774800293836-0es04argz.png",
+    "status": "done",
+    "timestamp": 1774800293996
   }
 ]
