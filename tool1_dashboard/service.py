@@ -2886,74 +2886,186 @@ class Tool1Service:
         if failed_count == len(non_master_langs) and non_master_langs:
             raise RuntimeError("All translations failed.")
 
-    def _episode_run_tts_all(self, episode_id: str) -> None:
-        """Run TTS for each language, one at a time. Pauses pipeline via async TTS worker."""
-        episode = self.db.get_episode(episode_id)
-        langs = json.loads(episode.get("configured_languages") or "[]")
-        project = self.db.get_niche_project(episode["niche_project_id"])
-        voice_profiles = json.loads(project.get("language_voice_profiles") or "{}")
-        workspace = Path(episode["workspace_dir"])
+    def _episode_tts_script_text(
+        self,
+        episode: dict[str, Any],
+        language_code: str,
+        language_status: dict[str, Any] | None,
+    ) -> str:
+        master_language = str(episode.get("master_language") or "en").strip() or "en"
+        if language_code == master_language:
+            return str(episode.get("script_text") or "")
+        script_path = str((language_status or {}).get("script_path") or "").strip()
+        if script_path and Path(script_path).exists():
+            return read_text(Path(script_path))
+        return str(episode.get("script_text") or "")
 
-        # Process each language sequentially
+    def _queue_episode_tts_jobs(
+        self,
+        episode_id: str,
+        *,
+        allow_resubmit_failed: bool,
+    ) -> dict[str, Any]:
+        episode = self._hydrate_episode_record(self.db.get_episode(episode_id))
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        project = self._hydrate_project_record(self.db.get_niche_project(episode["niche_project_id"])) or {}
+        voice_profiles = self._parse_json_dict(project.get("language_voice_profiles"))
+        langs = list(episode.get("configured_languages") or [])
+        statuses = {
+            status["language_code"]: status
+            for status in self.db.get_episode_language_statuses(episode_id)
+        }
+        submitted_jobs = 0
+        active_jobs = 0
+        any_failed = False
+        unrecoverable: list[str] = []
+        tts_mgr = None
+
         for lang in langs:
-            profile_id = voice_profiles.get(lang)
-            if not profile_id:
-                # Skip languages without voice profile
-                self.db.update_episode_language_status(
-                    episode_id, lang, tts_status="skipped",
-                    error_message="No voice profile configured",
-                )
+            lang_status = statuses.get(lang)
+            if lang_status is None:
+                unrecoverable.append(f"{lang}: missing language status")
                 continue
+
+            status = str(lang_status.get("tts_status") or "pending").strip().lower()
+            if status in {"done", "skipped"}:
+                continue
+            if status == "failed" and not allow_resubmit_failed:
+                any_failed = True
+                continue
+
+            job_id = str(lang_status.get("tts_job_id") or "").strip()
+            job = self.db.get_tts_job(job_id) if job_id else None
+            job_status = str((job or {}).get("status") or "").strip().lower()
+
+            if job and job_status == "completed":
+                result_path = str(job.get("result_path") or "").strip()
+                if result_path and Path(result_path).exists():
+                    self.db.update_episode_language_status(
+                        episode_id,
+                        lang,
+                        tts_status="done",
+                        tts_audio_path=result_path,
+                        error_message=None,
+                    )
+                    continue
+                job = None
+                job_status = ""
+
+            if job and job_status in {"queued", "processing"}:
+                if status != "running":
+                    self.db.update_episode_language_status(
+                        episode_id,
+                        lang,
+                        tts_status="running",
+                        error_message=None,
+                    )
+                active_jobs += 1
+                continue
+
+            if job and job_status in {"error", "failed"} and not allow_resubmit_failed:
+                self.db.update_episode_language_status(
+                    episode_id,
+                    lang,
+                    tts_status="failed",
+                    error_message=job.get("error_message", "TTS failed"),
+                )
+                any_failed = True
+                continue
+
+            profile_id = str(voice_profiles.get(lang) or "").strip()
+            if not profile_id:
+                if allow_resubmit_failed:
+                    self.db.update_episode_language_status(
+                        episode_id,
+                        lang,
+                        tts_status="skipped",
+                        error_message="No voice profile configured",
+                    )
+                    continue
+                unrecoverable.append(f"{lang}: no voice profile configured")
+                continue
+
             profile = self.db.get_voice_profile(profile_id)
             if profile is None:
-                self.db.update_episode_language_status(
-                    episode_id, lang, tts_status="skipped",
-                    error_message=f"Voice profile '{profile_id}' not found",
-                )
+                if allow_resubmit_failed:
+                    self.db.update_episode_language_status(
+                        episode_id,
+                        lang,
+                        tts_status="skipped",
+                        error_message=f"Voice profile '{profile_id}' not found",
+                    )
+                    continue
+                unrecoverable.append(f"{lang}: voice profile '{profile_id}' not found")
                 continue
 
-            lang_status = self.db.get_episode_language_status(episode_id, lang)
-            if lang_status and lang_status.get("tts_status") == "done":
-                continue  # Already done (resuming pipeline)
+            if tts_mgr is None:
+                from .tts.manager import TTSManager
 
-            self.db.update_episode_language_status(episode_id, lang, tts_status="running")
+                tts_mgr = TTSManager(self.db)
+                tts_mgr.ensure_worker_ready(intent="pipeline")
 
-            # Get script text for this language
-            if lang == episode["master_language"]:
-                script_text = episode["script_text"]
-            else:
-                lang_status_row = self.db.get_episode_language_status(episode_id, lang)
-                script_path = lang_status_row.get("script_path") if lang_status_row else None
-                if script_path and Path(script_path).exists():
-                    script_text = read_text(Path(script_path))
-                else:
-                    script_text = episode["script_text"]
-
-            # Submit TTS job
-            from .tts.manager import TTSManager
-            tts_mgr = TTSManager(self.db)
-            tts_mgr.ensure_worker_ready(intent="pipeline")
+            script_text = self._episode_tts_script_text(episode, lang, lang_status)
             payload = self._build_generate_tts_payload(
                 profile=profile,
                 language=lang,
                 script_text=script_text,
             )
-            job_id = tts_mgr.submit_tts_job(
+            new_job_id = tts_mgr.submit_tts_job(
                 job_type="generate",
                 profile_id=profile_id,
                 payload=payload,
                 build_id=episode_id,
                 filename=f"narration_{lang}.wav",
             )
-            self.db.update_episode_language_status(episode_id, lang, tts_job_id=job_id)
-
-            # Pause pipeline — TTS worker will process async
-            self.db.update_episode(
+            self.db.update_episode_language_status(
                 episode_id,
-                pipeline_status="paused_for_tts",
-                updated_at=utc_now(),
+                lang,
+                tts_status="running",
+                tts_job_id=new_job_id,
+                tts_audio_path=None,
+                error_message=None,
             )
-            return  # Exit — pipeline resumes when TTS completes
+            active_jobs += 1
+            submitted_jobs += 1
+
+        return {
+            "submitted_jobs": submitted_jobs,
+            "active_jobs": active_jobs,
+            "any_failed": any_failed,
+            "unrecoverable": unrecoverable,
+        }
+
+    @staticmethod
+    def _paused_tts_failure_message(
+        *,
+        unrecoverable: list[str],
+        unresolved_languages: list[str],
+    ) -> str:
+        if unrecoverable:
+            return "TTS recovery failed: " + "; ".join(unrecoverable)
+        if unresolved_languages:
+            return (
+                "TTS has no active or queued jobs for "
+                + ", ".join(unresolved_languages)
+                + ". The workflow was marked failed."
+            )
+        return "TTS could not be recovered."
+
+    def _episode_run_tts_all(self, episode_id: str) -> None:
+        """Queue TTS for every unresolved language, then pause until all jobs settle."""
+        tts_queue = self._queue_episode_tts_jobs(episode_id, allow_resubmit_failed=True)
+        if tts_queue["active_jobs"] <= 0:
+            return
+        self.db.update_episode(
+            episode_id,
+            board_status="Running",
+            pipeline_status="paused_for_tts",
+            current_stage="tts",
+            last_error=None,
+            updated_at=utc_now(),
+        )
 
     def _episode_run_alignments(self, episode_id: str) -> None:
         """Run alignment for each language, one at a time."""
@@ -3494,40 +3606,17 @@ class Tool1Service:
         paused = self.db.list_paused_tts_episodes()
         for episode in paused:
             episode_id = episode["id"]
+            tts_queue = self._queue_episode_tts_jobs(episode_id, allow_resubmit_failed=False)
             lang_statuses = self.db.get_episode_language_statuses(episode_id)
-            langs = json.loads(episode.get("configured_languages") or "[]")
+            any_tts_failed = bool(tts_queue["any_failed"])
+            unresolved_languages: list[str] = []
 
-            # Check if all TTS jobs are done
-            all_tts_done = True
-            any_tts_failed = False
             for ls in lang_statuses:
-                if ls["tts_status"] == "running":
-                    # Check the TTS job status
-                    tts_job_id = ls.get("tts_job_id")
-                    if tts_job_id:
-                        job = self.db.get_tts_job(tts_job_id)
-                        if job:
-                            if job["status"] == "completed":
-                                self.db.update_episode_language_status(
-                                    episode_id, ls["language_code"],
-                                    tts_status="done",
-                                    tts_audio_path=job.get("result_path", ""),
-                                )
-                            elif job["status"] in ("error", "failed"):
-                                self.db.update_episode_language_status(
-                                    episode_id, ls["language_code"],
-                                    tts_status="failed",
-                                    error_message=job.get("error_message", "TTS failed"),
-                                )
-                                any_tts_failed = True
-                            else:
-                                all_tts_done = False
-                    else:
-                        all_tts_done = False
-                elif ls["tts_status"] in ("pending", "running"):
-                    all_tts_done = False
-                elif ls["tts_status"] == "failed":
+                status = str(ls.get("tts_status") or "pending").strip().lower()
+                if status == "failed":
                     any_tts_failed = True
+                elif status not in {"done", "skipped"}:
+                    unresolved_languages.append(str(ls.get("language_code") or ""))
 
             if any_tts_failed:
                 self.db.update_episode(
@@ -3536,8 +3625,37 @@ class Tool1Service:
                     pipeline_status="failed",
                     last_error="One or more TTS jobs failed.",
                     pause_requested=0,
+                    updated_at=utc_now(),
                 )
-            elif all_tts_done:
+                continue
+
+            if unresolved_languages:
+                if tts_queue["active_jobs"] > 0:
+                    if tts_queue["submitted_jobs"] > 0:
+                        self.db.update_episode(
+                            episode_id,
+                            board_status="Running",
+                            pipeline_status="paused_for_tts",
+                            current_stage="tts",
+                            last_error=None,
+                            updated_at=utc_now(),
+                        )
+                    continue
+                self.db.update_episode(
+                    episode_id,
+                    board_status="Needs Attention",
+                    pipeline_status="failed",
+                    current_stage="tts",
+                    last_error=self._paused_tts_failure_message(
+                        unrecoverable=tts_queue["unrecoverable"],
+                        unresolved_languages=unresolved_languages,
+                    ),
+                    pause_requested=0,
+                    updated_at=utc_now(),
+                )
+                continue
+
+            if not unresolved_languages:
                 refreshed_episode = self._hydrate_episode_record(self.db.get_episode(episode_id)) or {}
                 if refreshed_episode.get("pause_requested"):
                     self.db.update_episode(

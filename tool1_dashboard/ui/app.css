@@ -1089,7 +1089,6 @@ body[data-theme="light"] .board-modal-shell {
 .board-modal-layout {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) 320px;
 }
 
 .board-modal-main {
@@ -1101,23 +1100,7 @@ body[data-theme="light"] .board-modal-shell {
   gap: 18px;
 }
 
-.board-modal-side {
-  min-width: 0;
-  overflow: auto;
-  padding: 22px 20px;
-  display: grid;
-  align-content: start;
-  gap: 14px;
-  border-left: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.02);
-}
-
-body[data-theme="light"] .board-modal-side {
-  background: rgba(19, 24, 32, 0.015);
-}
-
-.board-modal-section,
-.board-modal-side-card {
+.board-modal-section {
   display: grid;
   gap: 12px;
   padding: 16px;
@@ -1487,14 +1470,6 @@ details.editor-card summary::-webkit-details-marker {
     grid-auto-columns: minmax(284px, 320px);
   }
 
-  .board-modal-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .board-modal-side {
-    border-left: 0;
-    border-top: 1px solid var(--line);
-  }
 }
 
 @media (max-width: 760px) {
@@ -1553,8 +1528,7 @@ details.editor-card summary::-webkit-details-marker {
   }
 
   .board-modal-head,
-  .board-modal-main,
-  .board-modal-side {
+  .board-modal-main {
     padding-left: 16px;
     padding-right: 16px;
   }
@@ -1564,8 +1538,7 @@ details.editor-card summary::-webkit-details-marker {
     padding-bottom: 14px;
   }
 
-  .board-modal-main,
-  .board-modal-side {
+  .board-modal-main {
     padding-top: 16px;
     padding-bottom: 16px;
   }
@@ -3169,15 +3142,6 @@ details.editor-card summary::-webkit-details-marker {
 @media (max-width: 980px) {
   .project-config-grid {
     grid-template-columns: 1fr;
-  }
-
-  .board-modal-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .board-modal-side {
-    border-left: 0;
-    border-top: 1px solid var(--line);
   }
 
   .translation-provider-grid {

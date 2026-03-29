@@ -1393,6 +1393,176 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertEqual(paused_episode["queued_from_stage"], "alignment")
                 self.assertEqual(paused_episode["pause_requested"], 0)
 
+    def test_tts_stage_queues_all_pending_languages_before_pause(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                languages = ["en", "es", "fr"]
+                voice_profiles, _ = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    languages,
+                    master_language="en",
+                    include_translation_for=[],
+                )
+                project = service.create_niche_project(
+                    name="Queue All TTS",
+                    master_language="en",
+                    configured_languages=languages,
+                    language_voice_profiles=voice_profiles,
+                )
+                episode_id = service.submit_episode(
+                    project["project"]["id"],
+                    title="Queue All TTS Episode",
+                    script_text="Alpha beta gamma delta.",
+                )["episode"]["id"]
+
+                with patch("tool1_dashboard.tts.manager.TTSManager.ensure_worker_ready", return_value=None):
+                    service._episode_run_tts_all(episode_id)
+
+                episode = service.db.get_episode(episode_id)
+                self.assertEqual(episode["pipeline_status"], "paused_for_tts")
+                self.assertEqual(episode["current_stage"], "tts")
+                lang_statuses = service.db.get_episode_language_statuses(episode_id)
+                self.assertEqual(len(lang_statuses), 3)
+                self.assertTrue(all(ls["tts_status"] == "running" for ls in lang_statuses))
+                self.assertTrue(all(ls["tts_job_id"] for ls in lang_statuses))
+                jobs = service.db.list_tts_jobs_for_build(episode_id)
+                self.assertEqual(len(jobs), 3)
+                self.assertTrue(all(job["status"] == "queued" for job in jobs))
+
+    def test_paused_tts_episode_requeues_alignment_after_all_languages_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                languages = ["en", "es", "fr"]
+                voice_profiles, _ = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    languages,
+                    master_language="en",
+                    include_translation_for=[],
+                )
+                project = service.create_niche_project(
+                    name="Resume TTS",
+                    master_language="en",
+                    configured_languages=languages,
+                    language_voice_profiles=voice_profiles,
+                )
+                episode_id = service.submit_episode(
+                    project["project"]["id"],
+                    title="Resume All TTS",
+                    script_text="Alpha beta gamma delta.",
+                )["episode"]["id"]
+
+                service.db.update_episode(
+                    episode_id,
+                    board_status="Running",
+                    pipeline_status="paused_for_tts",
+                    current_stage="tts",
+                )
+                for index, language_code in enumerate(languages, start=1):
+                    audio_path = temp_path / f"narration_{language_code}.wav"
+                    audio_path.write_text(f"audio-{language_code}", encoding="utf-8")
+                    job_id = f"tts-job-{language_code}"
+                    service.db.update_episode_language_status(
+                        episode_id,
+                        language_code,
+                        tts_status="running",
+                        tts_job_id=job_id,
+                    )
+                    service.db.create_tts_job({
+                        "job_id": job_id,
+                        "build_id": episode_id,
+                        "job_type": "generate",
+                        "profile_id": voice_profiles[language_code],
+                        "status": "completed",
+                        "progress": "Completed",
+                        "result_path": str(audio_path),
+                        "filename": audio_path.name,
+                        "payload_json": json.dumps({"texts": [f"line-{language_code}"]}),
+                        "meta_json": "{}",
+                        "queue_priority": 10,
+                        "worker_id": f"worker-{language_code}",
+                        "control_action": None,
+                        "error_message": None,
+                        "created_at": float(index),
+                        "updated_at": float(index + 10),
+                        "finished_at": float(index + 20),
+                    })
+
+                service._check_paused_tts_episodes()
+
+                refreshed = service.db.get_episode(episode_id)
+                self.assertEqual(refreshed["pipeline_status"], "queued")
+                self.assertEqual(refreshed["current_stage"], "alignment")
+                self.assertEqual(refreshed["queued_from_stage"], "alignment")
+                lang_statuses = service.db.get_episode_language_statuses(episode_id)
+                self.assertTrue(all(ls["tts_status"] == "done" for ls in lang_statuses))
+                self.assertTrue(all(ls["tts_audio_path"] for ls in lang_statuses))
+
+    def test_paused_tts_episode_backfills_missing_jobs_for_pending_languages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                languages = ["en", "es"]
+                voice_profiles, _ = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    languages,
+                    master_language="en",
+                    include_translation_for=[],
+                )
+                project = service.create_niche_project(
+                    name="Recover TTS",
+                    master_language="en",
+                    configured_languages=languages,
+                    language_voice_profiles=voice_profiles,
+                )
+                episode_id = service.submit_episode(
+                    project["project"]["id"],
+                    title="Recover Missing TTS Job",
+                    script_text="Alpha beta gamma delta.",
+                )["episode"]["id"]
+
+                audio_path = temp_path / "narration_en.wav"
+                audio_path.write_text("audio-en", encoding="utf-8")
+                service.db.update_episode(
+                    episode_id,
+                    board_status="Running",
+                    pipeline_status="paused_for_tts",
+                    current_stage="tts",
+                )
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "en",
+                    tts_status="done",
+                    tts_audio_path=str(audio_path),
+                )
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "es",
+                    tts_status="pending",
+                    tts_job_id=None,
+                )
+
+                with patch("tool1_dashboard.tts.manager.TTSManager.ensure_worker_ready", return_value=None):
+                    service._check_paused_tts_episodes()
+
+                refreshed = service.db.get_episode(episode_id)
+                self.assertEqual(refreshed["pipeline_status"], "paused_for_tts")
+                self.assertEqual(refreshed["current_stage"], "tts")
+                es_status = service.db.get_episode_language_status(episode_id, "es")
+                self.assertEqual(es_status["tts_status"], "running")
+                self.assertTrue(es_status["tts_job_id"])
+                jobs = service.db.list_tts_jobs_for_build(episode_id)
+                self.assertEqual(len(jobs), 1)
+                self.assertEqual(jobs[0]["job_id"], es_status["tts_job_id"])
+                self.assertEqual(jobs[0]["status"], "queued")
+
     def test_stale_running_provider_stage_is_failed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

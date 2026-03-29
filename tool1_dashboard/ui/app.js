@@ -126,7 +126,6 @@ const state = {
   episodeOverlayId: null,
   boardScrollLeft: 0,
   modalMainScrollTop: 0,
-  modalSideScrollTop: 0,
   voiceProfiles: [],
   translationProfiles: [],
   targetLanguages: [],
@@ -2489,7 +2488,7 @@ function queueActionStatusTooltip(ep) {
   if (status === "queued") return `Workflow queued. Waiting for ${activeStage} to start.`;
   if (status === "running") return `Workflow running in ${activeStage}.`;
   if (status === "paused") return `Workflow paused before ${activeStage}.`;
-  if (status === "paused_for_tts") return "Narration is still running. Pause will apply after TTS finishes.";
+  if (status === "paused_for_tts") return episodeWorkflowStatusCopy(ep) || "Waiting for TTS jobs to finish.";
   return queueActionLabel(ep);
 }
 
@@ -3066,7 +3065,7 @@ function workflowReadinessSectionOptions({ readiness, episode = null } = {}) {
     if (status === "paused_for_tts") {
       return {
         title: "Workflow in progress",
-        emptyCopy: "Narration is still running. Pause will apply after TTS finishes.",
+        emptyCopy: episodeWorkflowStatusCopy(episode) || "Waiting for TTS jobs to finish.",
         tone: "warn",
         badgeLabel: "TTS",
       };
@@ -3488,6 +3487,12 @@ function renderEpisodeDetailOverlay() {
             ${liveRunHtml}
             <div class="board-modal-section">
               <div class="section-header" style="margin-bottom:12px;">
+                <div class="eyebrow" style="margin:0;">Stage runs</div>
+              </div>
+              ${runsHtml}
+            </div>
+            <div class="board-modal-section">
+              <div class="section-header" style="margin-bottom:12px;">
                 <div class="eyebrow" style="margin:0;">Per-language status</div>
               </div>
               ${activeTtsMarkup}
@@ -3502,19 +3507,6 @@ function renderEpisodeDetailOverlay() {
               <div id="episode-files-shell">${renderEpisodeFilesSection(episode.id)}</div>
             </div>
           </div>
-          <aside class="board-modal-side">
-            <div class="board-modal-side-card">
-              <div class="eyebrow">Quick actions</div>
-              <div class="episode-detail-actions">
-                ${queueActionButton}
-                ${deleteActionButton}
-              </div>
-            </div>
-            <div class="board-modal-side-card">
-              <div class="eyebrow">Stage runs</div>
-              ${runsHtml}
-            </div>
-          </aside>
         </div>
       </div>
     </div>
@@ -4057,10 +4049,6 @@ function captureDashboardScroll() {
   if (modalMain) {
     state.modalMainScrollTop = modalMain.scrollTop || 0;
   }
-  const modalSide = document.querySelector(".board-modal-side");
-  if (modalSide) {
-    state.modalSideScrollTop = modalSide.scrollTop || 0;
-  }
 }
 
 function restoreDashboardScroll() {
@@ -4083,14 +4071,6 @@ function restoreDashboardScroll() {
     modalMain.scrollTop = state.modalMainScrollTop || 0;
     modalMain.addEventListener("scroll", () => {
       state.modalMainScrollTop = modalMain.scrollTop || 0;
-    }, { passive: true });
-  }
-
-  const modalSide = document.querySelector(".board-modal-side");
-  if (modalSide) {
-    modalSide.scrollTop = state.modalSideScrollTop || 0;
-    modalSide.addEventListener("scroll", () => {
-      state.modalSideScrollTop = modalSide.scrollTop || 0;
     }, { passive: true });
   }
 }
