@@ -865,6 +865,19 @@ class Tool1Service:
             return None, None
         return int(match.group(1)), int(match.group(2))
 
+    @staticmethod
+    def _tts_stage_status_for_job_status(job_status: Any) -> str:
+        normalized = str(job_status or "").strip().lower()
+        if normalized == "processing":
+            return "running"
+        if normalized == "queued":
+            return "queued"
+        if normalized in {"completed", "done"}:
+            return "done"
+        if normalized in {"error", "failed"}:
+            return "failed"
+        return "pending"
+
     def _build_tts_job_client_payload(self, job: dict[str, Any]) -> dict[str, Any]:
         payload = dict(job or {})
         parsed_payload = self._parse_json_dict(payload.get("payload_json"))
@@ -2401,7 +2414,6 @@ class Tool1Service:
             else:
                 script_text = episode["script_text"]
 
-        self.db.update_episode_language_status(episode_id, lang, tts_status="running")
         tts_mgr = self.tts_manager
         tts_mgr.ensure_worker_ready(intent="pipeline")
         payload = self._build_generate_tts_payload(
@@ -2416,7 +2428,14 @@ class Tool1Service:
             build_id=episode_id,
             filename=f"narration_{lang}.wav",
         )
-        self.db.update_episode_language_status(episode_id, lang, tts_job_id=job_id)
+        self.db.update_episode_language_status(
+            episode_id,
+            lang,
+            tts_status="queued",
+            tts_job_id=job_id,
+            tts_audio_path=None,
+            error_message=None,
+        )
 
     def get_translation_preview(self, episode_id: str, language_code: str) -> dict[str, Any]:
         """Return original and translated script side-by-side for preview."""
@@ -2973,11 +2992,12 @@ class Tool1Service:
                 job_status = ""
 
             if job and job_status in {"queued", "processing"}:
-                if status != "running":
+                stage_status = self._tts_stage_status_for_job_status(job_status)
+                if status != stage_status:
                     self.db.update_episode_language_status(
                         episode_id,
                         lang,
-                        tts_status="running",
+                        tts_status=stage_status,
                         error_message=None,
                     )
                 active_jobs += 1
@@ -3039,7 +3059,7 @@ class Tool1Service:
             self.db.update_episode_language_status(
                 episode_id,
                 lang,
-                tts_status="running",
+                tts_status="queued",
                 tts_job_id=new_job_id,
                 tts_audio_path=None,
                 error_message=None,

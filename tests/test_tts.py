@@ -764,6 +764,161 @@ class ServiceVoiceRuntimeTests(unittest.TestCase):
         self.assertEqual(profile["latest_test_job"]["download_url"], "/api/tts-jobs/test-1/download")
 
 
+class EpisodeTtsQueueStatusTests(unittest.TestCase):
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self.workspace = Path(self._tmpdir) / "workspace"
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        self.audio_path = self.workspace / "voice.wav"
+        self.audio_path.write_bytes(b"RIFF....WAVEfmt ")
+        self.service = Tool1Service(db=Tool1Database(Path(self._tmpdir) / "test.db"))
+        now = utc_now()
+
+        self.service.db.create_niche_project({
+            "id": "niche-1",
+            "title": "Test Project",
+            "master_language": "en",
+            "configured_languages": json.dumps(["en", "es"]),
+            "language_voice_profiles": json.dumps({"en": "voice-en", "es": "voice-es"}),
+            "language_translation_profiles": "{}",
+            "board_status": "Draft",
+            "workspace_dir": str(self.workspace),
+            "created_at": now,
+            "updated_at": now,
+        })
+        self.service.db.create_episode({
+            "id": "ep-1",
+            "niche_project_id": "niche-1",
+            "title": "Episode 1",
+            "script_text": "Hello world. This is a test script for queued narration.",
+            "board_status": "Running",
+            "pipeline_status": "paused_for_tts",
+            "current_stage": "tts",
+            "queued_from_stage": "tts",
+            "master_language": "en",
+            "configured_languages": json.dumps(["en", "es"]),
+            "workspace_dir": str(self.workspace),
+            "created_at": now,
+            "updated_at": now,
+        })
+        for language_code in ("en", "es"):
+            self.service.db.create_episode_language_status({
+                "id": f"ep-1-{language_code}",
+                "episode_id": "ep-1",
+                "language_code": language_code,
+                "translation_status": "done",
+                "tts_status": "pending",
+                "srt_status": "pending",
+                "timeline_status": "pending",
+                "updated_at": now,
+            })
+        for profile_id in ("voice-en", "voice-es"):
+            self.service.db.create_voice_profile({
+                "id": profile_id,
+                "name": profile_id,
+                "language_code": "en" if profile_id.endswith("en") else "es",
+                "audio_file": self.audio_path.name,
+                "audio_path": str(self.audio_path),
+                "latents_path": None,
+                "has_latents": 0,
+                "tts_config_json": "",
+                "created_at": now,
+                "updated_at": now,
+            })
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _create_generate_job(self, *, job_id: str, profile_id: str, status: str, progress: str) -> None:
+        now = time.time()
+        self.service.db.create_tts_job({
+            "job_id": job_id,
+            "build_id": "ep-1",
+            "job_type": "generate",
+            "profile_id": profile_id,
+            "status": status,
+            "progress": progress,
+            "payload_json": json.dumps({"texts": ["hello", "world"]}),
+            "meta_json": "{}",
+            "queue_priority": 10,
+            "created_at": now,
+            "updated_at": now,
+        })
+
+    def test_queue_episode_tts_jobs_marks_new_submissions_as_queued(self):
+        with patch.object(self.service.tts_manager, "ensure_worker_ready") as ensure_mock, patch.object(
+            self.service.tts_manager,
+            "submit_tts_job",
+            side_effect=["job-en", "job-es"],
+        ):
+            result = self.service._queue_episode_tts_jobs("ep-1", allow_resubmit_failed=True)
+
+        ensure_mock.assert_called_once_with(intent="pipeline")
+        self.assertEqual(result["submitted_jobs"], 2)
+        self.assertEqual(result["active_jobs"], 2)
+        self.assertEqual(
+            self.service.db.get_episode_language_status("ep-1", "en")["tts_status"],
+            "queued",
+        )
+        self.assertEqual(
+            self.service.db.get_episode_language_status("ep-1", "es")["tts_status"],
+            "queued",
+        )
+
+    def test_queue_episode_tts_jobs_only_marks_processing_job_as_running(self):
+        self._create_generate_job(
+            job_id="job-en",
+            profile_id="voice-en",
+            status="processing",
+            progress="Generating chunk 1/2...",
+        )
+        self._create_generate_job(
+            job_id="job-es",
+            profile_id="voice-es",
+            status="queued",
+            progress="Queued...",
+        )
+        self.service.db.update_episode_language_status(
+            "ep-1",
+            "en",
+            tts_status="queued",
+            tts_job_id="job-en",
+        )
+        self.service.db.update_episode_language_status(
+            "ep-1",
+            "es",
+            tts_status="running",
+            tts_job_id="job-es",
+        )
+
+        result = self.service._queue_episode_tts_jobs("ep-1", allow_resubmit_failed=False)
+
+        self.assertEqual(result["submitted_jobs"], 0)
+        self.assertEqual(result["active_jobs"], 2)
+        self.assertEqual(
+            self.service.db.get_episode_language_status("ep-1", "en")["tts_status"],
+            "running",
+        )
+        self.assertEqual(
+            self.service.db.get_episode_language_status("ep-1", "es")["tts_status"],
+            "queued",
+        )
+
+    def test_retry_single_tts_marks_job_as_queued(self):
+        with patch.object(self.service.tts_manager, "ensure_worker_ready") as ensure_mock, patch.object(
+            self.service.tts_manager,
+            "submit_tts_job",
+            return_value="job-retry",
+        ):
+            self.service._episode_retry_single_tts("ep-1", "es")
+
+        ensure_mock.assert_called_once_with(intent="pipeline")
+        status = self.service.db.get_episode_language_status("ep-1", "es")
+        self.assertEqual(status["tts_status"], "queued")
+        self.assertEqual(status["tts_job_id"], "job-retry")
+
+
 class VoiceProfileUiCopyTests(unittest.TestCase):
 
     def test_voice_profile_ui_hides_manual_worker_controls(self):

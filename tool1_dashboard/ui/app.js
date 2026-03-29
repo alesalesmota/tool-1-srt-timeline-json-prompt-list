@@ -723,6 +723,8 @@ function perLanguageStageCounts(languageStatuses, stage) {
     const status = String(langStatus?.[statusKey] || "").toLowerCase();
     if (status === "done" || status === "completed") {
       counts.done += 1;
+    } else if (status === "queued") {
+      counts.queued += 1;
     } else if (status === "running" || status === "processing") {
       counts.running += 1;
     } else if (status === "failed" || status === "error") {
@@ -734,6 +736,7 @@ function perLanguageStageCounts(languageStatuses, stage) {
   }, {
     total: languageStatuses.length,
     done: 0,
+    queued: 0,
     running: 0,
     pending: 0,
     failed: 0,
@@ -744,6 +747,8 @@ function perLanguageStageSummary(stage, counts) {
   const activity = stageActivityLabel(stage);
   if (!counts?.total) return `${activity}.`;
   const parts = [`${activity} ${counts.done}/${counts.total} done`];
+  if (counts.running) parts.push(`${counts.running} running`);
+  if (counts.queued) parts.push(`${counts.queued} queued`);
   if (counts.failed) parts.push(`${counts.failed} failed`);
   return `${parts.join(", ")}.`;
 }
@@ -2389,11 +2394,13 @@ function langProgressHtml(langStatuses, stage) {
   const statusKey = languageStageStatusKey(stage);
   const normalizedStatuses = langStatuses.map((ls) => String(ls?.[statusKey] || "").toLowerCase());
   const done = normalizedStatuses.filter((status) => status === "done" || status === "completed").length;
+  const queued = normalizedStatuses.filter((status) => status === "queued").length;
   const running = normalizedStatuses.filter((status) => status === "running" || status === "processing").length;
   const failed = normalizedStatuses.filter((status) => status === "failed" || status === "error").length;
   const pct = total ? Math.round((done / total) * 100) : 0;
   let label = `${done}/${total}`;
   if (running) label += ` (${running} running)`;
+  if (queued) label += ` (${queued} queued)`;
   if (failed) label += ` (${failed} failed)`;
   return `
     <div class="lang-progress">
@@ -2947,6 +2954,7 @@ function overallLangTone(ls) {
   const statuses = [ls.translation_status, ls.tts_status, ls.srt_status, ls.timeline_status];
   if (statuses.some((s) => s === "failed")) return "error";
   if (statuses.some((s) => s === "running")) return "info";
+  if (statuses.some((s) => s === "queued")) return "warn";
   if (statuses.every((s) => s === "done")) return "success";
   if (statuses.some((s) => s === "done")) return "warn";
   return "neutral";
@@ -3642,8 +3650,8 @@ function renderEpisodeDetailOverlay() {
       + "</div>"
     : "";
   const langRows = langStatuses.map((ls) => {
-    const canRetryTranslation = !["running", "queued"].includes(episode.pipeline_status || "idle") && (ls.translation_status === "failed" || ls.translation_status === "skipped");
-    const canRetryTts = !["running", "queued"].includes(episode.pipeline_status || "idle") && (ls.tts_status === "failed" || ls.tts_status === "skipped");
+    const canRetryTranslation = !["running", "queued", "paused_for_tts"].includes(episode.pipeline_status || "idle") && (ls.translation_status === "failed" || ls.translation_status === "skipped");
+    const canRetryTts = !["running", "queued", "paused_for_tts"].includes(episode.pipeline_status || "idle") && (ls.tts_status === "failed" || ls.tts_status === "skipped");
     const hasTranslation = ls.translation_status === "done" && ls.language_code !== (episode.master_language || "en");
     const ttsProgressLabel = languageTtsJobCopy(ls);
     const ttsProgress = ttsProgressLabel ? ' <span class="helper" style="font-size:0.7rem;">(' + esc(ttsProgressLabel) + ')</span>' : '';
@@ -3776,7 +3784,7 @@ function renderEpisodeDetail() {
     : "";
 
   // Per-language table
-  const isPipelineIdle = !["running", "queued"].includes(episode.pipeline_status || "idle");
+  const isPipelineIdle = !["running", "queued", "paused_for_tts"].includes(episode.pipeline_status || "idle");
   const langRows = langStatuses.map((ls) => {
     const canRetryTranslation = isPipelineIdle && (ls.translation_status === "failed" || ls.translation_status === "skipped");
     const canRetryTts = isPipelineIdle && (ls.tts_status === "failed" || ls.tts_status === "skipped");
@@ -4255,7 +4263,15 @@ function renderTranslationPreviewModal() {
 }
 
 function langStatusBadge(status) {
-  const tone = status === "done" ? "success" : status === "running" ? "info" : status === "failed" ? "error" : "neutral";
+  const tone = status === "done"
+    ? "success"
+    : status === "running"
+      ? "info"
+      : status === "queued"
+        ? "warn"
+        : status === "failed"
+          ? "error"
+          : "neutral";
   return '<span class="badge badge-' + tone + '">' + esc(titleCase(status || "pending")) + '</span>';
 }
 

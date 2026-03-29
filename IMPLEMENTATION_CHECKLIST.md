@@ -242,3 +242,11 @@
 - [x] Fail paused-TTS recovery explicitly if queued narration cannot resume, instead of leaving episodes frozen in `paused_for_tts`
 - [x] Add regression coverage for a paused episode whose Spanish narration job is stale `processing`
 - [x] Verify with `python -m pytest tests/test_video_pipeline.py -k "paused_tts_episode or live_tts_progress"` (`5` passing)
+
+## Drawbridge TTS Queue-State Clarity (2026-03-28)
+- [x] Stop marking newly submitted narration jobs as `running` before the XTTS worker actually claims them
+- [x] Reconcile paused-episode TTS rows from real job states so queued jobs stay `queued` and only `processing` jobs become `running`
+- [x] Update the per-language TTS table, compact summaries, and badge tones so queued narration is visible as queued instead of looking concurrent
+- [x] Keep retry actions disabled while `paused_for_tts` is still active
+- [x] Add regression coverage for queued submission, queued-vs-processing reconciliation, and retry submission
+- [x] Verify with `python -m pytest tests/test_tts.py` (`49` passing)
