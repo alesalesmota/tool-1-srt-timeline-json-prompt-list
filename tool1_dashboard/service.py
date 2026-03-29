@@ -675,7 +675,7 @@ class Tool1Service:
         return payload
 
     def _stage_provider_api_key(self, provider: str) -> str | None:
-        if str(provider or "").strip() == "openai":
+        if str(provider or "").strip() in ("openai", "codex"):
             return self._stage_provider_openai_api_key() or None
         return None
 
@@ -2227,6 +2227,11 @@ class Tool1Service:
             )
         if reset_outputs:
             self._reset_episode_outputs_from_stage(episode_id, stage)
+        # Clear old stage runs from the start stage onward so the UI
+        # only shows runs from the current attempt.
+        start_idx = EPISODE_RUNNABLE_STAGES.index(stage)
+        stages_to_clear = list(EPISODE_RUNNABLE_STAGES[start_idx:])
+        self.db.delete_stage_runs_for(episode_id, stages_to_clear)
         self.db.update_episode(
             episode_id,
             board_status="Queued",

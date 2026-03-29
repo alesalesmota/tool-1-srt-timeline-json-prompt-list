@@ -154,10 +154,11 @@ class CliRunner:
         parsed_path = artifact_dir / "parsed.json"
         command_payload: dict[str, Any]
 
-        if provider == "openai":
+        if provider in ("openai", "codex"):
+            default_model = "gpt-5.4-mini" if provider == "openai" else "gpt-5.4"
             request_path = artifact_dir / "request.json"
             request_payload = {
-                "model": model or "gpt-5.4-mini",
+                "model": model or default_model,
                 "instructions": system_prompt,
                 "input": user_prompt,
                 "store": False,
@@ -187,7 +188,7 @@ class CliRunner:
                 "prompt_path": str(prompt_path),
                 "schema_path": str(schema_path),
                 "request_path": str(request_path),
-                "model": model or "gpt-5.4-mini",
+                "model": model or default_model,
                 "transport": "https",
             }
         elif provider == "claude":
@@ -238,64 +239,6 @@ class CliRunner:
                 "schema_path": str(schema_path),
                 "prompt_transport": "stdin",
                 "model": model or "haiku",
-            }
-        elif provider == "codex":
-            last_message_path = artifact_dir / "last_message.txt"
-            combined_prompt = (
-                "# System Instructions\n"
-                f"{system_prompt.strip()}\n\n"
-                "# Execution Rules\n"
-                "You are a pure structured-output generator. Follow these rules strictly:\n"
-                "- Do NOT run any shell commands, file searches, or filesystem operations.\n"
-                "- Do NOT attempt to read, list, or explore any files or directories.\n"
-                "- ALL the information you need is provided below in the task payload.\n"
-                "- Your ONLY job is to reason about the input and return valid JSON matching the output schema.\n\n"
-                "# Task\n"
-                f"{user_prompt.strip()}\n"
-            )
-            # Use artifact_dir (not workspace) so Codex has no files to
-            # explore and focuses on generating structured JSON output.
-            command = [
-                self.codex_bin,
-                "exec",
-                "--skip-git-repo-check",
-                "--sandbox",
-                "read-only",
-                "--model",
-                model or "gpt-5.4",
-                "--json",
-                "--output-schema",
-                str(schema_path),
-                "-o",
-                str(last_message_path),
-                "-C",
-                str(artifact_dir),
-                "-",
-            ]
-            returncode, stdout_text, stderr_text = self._run_streaming(
-                command,
-                combined_prompt,
-                stdout_path,
-                stderr_path,
-                workdir,
-                timeout_seconds=self._structured_timeout_seconds,
-            )
-            if returncode != 0:
-                raise CliExecutionError(
-                    self._build_cli_error_message("codex", stdout_text, stderr_text),
-                    stdout=stdout_text,
-                    stderr=stderr_text,
-                )
-            parsed = self._parse_structured_response(read_text(last_message_path))
-            command_payload = {
-                "provider": provider,
-                "command": command,
-                "workdir": str(workdir),
-                "prompt_path": str(prompt_path),
-                "schema_path": str(schema_path),
-                "last_message_path": str(last_message_path),
-                "prompt_transport": "stdin",
-                "model": model or "gpt-5.4",
             }
         else:
             raise ValueError(f"Unsupported provider '{provider}'.")

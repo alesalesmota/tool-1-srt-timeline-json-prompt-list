@@ -51,5 +51,18 @@
     "screenshotPath": "./screenshots/moat-1774806206091-4f1troszt.png",
     "status": "done",
     "timestamp": 1774806206241
+  },
+  {
+    "id": "de262128-e55c-41b1-a858-7d2f11fd6d6b",
+    "title": "Background Container",
+    "comment": "new error, and i see whe have old errors registred, for the app, everytime we restart the workflow, it needs to refresh the error logs, that way u dont get confused with old errors.",
+    "selector": "div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(6)",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774807364771-kmj8v4dy3.png",
+    "status": "done",
+    "timestamp": 1774807364922
   }
 ]

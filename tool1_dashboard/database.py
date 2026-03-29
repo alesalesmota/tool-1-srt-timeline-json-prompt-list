@@ -442,6 +442,18 @@ class Tool1Database:
             (episode_id,),
         )
 
+    def delete_stage_runs_for(self, episode_id: str, stages: list[str]) -> int:
+        """Delete old stage runs for the given stages so the UI starts fresh on resume."""
+        if not stages:
+            return 0
+        placeholders = ",".join("?" for _ in stages)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"DELETE FROM stage_runs WHERE episode_id = ? AND stage IN ({placeholders})",
+                [episode_id, *stages],
+            )
+            return cursor.rowcount
+
     def list_running_stage_runs(self) -> list[dict[str, Any]]:
         return self._fetchall(
             """
