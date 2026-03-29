@@ -244,6 +244,12 @@ class CliRunner:
             combined_prompt = (
                 "# System Instructions\n"
                 f"{system_prompt.strip()}\n\n"
+                "# Execution Rules\n"
+                "You are a pure structured-output generator. Follow these rules strictly:\n"
+                "- Do NOT run any shell commands, file searches, or filesystem operations.\n"
+                "- Do NOT attempt to read, list, or explore any files or directories.\n"
+                "- ALL the information you need is provided below in the task payload.\n"
+                "- Your ONLY job is to reason about the input and return valid JSON matching the output schema.\n\n"
                 "# Task\n"
                 f"{user_prompt.strip()}\n"
             )
