@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 10 | **To Do**: 0 | **Doing**: 0 | **Done**: 10
+**Total**: 11 | **To Do**: 0 | **Doing**: 0 | **Done**: 11
 
 ## Tasks
 
@@ -14,8 +14,9 @@
 8. [x] Background Container – "the process started running automatically, when i opened ..." `section.kanban-column.project-kanban-column:nth-child(4) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
 9. [x] Background Container – "when i hover the mouse over the card the corner glowing e..." `section.kanban-column.project-kanban-column:nth-child(5) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
 10. [x] Background Container – "new error, can you check what happened" `div.board-modal-layout:nth-child(2) > div.board-modal-main > div.notice:nth-child(1)`
+11. [x] Freeform Rectangle Task – "2 new errors on scene planning step" `freeform`
 
 ---
 
-_Generated: 29/03/2026, 13:57:40_
+_Generated: 29/03/2026, 14:17:02_
 _Source: moat-tasks-detail.json_

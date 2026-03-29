@@ -1408,7 +1408,36 @@ details.editor-card summary::-webkit-details-marker {
   color: var(--error);
   overflow-wrap: break-word;
   word-break: break-word;
-  max-height: 6lh;
+}
+
+.notice-error-details {
+  margin-top: 8px;
+}
+
+.notice-error-summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  font-size: 0.85rem;
+}
+
+.notice-error-summary::-webkit-details-marker {
+  display: none;
+}
+
+.notice-error-summary::before {
+  content: "\25B6\00a0";
+  font-size: 0.7em;
+}
+
+.notice-error-details[open] > .notice-error-summary::before {
+  content: "\25BC\00a0";
+}
+
+.notice-error-details > .notice[data-tone="error"] {
+  margin-top: 4px;
+  font-size: 0.82rem;
+  max-height: 5.5em;
   overflow-y: auto;
 }
 

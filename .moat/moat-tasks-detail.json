@@ -182,5 +182,45 @@
     "screenshotPath": "./screenshots/moat-1774803193540-bkr6oydai.png",
     "status": "done",
     "timestamp": 1774803193696
+  },
+  {
+    "id": "6fdc2500-ec1e-4472-8918-a946040d3bed",
+    "title": "Freeform Rectangle Task",
+    "comment": "2 new errors on scene planning step",
+    "selector": "freeform",
+    "boundingRect": {
+      "x": 370,
+      "y": 135,
+      "w": 1137,
+      "h": 111
+    },
+    "screenshotPath": "./screenshots/moat-1774803883216-lh47him0h.png",
+    "status": "done",
+    "timestamp": 1774803883341,
+    "boundingBox": {
+      "xyxy": {
+        "x1": 370,
+        "y1": 135,
+        "x2": 1507,
+        "y2": 246
+      },
+      "xywh": {
+        "x": 370,
+        "y": 135,
+        "width": 1137,
+        "height": 111
+      },
+      "normalized": {
+        "x": 0.19270833333333334,
+        "y": 0.14285714285714285,
+        "width": 0.5921875,
+        "height": 0.11746031746031746
+      },
+      "viewport": {
+        "width": 1920,
+        "height": 945
+      },
+      "type": "freeform"
+    }
   }
 ]

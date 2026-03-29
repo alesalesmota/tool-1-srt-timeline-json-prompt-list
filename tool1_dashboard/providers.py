@@ -476,18 +476,36 @@ class CliRunner:
             return ""
         direct = self._maybe_json(text)
         if isinstance(direct, dict):
-            for key in ("result", "error", "message", "text"):
-                value = direct.get(key)
-                if isinstance(value, str) and value.strip():
-                    detail = value.strip()
-                    if len(detail) > max_length:
-                        return detail[:max_length] + "…"
-                    return detail
+            detail = self._deep_extract_error_message(direct)
+            if detail:
+                if len(detail) > max_length:
+                    return detail[:max_length] + "…"
+                return detail
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         detail = lines[-1] if lines else ""
         if len(detail) > max_length:
             return detail[:max_length] + "…"
         return detail
+
+    def _deep_extract_error_message(self, obj: dict[str, Any], *, _depth: int = 0) -> str:
+        """Recursively extract a human-readable message from nested API error JSON."""
+        if _depth > 3:
+            return ""
+        for key in ("message", "result", "error", "text"):
+            value = obj.get(key)
+            if isinstance(value, str) and value.strip():
+                # The value itself might be a JSON string wrapping another error
+                nested = self._maybe_json(value.strip())
+                if isinstance(nested, dict):
+                    deeper = self._deep_extract_error_message(nested, _depth=_depth + 1)
+                    if deeper:
+                        return deeper
+                return value.strip()
+            if isinstance(value, dict):
+                deeper = self._deep_extract_error_message(value, _depth=_depth + 1)
+                if deeper:
+                    return deeper
+        return ""
 
     def _unwrap_possible_wrapper(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         if "structured_output" in payload:

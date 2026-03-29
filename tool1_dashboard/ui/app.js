@@ -3727,8 +3727,8 @@ function renderEpisodeDetailOverlay() {
         </div>
         <div class="board-modal-layout">
           <div class="board-modal-main">
-            ${episode.last_error ? '<div class="notice" data-tone="error">' + esc(episode.last_error) + '</div>' : ""}
             ${renderEpisodeWorkflowNotice(episode.id)}
+            ${episode.last_error ? '<details class="notice-error-details"><summary class="notice notice-error-summary" data-tone="error">Error details</summary><div class="notice" data-tone="error">' + esc(episode.last_error) + '</div></details>' : ""}
             ${renderEpisodeWorkflowReadinessSection(episode, readiness)}
             ${renderEpisodeWorkflowControlPanel(episode, { surface: "overlay", readiness })}
             <div class="board-modal-section">
