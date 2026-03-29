@@ -31,6 +31,8 @@ from tool1_dashboard.tts.constants import (
     AUDIO_SAMPLE_RATE,
     CHUNK_RETRY_ATTEMPTS,
     FAILED_CHUNK_SECONDS,
+    GENERATE_PROGRESS_UPDATE_EVERY_CHUNKS,
+    GENERATE_PROGRESS_UPDATE_MIN_SECONDS,
     HEARTBEAT_INTERVAL,
     MAX_JOB_HISTORY,
     MAX_REFERENCE_AUDIO_SECONDS,
@@ -333,6 +335,22 @@ def _resolve_job_texts(
     raise ValueError("No valid text to generate voice test.")
 
 
+def _should_emit_generate_progress(
+    *,
+    current_chunk: int,
+    total_chunks: int,
+    last_progress_at: float,
+    now: float,
+) -> bool:
+    if total_chunks <= 1:
+        return True
+    if current_chunk <= 1 or current_chunk >= total_chunks:
+        return True
+    if current_chunk % GENERATE_PROGRESS_UPDATE_EVERY_CHUNKS == 0:
+        return True
+    return (now - last_progress_at) >= GENERATE_PROGRESS_UPDATE_MIN_SECONDS
+
+
 # ---------------------------------------------------------------------------
 # Job processors
 # ---------------------------------------------------------------------------
@@ -385,9 +403,11 @@ def process_generate_job(tts_obj: Any, db: WorkerDB, job: dict) -> None:
     os.makedirs(job_chunks_dir, exist_ok=True)
 
     resume_from = _detect_resume_index(job_chunks_dir, len(valid_texts))
+    last_progress_at = 0.0
     if resume_from > 0:
         print(f"[Worker] Resuming job {job_id} from chunk {resume_from + 1}/{len(valid_texts)}")
         db.update_job(job_id, progress=f"Resuming from chunk {resume_from + 1}/{len(valid_texts)}...")
+        last_progress_at = time.time()
 
     model = tts_obj.synthesizer.tts_model
     silence_gap_seconds = float(tts_config.get("silence_gap_seconds", SILENCE_GAP_SECONDS))
@@ -409,7 +429,16 @@ def process_generate_job(tts_obj: Any, db: WorkerDB, job: dict) -> None:
                 continue
 
             _check_job_control(db, job_id)
-            db.update_job(job_id, progress=f"Generating chunk {idx + 1}/{len(valid_texts)}...")
+            current_chunk = idx + 1
+            now = time.time()
+            if _should_emit_generate_progress(
+                current_chunk=current_chunk,
+                total_chunks=len(valid_texts),
+                last_progress_at=last_progress_at,
+                now=now,
+            ):
+                db.update_job(job_id, progress=f"Generating chunk {current_chunk}/{len(valid_texts)}...")
+                last_progress_at = now
 
             chunk_audio = None
             for attempt in range(1, CHUNK_RETRY_ATTEMPTS + 1):
@@ -437,7 +466,10 @@ def process_generate_job(tts_obj: Any, db: WorkerDB, job: dict) -> None:
                 save_pcm16_wav(silence_path, silence_tensor)
 
     _check_job_control(db, job_id)
-    db.update_job(job_id, progress="Finalizing audio...")
+    db.update_job(
+        job_id,
+        progress=f"Finalizing audio after chunk {len(valid_texts)}/{len(valid_texts)}...",
+    )
     base_name = os.path.splitext(original_filename)[0]
     final_filename = f"{base_name}_narration.wav"
     final_path = os.path.join(OUTPUT_DIR, f"{job_id}_{final_filename}")

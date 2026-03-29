@@ -209,6 +209,30 @@ This addendum captures the narration-stability pass that followed the voice-prof
 - No automatic pacing retry is introduced in this pass
 - Scene chunking remains separate; TTS chunking controls narration generation before downstream planning/alignment stages
 
+## 2026-03-29 TTS Throughput Stabilization Addendum
+
+This addendum captures the throughput and stuck-queue repair after the user reported that the current TTS step was much slower than the preview TTS tool.
+
+### Goals
+
+- move the dashboard runtime back onto CUDA without changing the pinned `torch==2.3.1` / `torchaudio==2.3.1` versions
+- make long-form `generate` work materially cheaper than preview/test mode without changing the downstream alignment/output contract
+- recover orphaned `processing` narration jobs even when another worker heartbeat is still fresh
+- make CPU-vs-GPU state and queue depth visible in the existing worker-health surfaces
+
+### Decisions
+
+- `test_voice` stays on the saved per-profile chunk sizing so preview tuning remains representative
+- production `generate` keeps the same per-profile tuning path but enforces `chunk_max_chars >= 260`
+- worker health is extended instead of adding new endpoints
+- throttled progress updates reduce SQLite churn, but final completed job payloads must still resolve to `current_chunk == total_chunks` and `percent == 100`
+
+### Verification
+
+- targeted backend regression: `python -m pytest tests/test_tts.py -q`
+- runtime verification: `torch 2.3.1+cu121`, `torchaudio 2.3.1+cu121`, `cuda_available = True`, `gpu_name = NVIDIA GeForce RTX 3050 Laptop GPU`
+- worker smoke on a temporary DB: one `test_voice` job and one multi-chunk `generate` job both completed on CUDA
+
 ### Verification baseline
 
 - `python -m unittest discover -s tests -v` -> 115 passing tests

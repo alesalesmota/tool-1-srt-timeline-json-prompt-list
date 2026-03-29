@@ -1428,14 +1428,47 @@ function ttsJobTone(status) {
 }
 
 function describeWorkerHealth(wh = {}) {
+  const activeGenerateJobs = Number(wh.active_generate_jobs || 0);
+  const queuedGenerateJobs = Number(wh.queued_generate_jobs || 0);
   const lastHeartbeat = wh.last_heartbeat ? `Last heartbeat ${relativeTime(wh.last_heartbeat)}.` : "";
+  const torchBuild = wh.torch_version
+    ? `torch ${wh.torch_version}${wh.torch_build ? `+${wh.torch_build}` : ""}`
+    : "";
+  const queueMeta = `Generate queue: ${activeGenerateJobs} active, ${queuedGenerateJobs} queued.`;
+  const runtimeMeta = wh.device === "cuda"
+    ? `${wh.gpu_name ? `CUDA on ${wh.gpu_name}` : "CUDA enabled"}${torchBuild ? ` via ${torchBuild}` : ""}.`
+    : wh.device === "cpu"
+      ? `CPU-only runtime${torchBuild ? ` via ${torchBuild}` : ""}.`
+      : torchBuild ? `${torchBuild}.` : "";
   if (wh.startup_error) {
     return {
       visible: true,
-      status: "unavailable",
+      status: "stopped",
       label: "Voice engine unavailable",
       copy: wh.startup_error,
-      meta: lastHeartbeat || "Install the XTTS runtime before cloning or testing voices.",
+      meta: [runtimeMeta, queueMeta, lastHeartbeat || "Install the XTTS runtime before cloning or testing voices."]
+        .filter(Boolean)
+        .join(" "),
+      };
+  }
+  if (wh.device === "cpu") {
+    return {
+      visible: true,
+      status: "stale",
+      label: "Voice engine on CPU",
+      copy: "Long-form narration will be much slower until CUDA-enabled PyTorch is installed for this dashboard environment.",
+      meta: [runtimeMeta, queueMeta, lastHeartbeat].filter(Boolean).join(" "),
+    };
+  }
+  if (wh.device === "cuda") {
+    return {
+      visible: false,
+      status: "running",
+      label: "Voice engine on GPU",
+      copy: wh.gpu_name
+        ? `Long-form narration is using CUDA on ${wh.gpu_name}.`
+        : "Long-form narration is using CUDA.",
+      meta: [runtimeMeta, queueMeta, lastHeartbeat].filter(Boolean).join(" "),
     };
   }
   return {
@@ -1443,8 +1476,23 @@ function describeWorkerHealth(wh = {}) {
     status: wh.lifecycle_state || "sleeping",
     label: "",
     copy: "",
-    meta: lastHeartbeat,
+    meta: [queueMeta, lastHeartbeat].filter(Boolean).join(" "),
   };
+}
+
+function renderWorkerHealthBanner(wh = {}, { forceVisible = false } = {}) {
+  const workerInfo = describeWorkerHealth(wh);
+  if (!workerInfo.visible && !forceVisible) return "";
+  if (!workerInfo.label && !workerInfo.copy && !workerInfo.meta) return "";
+  return `
+    <div class="voice-worker-banner" data-status="${workerInfo.status}">
+      <div class="voice-worker-banner-copy">
+        ${workerInfo.label ? `<span class="worker-badge" data-status="${workerInfo.status}">${esc(workerInfo.label)}</span>` : ""}
+        ${workerInfo.copy ? `<p class="helper">${esc(workerInfo.copy)}</p>` : ""}
+        ${workerInfo.meta ? `<p class="helper voice-worker-meta">${esc(workerInfo.meta)}</p>` : ""}
+      </div>
+    </div>
+  `;
 }
 
 function voiceProfileLatestReadyJob(profile) {
@@ -1724,15 +1772,7 @@ function renderVoiceProfiles() {
     .join("");
 
   $("view").innerHTML = `
-    ${showWorkerBanner ? `
-      <div class="voice-worker-banner" data-status="${workerInfo.status}">
-        <div class="voice-worker-banner-copy">
-          <span class="worker-badge" data-status="${workerInfo.status}">${esc(workerInfo.label)}</span>
-          <p class="helper">${esc(workerInfo.copy)}</p>
-          ${workerInfo.meta ? `<p class="helper voice-worker-meta">${esc(workerInfo.meta)}</p>` : ""}
-        </div>
-      </div>
-    ` : ""}
+    ${showWorkerBanner ? renderWorkerHealthBanner(workerHealth) : ""}
 
     <div class="detail-section">
       <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -3644,11 +3684,9 @@ function renderEpisodeDetailOverlay() {
     else if (i === currentIdx && episode.pipeline_status === "failed") st = "failed";
     return '<div class="stage-strip-item" data-state="' + st + '" title="' + esc(s.label) + '">' + esc(s.short) + '</div>';
   }).join("");
-  const workerIssueMarkup = detail.worker_health?.startup_error
-    ? '<div class="profile-inline-message" data-tone="error" style="margin-bottom:12px;">'
-      + esc(`Voice engine unavailable. TTS work will stay queued until it can start again. ${detail.worker_health.startup_error}`)
-      + "</div>"
-    : "";
+  const workerIssueMarkup = renderWorkerHealthBanner(detail.worker_health || {}, {
+    forceVisible: episode.pipeline_status === "paused_for_tts",
+  });
   const langRows = langStatuses.map((ls) => {
     const canRetryTranslation = !["running", "queued", "paused_for_tts"].includes(episode.pipeline_status || "idle") && (ls.translation_status === "failed" || ls.translation_status === "skipped");
     const canRetryTts = !["running", "queued", "paused_for_tts"].includes(episode.pipeline_status || "idle") && (ls.tts_status === "failed" || ls.tts_status === "skipped");
@@ -3777,11 +3815,9 @@ function renderEpisodeDetail() {
 
   // Worker health
   const wh = detail.worker_health || {};
-  const workerIssueMarkup = wh.startup_error
-    ? '<div class="profile-inline-message" data-tone="error" style="margin-bottom:12px;">'
-      + esc(`Voice engine unavailable. TTS work will stay queued until it can start again. ${wh.startup_error}`)
-      + "</div>"
-    : "";
+  const workerIssueMarkup = renderWorkerHealthBanner(wh, {
+    forceVisible: episode.pipeline_status === "paused_for_tts",
+  });
 
   // Per-language table
   const isPipelineIdle = !["running", "queued", "paused_for_tts"].includes(episode.pipeline_status || "idle");

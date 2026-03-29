@@ -55,12 +55,20 @@ Voice cloning and voice-test jobs require the XTTS runtime in the same Python en
 
 The voice engine now auto-starts on demand for voice-profile prep/tests and pipeline TTS generation, then auto-stops after idle based on usage. If the XTTS runtime is missing or the engine cannot start, the UI shows a clear voice-engine warning and voice tests fail fast with the exact startup error instead of sitting in the queue forever.
 
+For long-form narration, the dashboard environment should use the CUDA build of the pinned PyTorch runtime. CPU-only `torch` still works, but production `generate` jobs become much slower and the UI now warns explicitly when XTTS is running on CPU.
+
+```bash
+python -m pip install --upgrade --force-reinstall torch==2.3.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121
+```
+
 Voice profiles are language-agnostic, `Play test` generates a fresh default sample on demand without asking for manual test text, and each profile now carries its own narration pacing config:
 
 - presets: `natural_stable`, `balanced`, `expressive`
 - advanced controls: `temperature`, `top_p`, `top_k`, `speed`, `chunk_max_chars`, `silence_gap_seconds`
-- `Play test` and production narration use the same resolved per-profile tuning path
+- `Play test` keeps the saved per-profile chunk size so previews stay representative of the profile tuning
+- production `generate` keeps the same tuning path but enforces a minimum `chunk_max_chars` of `260` to reduce XTTS calls on long scripts
 - the repo TTS chunker is the authoritative narration split layer; XTTS internal text splitting is disabled
+- worker health now exposes `device`, `torch_version`, `torch_build`, `cuda_available`, `gpu_name`, and active/queued `generate` counts so paused-TTS views can distinguish CPU slowness from a stuck queue
 
 Windows note: installing `TTS` may also require Microsoft C++ Build Tools.
 

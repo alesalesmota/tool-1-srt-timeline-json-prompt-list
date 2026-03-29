@@ -64,7 +64,7 @@ from .translation_profiles import (
     sanitize_translation_profile,
     sort_openai_models,
 )
-from .tts.constants import STALE_PROCESSING_SECONDS
+from .tts.constants import GENERATE_MIN_CHUNK_MAX_CHARS, STALE_PROCESSING_SECONDS
 from .tts.voice_config import (
     DEFAULT_VOICE_TTS_PRESET,
     chunk_text_for_voice_tts,
@@ -848,12 +848,24 @@ class Tool1Service:
                 "tts_worker_unavailable",
                 "Voice engine unavailable. Queueing is allowed, but TTS will pause until it can start again.",
             ))
+        elif str(worker_health.get("device") or "").strip().lower() == "cpu":
+            warnings.append(self._queue_issue(
+                "tts_worker_cpu_only",
+                self._tts_cpu_runtime_warning(),
+            ))
 
         return {
             "ok": len(blockers) == 0,
             "blockers": blockers,
             "warnings": warnings,
         }
+
+    @staticmethod
+    def _tts_cpu_runtime_warning() -> str:
+        return (
+            "Voice engine is available, but running on CPU. Long-form narration will be much slower "
+            "until CUDA-enabled PyTorch is installed for this dashboard environment."
+        )
 
     @staticmethod
     def _parse_tts_job_chunk_progress(progress: Any) -> tuple[int | None, int | None]:
@@ -963,6 +975,7 @@ class Tool1Service:
         active_tts_job: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = self._hydrate_episode_record(episode) or {}
+        worker_health = worker_health or {}
         payload["queue_readiness"] = self._build_queue_readiness(
             project=project,
             episode=payload,
@@ -972,6 +985,13 @@ class Tool1Service:
             worker_health=worker_health,
         )
         payload["active_tts_job"] = active_tts_job
+        payload["tts_worker_device"] = worker_health.get("device")
+        payload["tts_cuda_available"] = worker_health.get("cuda_available")
+        payload["tts_gpu_name"] = worker_health.get("gpu_name")
+        payload["tts_torch_version"] = worker_health.get("torch_version")
+        payload["tts_torch_build"] = worker_health.get("torch_build")
+        payload["tts_active_generate_jobs"] = worker_health.get("active_generate_jobs")
+        payload["tts_queued_generate_jobs"] = worker_health.get("queued_generate_jobs")
         return payload
 
     def _decorate_stage_run_for_client(self, run: dict[str, Any]) -> dict[str, Any]:
@@ -1486,7 +1506,12 @@ class Tool1Service:
             raise ValueError("No valid text to generate audio.")
         xtts_language = map_language_code(str(language or "").strip() or "en")
         tts_config = self._resolve_voice_tts_config(profile)
-        texts = chunk_text_for_voice_tts(resolved_text, tts_config)
+        production_tts_config = dict(tts_config)
+        production_tts_config["chunk_max_chars"] = max(
+            int(production_tts_config.get("chunk_max_chars", 0) or 0),
+            GENERATE_MIN_CHUNK_MAX_CHARS,
+        )
+        texts = chunk_text_for_voice_tts(resolved_text, production_tts_config)
         if not texts:
             raise ValueError("No valid text to generate audio.")
         return {
@@ -1496,7 +1521,7 @@ class Tool1Service:
             "text": resolved_text,
             "texts": texts,
             "chunked": True,
-            "tts_config": tts_config,
+            "tts_config": production_tts_config,
         }
 
     def _build_voice_test_payload(
@@ -1703,6 +1728,8 @@ class Tool1Service:
         runtime_warning: str | None = None
         runtime = self.tts_manager.get_runtime_status()
         if runtime.available:
+            if runtime.device == "cpu":
+                runtime_warning = self._tts_cpu_runtime_warning()
             try:
                 self.tts_manager.ensure_worker_ready(intent="interactive")
             except RuntimeError as exc:
@@ -2479,6 +2506,13 @@ class Tool1Service:
             "pid": health.pid,
             "startup_error": health.startup_error,
             "missing_dependencies": list(health.missing_dependencies or []),
+            "device": health.device,
+            "torch_version": health.torch_version,
+            "torch_build": health.torch_build,
+            "cuda_available": health.cuda_available,
+            "gpu_name": health.gpu_name,
+            "active_generate_jobs": health.active_generate_jobs,
+            "queued_generate_jobs": health.queued_generate_jobs,
         }
 
     def get_review_data(self, episode_id: str) -> dict[str, Any]:
@@ -3095,6 +3129,7 @@ class Tool1Service:
         if not paused_episodes:
             return None
 
+        self.db.requeue_orphaned_processing_tts_jobs(STALE_PROCESSING_SECONDS)
         active_jobs = self.db.list_active_tts_jobs()
         if not active_jobs:
             return None
@@ -3102,6 +3137,7 @@ class Tool1Service:
         health = self.tts_manager.get_worker_health()
         if health.is_stale or not health.running:
             self.db.requeue_stale_tts_jobs(STALE_PROCESSING_SECONDS)
+            self.db.requeue_orphaned_processing_tts_jobs(STALE_PROCESSING_SECONDS)
             active_jobs = self.db.list_active_tts_jobs()
             if not active_jobs:
                 return None

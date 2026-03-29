@@ -40,6 +40,13 @@ class WorkerHealth:
     startup_error: str | None
     missing_dependencies: list[str]
     lifecycle_state: str  # "sleeping" | "starting" | "processing" | "unavailable"
+    device: str | None = None
+    torch_version: str | None = None
+    torch_build: str | None = None
+    cuda_available: bool = False
+    gpu_name: str | None = None
+    active_generate_jobs: int = 0
+    queued_generate_jobs: int = 0
 
 
 @dataclass
@@ -47,6 +54,11 @@ class WorkerRuntimeStatus:
     available: bool
     missing_dependencies: list[str]
     error: str | None
+    device: str | None = None
+    torch_version: str | None = None
+    torch_build: str | None = None
+    cuda_available: bool = False
+    gpu_name: str | None = None
 
 
 class TTSManager:
@@ -141,14 +153,46 @@ class TTSManager:
     def get_runtime_status(self) -> WorkerRuntimeStatus:
         missing: list[str] = []
         details: list[str] = []
+        torch_module: Any | None = None
         for module_name, label in self._runtime_dependency_labels():
             try:
-                importlib.import_module(module_name)
+                module = importlib.import_module(module_name)
+                if module_name == "torch":
+                    torch_module = module
             except Exception as exc:  # pragma: no cover - host-specific import errors vary
                 missing.append(label)
                 details.append(f"{label}: {exc}")
+        torch_version: str | None = None
+        torch_build: str | None = None
+        cuda_available = False
+        gpu_name: str | None = None
+        device: str | None = None
+        if torch_module is not None:
+            version_full = str(getattr(torch_module, "__version__", "") or "").strip()
+            if version_full:
+                torch_version = version_full.split("+", 1)[0]
+                torch_build = version_full.split("+", 1)[1] if "+" in version_full else version_full
+            try:
+                cuda_available = bool(torch_module.cuda.is_available())
+            except Exception:
+                cuda_available = False
+            device = "cuda" if cuda_available else "cpu"
+            if cuda_available:
+                try:
+                    gpu_name = str(torch_module.cuda.get_device_name(0))
+                except Exception:
+                    gpu_name = None
         if not missing:
-            return WorkerRuntimeStatus(available=True, missing_dependencies=[], error=None)
+            return WorkerRuntimeStatus(
+                available=True,
+                missing_dependencies=[],
+                error=None,
+                device=device,
+                torch_version=torch_version,
+                torch_build=torch_build,
+                cuda_available=cuda_available,
+                gpu_name=gpu_name,
+            )
 
         message_parts = [
             f"TTS runtime unavailable. Missing dependencies: {', '.join(missing)}.",
@@ -163,6 +207,11 @@ class TTSManager:
             available=False,
             missing_dependencies=missing,
             error=" ".join(message_parts),
+            device=device,
+            torch_version=torch_version,
+            torch_build=torch_build,
+            cuda_available=cuda_available,
+            gpu_name=gpu_name,
         )
 
     def ensure_worker_ready(
@@ -207,6 +256,20 @@ class TTSManager:
         with self._lock:
             if self._process is not None and self._process.poll() is None:
                 return False  # already running
+
+            existing_heartbeat = self._db.get_latest_worker_heartbeat()
+            if existing_heartbeat is not None:
+                heartbeat_status = str(existing_heartbeat.get("status") or "").strip().lower()
+                heartbeat_at = float(existing_heartbeat.get("heartbeat_at") or 0)
+                if (
+                    heartbeat_status not in {"stopped", "unavailable"}
+                    and heartbeat_at
+                    and (time.time() - heartbeat_at) <= HEARTBEAT_STALE_TIMEOUT
+                ):
+                    self._active_worker_id = str(existing_heartbeat.get("worker_id") or "").strip() or None
+                    self._starting_since = None
+                    self._last_startup_error = None
+                    return False
 
             runtime = self.get_runtime_status()
             if not runtime.available:
@@ -306,6 +369,22 @@ class TTSManager:
         heartbeat = self._db.get_latest_worker_heartbeat()
         running = self.is_worker_alive()
         runtime = self.get_runtime_status()
+        active_tts_jobs = self._db.list_active_tts_jobs()
+        generate_jobs = [
+            job
+            for job in active_tts_jobs
+            if str(job.get("job_type") or "").strip().lower() == "generate"
+        ]
+        active_generate_jobs = sum(
+            1
+            for job in generate_jobs
+            if str(job.get("status") or "").strip().lower() == "processing"
+        )
+        queued_generate_jobs = sum(
+            1
+            for job in generate_jobs
+            if str(job.get("status") or "").strip().lower() == "queued"
+        )
         with self._lock:
             active_worker_id = self._active_worker_id
             starting_since = self._starting_since
@@ -343,10 +422,21 @@ class TTSManager:
                 startup_error=startup_error,
                 missing_dependencies=runtime.missing_dependencies,
                 lifecycle_state=lifecycle_state,
+                device=runtime.device,
+                torch_version=runtime.torch_version,
+                torch_build=runtime.torch_build,
+                cuda_available=runtime.cuda_available,
+                gpu_name=runtime.gpu_name,
+                active_generate_jobs=active_generate_jobs,
+                queued_generate_jobs=queued_generate_jobs,
             )
 
         hb_time = current_heartbeat.get("heartbeat_at", 0)
         is_stale = (time.time() - hb_time) > HEARTBEAT_STALE_TIMEOUT
+        if not running and not is_stale:
+            heartbeat_status = str(current_heartbeat.get("status") or "").strip().lower()
+            if heartbeat_status not in {"stopped", "unavailable"}:
+                running = True
         current_job_id = current_heartbeat.get("current_job_id")
         lifecycle_state = "sleeping"
         if startup_error:
@@ -364,6 +454,13 @@ class TTSManager:
             startup_error=startup_error,
             missing_dependencies=runtime.missing_dependencies,
             lifecycle_state=lifecycle_state,
+            device=runtime.device,
+            torch_version=runtime.torch_version,
+            torch_build=runtime.torch_build,
+            cuda_available=runtime.cuda_available,
+            gpu_name=runtime.gpu_name,
+            active_generate_jobs=active_generate_jobs,
+            queued_generate_jobs=queued_generate_jobs,
         )
 
     # ── job submission ───────────────────────────────────────────────

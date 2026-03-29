@@ -269,6 +269,7 @@ class Tool1Database:
         connection = sqlite3.connect(self.path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout = 5000")
         return connection
 
     @staticmethod
@@ -674,6 +675,12 @@ class Tool1Database:
             "SELECT * FROM worker_heartbeats ORDER BY heartbeat_at DESC LIMIT 1"
         )
 
+    def get_worker_heartbeat(self, worker_id: str) -> dict[str, Any] | None:
+        return self._fetchone(
+            "SELECT * FROM worker_heartbeats WHERE worker_id = ?",
+            (worker_id,),
+        )
+
     def claim_next_tts_job(self, worker_id: str) -> dict[str, Any] | None:
         """Atomically claim the next queued TTS job for *worker_id*.
 
@@ -744,6 +751,35 @@ class Tool1Database:
                     updated_at = ?
                 WHERE status = 'processing'
                 AND updated_at < ?
+                """,
+                (now, cutoff),
+            )
+            return cursor.rowcount
+
+    def requeue_orphaned_processing_tts_jobs(self, stale_seconds: int) -> int:
+        """Requeue processing jobs whose worker has no fresh heartbeat."""
+        cutoff = time.time() - stale_seconds
+        now = time.time()
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE tts_jobs
+                SET status = 'queued',
+                    progress = 'Requeued after stale worker detection.',
+                    worker_id = NULL,
+                    control_action = NULL,
+                    updated_at = ?
+                WHERE status = 'processing'
+                AND (
+                    worker_id IS NULL
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM worker_heartbeats AS wh
+                        WHERE wh.worker_id = tts_jobs.worker_id
+                        AND wh.status != 'stopped'
+                        AND wh.heartbeat_at >= ?
+                    )
+                )
                 """,
                 (now, cutoff),
             )

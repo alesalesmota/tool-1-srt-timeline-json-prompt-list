@@ -250,3 +250,16 @@
 - [x] Keep retry actions disabled while `paused_for_tts` is still active
 - [x] Add regression coverage for queued submission, queued-vs-processing reconciliation, and retry submission
 - [x] Verify with `python -m pytest tests/test_tts.py` (`49` passing)
+
+## TTS Throughput Stabilization (2026-03-29)
+- [x] Extend worker/runtime health payloads with `device`, `torch_version`, `torch_build`, `cuda_available`, `gpu_name`, and active/queued `generate` counts
+- [x] Surface CPU-only runtime warnings in queue readiness, voice-profile creation, and paused-TTS / voice-profile worker-health UI
+- [x] Requeue orphaned `processing` narration jobs whose worker has no fresh heartbeat, even if another worker heartbeat is healthy
+- [x] Block duplicate worker starts when a fresh shared-worker heartbeat already exists
+- [x] Keep `test_voice` chunk sizing unchanged while enforcing `chunk_max_chars >= 260` for production `generate`
+- [x] Throttle `generate` progress writes to reduce SQLite churn while preserving final chunk totals in the client payload
+- [x] Repair the dashboard Python environment to use `torch 2.3.1+cu121` and `torchaudio 2.3.1+cu121`
+- [x] Verify with `python -m compileall tool1_dashboard run_tool1_dashboard.py tests/test_tts.py`
+- [x] Verify with `python -m pytest tests/test_tts.py -q` (`57` passing)
+- [x] Verify runtime metadata shows `device = cuda`, `torch_build = cu121`, and `gpu_name = NVIDIA GeForce RTX 3050 Laptop GPU`
+- [x] Verify a temporary-db XTTS smoke run completes one `test_voice` job and one multi-chunk `generate` job on CUDA

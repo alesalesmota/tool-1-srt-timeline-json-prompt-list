@@ -20,6 +20,7 @@ from tool1_dashboard.tts.audio import generate_silence_wav, merge_wav_chunks_str
 from tool1_dashboard.tts.chunker import TTSChunk, chunk_text_for_tts
 from tool1_dashboard.tts.constants import (
     CHUNK_MAX_CHARS,
+    GENERATE_MIN_CHUNK_MAX_CHARS,
     INTERACTIVE_IDLE_SHUTDOWN_SECONDS,
     WORKER_IDLE_RECHECK_SECONDS,
     XTTS_LANG_MAP,
@@ -256,6 +257,53 @@ class TTSJobDbTests(unittest.TestCase):
         })
         count = self.db.requeue_stale_tts_jobs(90)
         self.assertEqual(count, 0)
+
+    def test_requeue_orphaned_processing_job_without_heartbeat(self):
+        now = time.time()
+        self.db.create_tts_job({
+            "job_id": "orphan-1",
+            "job_type": "generate",
+            "profile_id": "p1",
+            "status": "processing",
+            "payload_json": "{}",
+            "meta_json": "{}",
+            "queue_priority": 10,
+            "worker_id": "missing-worker",
+            "created_at": now,
+            "updated_at": now,
+        })
+        count = self.db.requeue_orphaned_processing_tts_jobs(90)
+        self.assertEqual(count, 1)
+        job = self.db.get_tts_job("orphan-1")
+        self.assertEqual(job["status"], "queued")
+        self.assertIsNone(job["worker_id"])
+
+    def test_requeue_orphaned_processing_job_keeps_fresh_worker(self):
+        now = time.time()
+        self.db.create_tts_job({
+            "job_id": "fresh-worker-job",
+            "job_type": "generate",
+            "profile_id": "p1",
+            "status": "processing",
+            "payload_json": "{}",
+            "meta_json": "{}",
+            "queue_priority": 10,
+            "worker_id": "active-worker",
+            "created_at": now,
+            "updated_at": now,
+        })
+        self.db.record_worker_heartbeat(
+            worker_id="active-worker",
+            status="processing",
+            current_job_id="fresh-worker-job",
+            pid=1234,
+            started_at=now,
+        )
+        count = self.db.requeue_orphaned_processing_tts_jobs(90)
+        self.assertEqual(count, 0)
+        job = self.db.get_tts_job("fresh-worker-job")
+        self.assertEqual(job["status"], "processing")
+        self.assertEqual(job["worker_id"], "active-worker")
 
     def test_latest_latent_job_for_profile(self):
         now = time.time()
@@ -519,6 +567,74 @@ class ManagerJobSubmissionTests(unittest.TestCase):
         self.assertEqual(health.startup_error, "TTS runtime unavailable.")
         self.assertEqual(health.missing_dependencies, ["Coqui TTS"])
 
+    def test_worker_health_includes_runtime_and_queue_counts(self):
+        from tool1_dashboard.tts.manager import TTSManager, WorkerRuntimeStatus
+
+        now = time.time()
+        self.db.create_tts_job({
+            "job_id": "job-processing",
+            "job_type": "generate",
+            "profile_id": "p1",
+            "status": "processing",
+            "payload_json": json.dumps({"texts": ["hello"]}),
+            "meta_json": "{}",
+            "queue_priority": 10,
+            "worker_id": "worker-1",
+            "created_at": now,
+            "updated_at": now,
+        })
+        self.db.create_tts_job({
+            "job_id": "job-queued",
+            "job_type": "generate",
+            "profile_id": "p1",
+            "status": "queued",
+            "payload_json": json.dumps({"texts": ["hello"]}),
+            "meta_json": "{}",
+            "queue_priority": 20,
+            "created_at": now,
+            "updated_at": now,
+        })
+
+        mgr = TTSManager(self.db)
+        with patch.object(
+            mgr,
+            "get_runtime_status",
+            return_value=WorkerRuntimeStatus(
+                available=True,
+                missing_dependencies=[],
+                error=None,
+                device="cuda",
+                torch_version="2.3.1",
+                torch_build="cu121",
+                cuda_available=True,
+                gpu_name="RTX 3050",
+            ),
+        ):
+            health = mgr.get_worker_health()
+        self.assertEqual(health.device, "cuda")
+        self.assertEqual(health.torch_version, "2.3.1")
+        self.assertEqual(health.torch_build, "cu121")
+        self.assertTrue(health.cuda_available)
+        self.assertEqual(health.gpu_name, "RTX 3050")
+        self.assertEqual(health.active_generate_jobs, 1)
+        self.assertEqual(health.queued_generate_jobs, 1)
+
+    def test_start_worker_skips_duplicate_spawn_when_fresh_heartbeat_exists(self):
+        from tool1_dashboard.tts.manager import TTSManager
+
+        now = time.time()
+        self.db.record_worker_heartbeat(
+            worker_id="worker-live",
+            status="idle",
+            current_job_id=None,
+            pid=4321,
+            started_at=now,
+        )
+        mgr = TTSManager(self.db)
+        started = mgr.start_worker()
+        self.assertFalse(started)
+        self.assertEqual(mgr._active_worker_id, "worker-live")
+
     def test_ensure_worker_ready_restarts_stale_worker(self):
         from tool1_dashboard.tts.manager import TTSManager, WorkerHealth, WorkerRuntimeStatus
 
@@ -676,6 +792,37 @@ class ServiceVoiceRuntimeTests(unittest.TestCase):
         self.assertEqual(submit_mock.call_args.kwargs["job_type"], "latent_precompute")
         self.assertEqual(profile["latent_job_id"], "latent-123")
 
+    def test_create_voice_profile_surfaces_cpu_runtime_warning(self):
+        from tool1_dashboard.tts.manager import WorkerRuntimeStatus
+
+        with patch.object(
+            self.service.tts_manager,
+            "get_runtime_status",
+            return_value=WorkerRuntimeStatus(
+                available=True,
+                missing_dependencies=[],
+                error=None,
+                device="cpu",
+                torch_version="2.3.1",
+                torch_build="cpu",
+                cuda_available=False,
+                gpu_name=None,
+            ),
+        ), patch.object(self.service.tts_manager, "ensure_worker_ready") as ensure_mock, patch.object(
+            self.service.tts_manager,
+            "submit_tts_job",
+            return_value="latent-cpu",
+        ):
+            profile = self.service.create_voice_profile(
+                name="CPU Voice",
+                audio_bytes=b"RIFF....WAVEfmt ",
+                audio_filename="cpu.wav",
+            )
+
+        ensure_mock.assert_called_once_with(intent="interactive")
+        self.assertEqual(profile["latent_job_id"], "latent-cpu")
+        self.assertEqual(profile["runtime_warning"], self.service._tts_cpu_runtime_warning())
+
     def test_submit_voice_test_uses_default_sample_when_text_missing(self):
         with patch.object(self.service.tts_manager, "ensure_worker_ready") as ensure_mock, patch.object(
             self.service.tts_manager,
@@ -717,6 +864,49 @@ class ServiceVoiceRuntimeTests(unittest.TestCase):
         self.assertEqual(updated["tts_config"]["temperature"], 0.78)
         stored = self.service.db.get_voice_profile("voice-1")
         self.assertIn('"preset": "expressive"', stored["tts_config_json"])
+
+    def test_generate_payload_uses_production_chunk_override_but_voice_test_keeps_profile_setting(self):
+        self.service.update_voice_profile(
+            "voice-1",
+            tts_config={
+                "preset": "natural_stable",
+                "chunk_max_chars": 180,
+            },
+        )
+        profile = self.service.get_voice_profile("voice-1")
+        long_text = "Sentence one. " * 120
+
+        generate_payload = self.service._build_generate_tts_payload(
+            profile=profile,
+            language="en",
+            script_text=long_text,
+        )
+        voice_test_payload = self.service._build_voice_test_payload(
+            profile=profile,
+            language="en",
+            text=long_text,
+        )
+
+        self.assertEqual(
+            generate_payload["tts_config"]["chunk_max_chars"],
+            GENERATE_MIN_CHUNK_MAX_CHARS,
+        )
+        self.assertEqual(voice_test_payload["tts_config"]["chunk_max_chars"], 180)
+        self.assertLessEqual(len(generate_payload["texts"]), len(voice_test_payload["texts"]))
+
+    def test_completed_job_payload_keeps_final_chunk_totals_and_percent(self):
+        job_payload = self.service._build_tts_job_client_payload({
+            "job_id": "job-final",
+            "status": "completed",
+            "progress": "Completed",
+            "payload_json": json.dumps({"texts": ["a", "b", "c"]}),
+            "updated_at": time.time(),
+            "finished_at": time.time(),
+        })
+
+        self.assertEqual(job_payload["current_chunk"], 3)
+        self.assertEqual(job_payload["total_chunks"], 3)
+        self.assertEqual(job_payload["percent"], 100)
 
     def test_list_voice_profiles_includes_latest_voice_jobs(self):
         now = time.time()
@@ -917,6 +1107,62 @@ class EpisodeTtsQueueStatusTests(unittest.TestCase):
         status = self.service.db.get_episode_language_status("ep-1", "es")
         self.assertEqual(status["tts_status"], "queued")
         self.assertEqual(status["tts_job_id"], "job-retry")
+
+    def test_recover_paused_tts_queue_requeues_orphaned_processing_job_while_worker_is_healthy(self):
+        from tool1_dashboard.tts.manager import WorkerHealth
+
+        now = time.time()
+        self.service.db.create_tts_job({
+            "job_id": "job-en",
+            "build_id": "ep-1",
+            "job_type": "generate",
+            "profile_id": "voice-en",
+            "status": "processing",
+            "progress": "Generating chunk 1/2...",
+            "payload_json": json.dumps({"texts": ["hello", "world"]}),
+            "meta_json": "{}",
+            "queue_priority": 10,
+            "worker_id": "dead-worker",
+            "created_at": now,
+            "updated_at": now,
+        })
+        self.service.db.update_episode_language_status(
+            "ep-1",
+            "en",
+            tts_status="running",
+            tts_job_id="job-en",
+        )
+        self.service.db.record_worker_heartbeat(
+            worker_id="healthy-worker",
+            status="idle",
+            current_job_id=None,
+            pid=5555,
+            started_at=now,
+        )
+
+        with patch.object(
+            self.service.tts_manager,
+            "get_worker_health",
+            return_value=WorkerHealth(
+                running=True,
+                worker_id="healthy-worker",
+                status="idle",
+                current_job_id=None,
+                last_heartbeat=now,
+                is_stale=False,
+                pid=5555,
+                startup_error=None,
+                missing_dependencies=[],
+                lifecycle_state="sleeping",
+            ),
+        ), patch.object(self.service.tts_manager, "ensure_worker_ready") as ensure_mock:
+            error = self.service._recover_paused_tts_queue([self.service.db.get_episode("ep-1")])
+
+        self.assertIsNone(error)
+        ensure_mock.assert_called_once_with(intent="pipeline")
+        requeued = self.service.db.get_tts_job("job-en")
+        self.assertEqual(requeued["status"], "queued")
+        self.assertIsNone(requeued["worker_id"])
 
 
 class VoiceProfileUiCopyTests(unittest.TestCase):
