@@ -228,3 +228,11 @@
 - [x] Make card error/status surfaces readable without hover by styling the inline status row and concise error block directly on the card
 - [x] Update Drawbridge task `59eb5c0d-3001-4ab3-97c4-566f5968fbfb` from `to do` -> `doing` -> `done` and sync `.moat/moat-tasks.md`
 - [x] Verify with `node --check tool1_dashboard/ui/app.js`, `python -m pytest tests/test_video_pipeline.py -k "queue_episode and not missing and not provider and not translation_profile and not voice_profile" -q`, `python -m pytest tests/test_video_pipeline.py -k "requeue_after_provider_config_change_restarts_from_failed_stage" -q`, and Playwright smoke on `http://127.0.0.1:8021/#/niche-projects/niche-20260326-133703-religi-o`
+
+## Drawbridge Stale Paused-TTS Recovery (2026-03-28)
+- [x] Route pipeline TTS submission through the shared `Tool1Service.tts_manager` so worker health and restart behavior reflect the real active worker
+- [x] Requeue stale `processing` TTS jobs for paused episodes instead of treating dead workers as indefinitely active narration
+- [x] Wake the shared TTS worker back up when paused episodes still have queued narration jobs after a restart
+- [x] Fail paused-TTS recovery explicitly if queued narration cannot resume, instead of leaving episodes frozen in `paused_for_tts`
+- [x] Add regression coverage for a paused episode whose Spanish narration job is stale `processing`
+- [x] Verify with `python -m pytest tests/test_video_pipeline.py -k "paused_tts_episode or live_tts_progress"` (`5` passing)

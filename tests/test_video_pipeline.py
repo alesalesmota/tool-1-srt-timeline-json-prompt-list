@@ -1563,6 +1563,83 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertEqual(jobs[0]["job_id"], es_status["tts_job_id"])
                 self.assertEqual(jobs[0]["status"], "queued")
 
+    def test_paused_tts_episode_requeues_stale_processing_jobs_and_wakes_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                languages = ["en", "es"]
+                voice_profiles, _ = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    languages,
+                    master_language="en",
+                    include_translation_for=[],
+                )
+                project = service.create_niche_project(
+                    name="Recover Stale TTS",
+                    master_language="en",
+                    configured_languages=languages,
+                    language_voice_profiles=voice_profiles,
+                )
+                episode_id = service.submit_episode(
+                    project["project"]["id"],
+                    title="Recover Stale Narration",
+                    script_text="Alpha beta gamma delta.",
+                )["episode"]["id"]
+
+                audio_path = temp_path / "narration_en.wav"
+                audio_path.write_text("audio-en", encoding="utf-8")
+                service.db.update_episode(
+                    episode_id,
+                    board_status="Running",
+                    pipeline_status="paused_for_tts",
+                    current_stage="tts",
+                )
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "en",
+                    tts_status="done",
+                    tts_audio_path=str(audio_path),
+                )
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "es",
+                    tts_status="running",
+                    tts_job_id="tts-job-stale",
+                )
+                service.db.create_tts_job({
+                    "job_id": "tts-job-stale",
+                    "build_id": episode_id,
+                    "job_type": "generate",
+                    "profile_id": voice_profiles["es"],
+                    "status": "processing",
+                    "progress": "Generating chunk 17/328...",
+                    "result_path": None,
+                    "filename": "narration_es.wav",
+                    "payload_json": json.dumps({"texts": ["uno", "dos", "tres"]}),
+                    "meta_json": "{}",
+                    "queue_priority": 10,
+                    "worker_id": "worker-stale",
+                    "control_action": None,
+                    "error_message": None,
+                    "created_at": 10.0,
+                    "updated_at": 0.0,
+                    "finished_at": None,
+                })
+
+                with patch.object(service.tts_manager, "ensure_worker_ready", return_value=None) as ensure_mock:
+                    service._check_paused_tts_episodes()
+
+                refreshed = service.db.get_episode(episode_id)
+                self.assertEqual(refreshed["pipeline_status"], "paused_for_tts")
+                es_status = service.db.get_episode_language_status(episode_id, "es")
+                self.assertEqual(es_status["tts_status"], "running")
+                job = service.db.get_tts_job("tts-job-stale")
+                self.assertEqual(job["status"], "queued")
+                self.assertEqual(job["progress"], "Requeued after worker restart.")
+                ensure_mock.assert_called_once_with(intent="pipeline")
+
     def test_stale_running_provider_stage_is_failed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

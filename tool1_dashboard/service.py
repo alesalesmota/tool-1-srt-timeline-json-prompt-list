@@ -64,6 +64,7 @@ from .translation_profiles import (
     sanitize_translation_profile,
     sort_openai_models,
 )
+from .tts.constants import STALE_PROCESSING_SECONDS
 from .tts.voice_config import (
     DEFAULT_VOICE_TTS_PRESET,
     chunk_text_for_voice_tts,
@@ -2382,8 +2383,7 @@ class Tool1Service:
                 script_text = episode["script_text"]
 
         self.db.update_episode_language_status(episode_id, lang, tts_status="running")
-        from .tts.manager import TTSManager
-        tts_mgr = TTSManager(self.db)
+        tts_mgr = self.tts_manager
         tts_mgr.ensure_worker_ready(intent="pipeline")
         payload = self._build_generate_tts_payload(
             profile=profile,
@@ -3001,9 +3001,7 @@ class Tool1Service:
                 continue
 
             if tts_mgr is None:
-                from .tts.manager import TTSManager
-
-                tts_mgr = TTSManager(self.db)
+                tts_mgr = self.tts_manager
                 tts_mgr.ensure_worker_ready(intent="pipeline")
 
             script_text = self._episode_tts_script_text(episode, lang, lang_status)
@@ -3052,6 +3050,28 @@ class Tool1Service:
                 + ". The workflow was marked failed."
             )
         return "TTS could not be recovered."
+
+    def _recover_paused_tts_queue(self, paused_episodes: list[dict[str, Any]]) -> str | None:
+        """Requeue stale TTS jobs and wake the shared worker for paused episodes."""
+        if not paused_episodes:
+            return None
+
+        active_jobs = self.db.list_active_tts_jobs()
+        if not active_jobs:
+            return None
+
+        health = self.tts_manager.get_worker_health()
+        if health.is_stale or not health.running:
+            self.db.requeue_stale_tts_jobs(STALE_PROCESSING_SECONDS)
+            active_jobs = self.db.list_active_tts_jobs()
+            if not active_jobs:
+                return None
+
+        try:
+            self.tts_manager.ensure_worker_ready(intent="pipeline")
+        except Exception as exc:
+            return str(exc)[:500]
+        return None
 
     def _episode_run_tts_all(self, episode_id: str) -> None:
         """Queue TTS for every unresolved language, then pause until all jobs settle."""
@@ -3604,9 +3624,22 @@ class Tool1Service:
     def _check_paused_tts_episodes(self) -> None:
         """Check if any paused episodes have completed TTS and can resume."""
         paused = self.db.list_paused_tts_episodes()
+        worker_recovery_error = self._recover_paused_tts_queue(paused)
         for episode in paused:
             episode_id = episode["id"]
-            tts_queue = self._queue_episode_tts_jobs(episode_id, allow_resubmit_failed=False)
+            try:
+                tts_queue = self._queue_episode_tts_jobs(episode_id, allow_resubmit_failed=False)
+            except Exception as exc:
+                self.db.update_episode(
+                    episode_id,
+                    board_status="Needs Attention",
+                    pipeline_status="failed",
+                    current_stage="tts",
+                    last_error=f"TTS recovery failed: {str(exc)[:450]}",
+                    pause_requested=0,
+                    updated_at=utc_now(),
+                )
+                continue
             lang_statuses = self.db.get_episode_language_statuses(episode_id)
             any_tts_failed = bool(tts_queue["any_failed"])
             unresolved_languages: list[str] = []
@@ -3631,6 +3664,20 @@ class Tool1Service:
 
             if unresolved_languages:
                 if tts_queue["active_jobs"] > 0:
+                    if worker_recovery_error:
+                        self.db.update_episode(
+                            episode_id,
+                            board_status="Needs Attention",
+                            pipeline_status="failed",
+                            current_stage="tts",
+                            last_error=(
+                                "TTS worker could not resume queued jobs: "
+                                + worker_recovery_error
+                            )[:500],
+                            pause_requested=0,
+                            updated_at=utc_now(),
+                        )
+                        continue
                     if tts_queue["submitted_jobs"] > 0:
                         self.db.update_episode(
                             episode_id,

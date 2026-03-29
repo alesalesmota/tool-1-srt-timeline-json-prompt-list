@@ -569,5 +569,18 @@
     "screenshotPath": "./screenshots/moat-1774747010156-diyg5o15q.png",
     "status": "done",
     "timestamp": 1774747010300
+  },
+  {
+    "id": "8ddc7f63-8e07-49b3-afdb-39262c561496",
+    "title": "Background Container",
+    "comment": "this tts voice generation for es (spanish) is stuck in the 17/328 forever, i believe the tts generation is not working",
+    "selector": "div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(6)",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774748956796-gt8s43u92.png",
+    "status": "done",
+    "timestamp": 1774748956936
   }
 ]

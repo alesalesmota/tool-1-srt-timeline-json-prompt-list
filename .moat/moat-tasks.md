@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 23 | **To Do**: 0 | **Doing**: 0 | **Done**: 23
+**Total**: 24 | **To Do**: 0 | **Doing**: 0 | **Done**: 24
 
 ## Tasks
 
@@ -35,8 +35,9 @@
   – "this lateral menu is very confusing, im not sure its even..." `div.board-modal-shell > div.board-modal-layout:nth-child(2) > aside.board-modal-side`
 22. [x] Background Container – "there is something weird, this card is stuck in this runn..." `section.kanban-column.project-kanban-column:nth-child(4) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
 23. [x] Container (listbox) – "i cant scroll down here it push me back to the top" `div[aria-label="Episode output files"]`
+24. [x] Background Container – "this tts voice generation for es (spanish) is stuck in th..." `div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(6)`
 
 ---
 
-_Generated: 28/03/2026, 22:34:58_
+_Generated: 28/03/2026, 23:01:40_
 _Source: moat-tasks-detail.json_
