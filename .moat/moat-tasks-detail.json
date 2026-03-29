@@ -156,5 +156,31 @@
     "screenshotPath": "./screenshots/moat-1774800293836-0es04argz.png",
     "status": "done",
     "timestamp": 1774800293996
+  },
+  {
+    "id": "51449e5b-75b1-4eb3-b7e7-b967220f3dc6",
+    "title": "Background Container",
+    "comment": "when i hover the mouse over the card the corner glowing effect glitches wayy too much,",
+    "selector": "section.kanban-column.project-kanban-column:nth-child(5) > div.kanban-card-list:nth-child(2) > div.episode-card.surface",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774801574569-c9icps0zd.png",
+    "status": "done",
+    "timestamp": 1774801574734
+  },
+  {
+    "id": "324242c5-22db-41f1-aec3-b515e1878185",
+    "title": "Background Container",
+    "comment": "new error, can you check what happened",
+    "selector": "div.board-modal-layout:nth-child(2) > div.board-modal-main > div.notice:nth-child(1)",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774803193540-bkr6oydai.png",
+    "status": "done",
+    "timestamp": 1774803193696
   }
 ]

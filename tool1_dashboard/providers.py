@@ -470,7 +470,7 @@ class CliRunner:
             return f"{label} CLI execution failed. {detail}"
         return f"{label} CLI execution failed."
 
-    def _extract_cli_error_detail(self, raw: str) -> str:
+    def _extract_cli_error_detail(self, raw: str, *, max_length: int = 300) -> str:
         text = strip_json_fences(raw or "")
         if not text:
             return ""
@@ -479,9 +479,15 @@ class CliRunner:
             for key in ("result", "error", "message", "text"):
                 value = direct.get(key)
                 if isinstance(value, str) and value.strip():
-                    return value.strip()
+                    detail = value.strip()
+                    if len(detail) > max_length:
+                        return detail[:max_length] + "…"
+                    return detail
         lines = [line.strip() for line in text.splitlines() if line.strip()]
-        return lines[-1] if lines else ""
+        detail = lines[-1] if lines else ""
+        if len(detail) > max_length:
+            return detail[:max_length] + "…"
+        return detail
 
     def _unwrap_possible_wrapper(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         if "structured_output" in payload:

@@ -2770,11 +2770,14 @@ class Tool1Service:
                 updated_at=utc_now(),
             )
         except Exception as exc:
+            error_text = str(exc)
+            if len(error_text) > 500:
+                error_text = error_text[:500] + "…"
             self.db.update_episode(
                 episode_id,
                 board_status="Needs Attention",
                 pipeline_status="failed",
-                last_error=str(exc),
+                last_error=error_text,
                 pause_requested=0,
                 updated_at=utc_now(),
             )

@@ -1406,6 +1406,10 @@ details.editor-card summary::-webkit-details-marker {
 .notice[data-tone="error"] {
   border-color: rgba(239, 155, 149, 0.28);
   color: var(--error);
+  overflow-wrap: break-word;
+  word-break: break-word;
+  max-height: 6lh;
+  overflow-y: auto;
 }
 
 .notice[data-tone="warn"] {
@@ -2190,7 +2194,7 @@ details.editor-card summary::-webkit-details-marker {
 }
 .episode-card:hover {
   border-color: var(--brand);
-  box-shadow: 0 0 0 1px var(--brand);
+  box-shadow: var(--shadow), 0 0 0 1px var(--brand);
 }
 .episode-card-head {
   display: flex;
