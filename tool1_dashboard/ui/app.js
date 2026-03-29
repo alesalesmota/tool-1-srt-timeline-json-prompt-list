@@ -3195,6 +3195,60 @@ function stageRunPathLabel(path, segments = 4) {
   return parts.length > segments ? `.../${parts.slice(-segments).join("/")}` : normalized;
 }
 
+function stageRunTimestampMs(value) {
+  const timestamp = value ? new Date(value).getTime() : Number.NaN;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function stageRunLatestPreviewAt(run) {
+  const candidates = [run?.stdout_updated_at, run?.stderr_updated_at].filter(Boolean);
+  if (!candidates.length) return "";
+  return candidates.sort((left, right) => stageRunTimestampMs(right) - stageRunTimestampMs(left))[0];
+}
+
+function stageRunByteSizeLabel(bytes) {
+  const size = Number(bytes);
+  if (!Number.isFinite(size) || size < 0) return "";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) {
+    const kb = size / 1024;
+    return `${kb >= 10 ? Math.round(kb) : kb.toFixed(1)} KB`;
+  }
+  const mb = size / (1024 * 1024);
+  return `${mb >= 10 ? Math.round(mb) : mb.toFixed(1)} MB`;
+}
+
+function stageRunPreviewFileLabel(path, sizeBytes) {
+  const pathLabel = stageRunPathLabel(path, 4);
+  const sizeLabel = stageRunByteSizeLabel(sizeBytes);
+  return sizeLabel ? `${pathLabel} • ${sizeLabel}` : pathLabel;
+}
+
+function stageRunPreviewSourceLabel(run) {
+  const hasStdout = Boolean(String(run?.stdout_preview || "").trim());
+  const hasStderr = Boolean(String(run?.stderr_preview || "").trim());
+  const hasStdoutPath = Boolean(run?.stdout_path);
+  const hasStderrPath = Boolean(run?.stderr_path);
+  if (hasStdout && hasStderr) return "stdout + stderr preview";
+  if (hasStdout) return "stdout preview";
+  if (hasStderr) return "stderr preview";
+  if (hasStdoutPath && hasStderrPath) return "preview files attached";
+  if (hasStdoutPath) return "stdout file attached";
+  if (hasStderrPath) return "stderr file attached";
+  return "run snapshot only";
+}
+
+function stageRunPreviewFilesSummary(run) {
+  const parts = [];
+  if (run?.stdout_path) {
+    parts.push(`stdout ${stageRunPreviewFileLabel(run.stdout_path, run.stdout_size_bytes)}`);
+  }
+  if (run?.stderr_path) {
+    parts.push(`stderr ${stageRunPreviewFileLabel(run.stderr_path, run.stderr_size_bytes)}`);
+  }
+  return parts.join(" • ");
+}
+
 function stageRunCapturedOutput(run) {
   const stdout = String(run?.stdout_preview || "").trim();
   const stderr = String(run?.stderr_preview || "").trim();
@@ -3232,13 +3286,117 @@ function primaryStageRun(stageRuns) {
   return stageRuns.find((run) => run.status === "running") || stageRuns[0];
 }
 
+function renderStageRunPreviewPanel(label, text, { path = "", sizeBytes = null, updatedAt = "", tone = "default" } = {}) {
+  const meta = [];
+  if (path) {
+    meta.push(`<span title="${esc(path)}">${esc(stageRunPreviewFileLabel(path, sizeBytes))}</span>`);
+  }
+  if (updatedAt) {
+    meta.push(`<span title="${esc(updatedAt)}">${esc(relativeTime(updatedAt))}</span>`);
+  }
+  return `
+    <div class="live-run-stream-card"${tone !== "default" ? ` data-tone="${esc(tone)}"` : ""}>
+      <div class="live-run-stream-head">
+        <div class="live-run-stream-title">${esc(label)}</div>
+        ${meta.length ? `<div class="live-run-stream-meta">${meta.join('<span aria-hidden="true">•</span>')}</div>` : ""}
+      </div>
+      <pre class="run-output run-output-live">${esc(text)}</pre>
+    </div>
+  `;
+}
+
+function renderStageRunSnapshotPanel(run, payload) {
+  const command = Array.isArray(payload?.command) && payload.command.length
+    ? payload.command.join(" ")
+    : "Command payload not captured yet.";
+  const workdir = payload?.workdir || run?.workdir;
+  const facts = [
+    { label: "Command", value: command, title: command },
+    { label: "Workdir", value: workdir ? stageRunPathLabel(workdir, 5) : "Not provided", title: workdir || "" },
+    {
+      label: "Artifacts",
+      value: payload?.artifact_dir ? stageRunPathLabel(payload.artifact_dir, 5) : "Not provided",
+      title: payload?.artifact_dir || "",
+    },
+    {
+      label: "Preview files",
+      value: stageRunPreviewFilesSummary(run) || "Waiting for stdout/stderr files",
+      title: [run?.stdout_path, run?.stderr_path].filter(Boolean).join(" | "),
+    },
+  ];
+  if (Array.isArray(payload?.schema_keys) && payload.schema_keys.length) {
+    facts.push({
+      label: "Schema",
+      value: payload.schema_keys.join(", "),
+      title: payload.schema_keys.join(", "),
+    });
+  }
+  return `
+    <div class="live-run-stream-card" data-tone="muted">
+      <div class="live-run-stream-head">
+        <div class="live-run-stream-title">Execution snapshot</div>
+        <div class="live-run-stream-meta">${esc(stageRunPreviewSourceLabel(run))}</div>
+      </div>
+      <div class="run-hint">No preview lines have been written yet. This confirms what the runner is executing and where output should land.</div>
+      <div class="live-run-fact-grid">
+        ${facts.map((fact) => `
+          <div class="live-run-fact">
+            <div class="live-run-fact-label">${esc(fact.label)}</div>
+            <div class="live-run-fact-value"${fact.title ? ` title="${esc(fact.title)}"` : ""}>${esc(fact.value)}</div>
+          </div>
+        `).join("")}
+      </div>
+      <pre class="run-output run-output-live">${esc(stageRunSnapshotOutput(run, payload))}</pre>
+    </div>
+  `;
+}
+
 function renderStageRunActivityPanel(stageRuns) {
   const run = primaryStageRun(stageRuns);
   if (!run) return "";
   const payload = parseStageRunCommandPayload(run);
   const duration = stageRunDurationLabel(run);
   const isRunning = run.status === "running";
-  const hasCapturedOutput = Boolean(stageRunCapturedOutput(run));
+  const stdout = String(run?.stdout_preview || "").trim();
+  const stderr = String(run?.stderr_preview || "").trim();
+  const hasCapturedOutput = Boolean(stdout || stderr);
+  const previewAt = stageRunLatestPreviewAt(run);
+  const outputSource = stageRunPreviewSourceLabel(run);
+  const previewFilesSummary = stageRunPreviewFilesSummary(run);
+  const providerName = run?.provider ? providerLabel(run.provider) : "provider runner";
+  const runAgeHtml = run?.started_at
+    ? (
+      isRunning
+        ? `<span class="running-elapsed live-run-metric-time" data-started-at="${esc(run.started_at)}" title="${esc(run.started_at)}">${esc(relativeTime(run.started_at))}</span>`
+        : `<span class="live-run-metric-time" title="${esc(run.started_at)}">${esc(relativeTime(run.started_at))}</span>`
+    )
+    : '<span class="live-run-metric-fallback">Not available</span>';
+  const previewAgeHtml = previewAt
+    ? (
+      isRunning
+        ? `<span class="running-elapsed live-run-metric-time" data-started-at="${esc(previewAt)}" title="${esc(previewAt)}">${esc(relativeTime(previewAt))}</span>`
+        : `<span class="live-run-metric-time" title="${esc(previewAt)}">${esc(relativeTime(previewAt))}</span>`
+    )
+    : `<span class="live-run-metric-fallback">${isRunning ? "Waiting for first write" : "No preview captured"}</span>`;
+  const previewPanels = [];
+  if (stdout) {
+    previewPanels.push(renderStageRunPreviewPanel("stdout preview", stdout, {
+      path: run.stdout_path,
+      sizeBytes: run.stdout_size_bytes,
+      updatedAt: run.stdout_updated_at,
+    }));
+  }
+  if (stderr) {
+    previewPanels.push(renderStageRunPreviewPanel("stderr preview", stderr, {
+      path: run.stderr_path,
+      sizeBytes: run.stderr_size_bytes,
+      updatedAt: run.stderr_updated_at,
+      tone: "error",
+    }));
+  }
+  if (!previewPanels.length) {
+    previewPanels.push(renderStageRunSnapshotPanel(run, payload));
+  }
   return `
     <div class="board-modal-section live-run-section">
       <div class="section-header" style="margin-bottom:12px;">
@@ -3254,12 +3412,33 @@ function renderStageRunActivityPanel(stageRuns) {
       <div class="helper live-run-copy">
         ${esc(
           isRunning
-            ? `${stageLabel(run.stage || "workflow")} is still running in the background.`
+            ? `${stageLabel(run.stage || "workflow")} is running via ${providerName} in the background. This panel mirrors the run preview files instead of opening a separate terminal window.`
             : `${stageLabel(run.stage || "workflow")} ${String(run.status || "completed").toLowerCase()} ${relativeTime(run.finished_at || run.started_at)}.`
         )}
       </div>
-      ${!hasCapturedOutput ? '<div class="run-hint">No CLI output preview yet. Showing the active run snapshot so you can verify what is executing.</div>' : ""}
-      <pre class="run-output run-output-live">${esc(stageRunTerminalOutput(run, payload))}</pre>
+      <div class="live-run-metric-grid">
+        <div class="live-run-metric-card"${isRunning ? ' data-tone="live"' : ""}>
+          <div class="live-run-metric-label">Run age</div>
+          <div class="live-run-metric-value-row">
+            ${isRunning ? '<span class="running-pulse" aria-hidden="true"></span>' : ""}
+            ${runAgeHtml}
+          </div>
+          <div class="live-run-metric-copy">${esc(duration ? `Current status: ${titleCase(run.status || "unknown")} • ${duration}` : `Current status: ${titleCase(run.status || "unknown")}`)}</div>
+        </div>
+        <div class="live-run-metric-card">
+          <div class="live-run-metric-label">Output source</div>
+          <div class="live-run-metric-value">${esc(outputSource)}</div>
+          <div class="live-run-metric-copy">${esc(hasCapturedOutput ? "Preview text is coming from stdout/stderr artifact files." : "No preview text yet. You are seeing execution metadata and output targets.")}</div>
+        </div>
+        <div class="live-run-metric-card">
+          <div class="live-run-metric-label">Last preview write</div>
+          <div class="live-run-metric-value-row">${previewAgeHtml}</div>
+          <div class="live-run-metric-copy">${esc(previewFilesSummary || "Preview files will appear here once the provider starts writing.")}</div>
+        </div>
+      </div>
+      <div class="live-run-output-stack">
+        ${previewPanels.join("")}
+      </div>
     </div>
   `;
 }

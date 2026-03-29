@@ -2101,6 +2101,28 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertEqual(board_episode["active_tts_job"]["job_id"], "tts-job-live")
                 self.assertEqual(board_episode["language_statuses"][0]["tts_job_percent"], 50)
 
+    def test_stage_run_preview_metadata_is_exposed_for_live_activity_ui(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            service = _make_service(temp_path, cli_runner=FakeCliRunner())
+            stdout_path = temp_path / "stdout.txt"
+            stderr_path = temp_path / "stderr.txt"
+            stdout_path.write_text("live output line", encoding="utf-8")
+            stderr_path.write_text("", encoding="utf-8")
+
+            decorated = service._decorate_stage_run_for_client({
+                "stdout_path": str(stdout_path),
+                "stderr_path": str(stderr_path),
+                "error_text": "",
+            })
+
+            self.assertEqual(decorated["stdout_preview"], "live output line")
+            self.assertEqual(decorated["stderr_preview"], "")
+            self.assertIsNotNone(decorated["stdout_updated_at"])
+            self.assertIsNotNone(decorated["stderr_updated_at"])
+            self.assertGreater(decorated["stdout_size_bytes"], 0)
+            self.assertEqual(decorated["stderr_size_bytes"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -963,8 +963,14 @@ class Tool1Service:
 
     def _decorate_stage_run_for_client(self, run: dict[str, Any]) -> dict[str, Any]:
         payload = dict(run)
+        stdout_meta = self._read_preview_meta(payload.get("stdout_path"))
+        stderr_meta = self._read_preview_meta(payload.get("stderr_path"))
         payload["stdout_preview"] = self._read_preview_text(payload.get("stdout_path"))
         payload["stderr_preview"] = self._read_preview_text(payload.get("stderr_path"))
+        payload["stdout_updated_at"] = stdout_meta["updated_at"]
+        payload["stdout_size_bytes"] = stdout_meta["size_bytes"]
+        payload["stderr_updated_at"] = stderr_meta["updated_at"]
+        payload["stderr_size_bytes"] = stderr_meta["size_bytes"]
         payload["error_message"] = payload.get("error_text") or payload["stderr_preview"] or ""
         return payload
 
@@ -1379,6 +1385,19 @@ class Tool1Service:
         if not path_value:
             return None
         return clamp_preview(read_text(Path(path_value)), MAX_PREVIEW_CHARS)
+
+    def _read_preview_meta(self, path_value: str | None) -> dict[str, Any]:
+        if not path_value:
+            return {"updated_at": None, "size_bytes": None}
+        preview_path = Path(path_value)
+        try:
+            stat = preview_path.stat()
+        except OSError:
+            return {"updated_at": None, "size_bytes": None}
+        return {
+            "updated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            "size_bytes": int(stat.st_size),
+        }
 
 
     def get_target_languages(self) -> list[dict[str, str]]:

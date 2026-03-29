@@ -582,5 +582,31 @@
     "screenshotPath": "./screenshots/moat-1774748956796-gt8s43u92.png",
     "status": "done",
     "timestamp": 1774748956936
+  },
+  {
+    "id": "d2a2194f-99ea-4081-9111-e8e085f74b1a",
+    "title": "Background Container",
+    "comment": "this does not reflect the actual event, for example its running codex CLI, but i dont see his cli window working and genering the content, its stuck in with this   aspects informations, but no live activity happening.",
+    "selector": "div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section.live-run-section:nth-child(4)",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774750349880-d1zo7lf6n.png",
+    "status": "done",
+    "timestamp": 1774750350035
+  },
+  {
+    "id": "4cd87630-7a8e-4068-8164-96dae4f59a2f",
+    "title": "Background Container",
+    "comment": "is 2 voices being generated at the same time? this could overload my computer, and make bad voices generations",
+    "selector": "div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(6)",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774751513460-9oo7erw17.png",
+    "status": "to do",
+    "timestamp": 1774751520245
   }
 ]

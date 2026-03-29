@@ -2804,6 +2804,75 @@ details.editor-card summary::-webkit-details-marker {
   margin-left: 4px;
 }
 
+.live-run-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.live-run-metric-card,
+.live-run-stream-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.live-run-metric-card {
+  padding: 12px 14px;
+}
+
+.live-run-metric-card[data-tone="live"] {
+  border-color: rgba(73, 214, 163, 0.28);
+  background: rgba(73, 214, 163, 0.08);
+}
+
+.live-run-metric-label,
+.live-run-fact-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.live-run-metric-value,
+.live-run-metric-time,
+.live-run-fact-value {
+  color: var(--heading);
+}
+
+.live-run-metric-value,
+.live-run-metric-time {
+  font-size: 0.96rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.live-run-metric-value-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  min-height: 26px;
+}
+
+.live-run-metric-value-row .running-elapsed {
+  margin-left: 0;
+}
+
+.live-run-metric-copy {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.live-run-metric-fallback {
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
 .run-hint {
   margin-bottom: 10px;
   color: var(--muted);
@@ -2813,6 +2882,85 @@ details.editor-card summary::-webkit-details-marker {
 
 .run-output-live {
   min-height: 120px;
+}
+
+.live-run-output-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.live-run-stream-card {
+  padding: 12px;
+}
+
+.live-run-stream-card[data-tone="error"] {
+  border-color: rgba(255, 120, 120, 0.28);
+  background: rgba(255, 120, 120, 0.06);
+}
+
+.live-run-stream-card[data-tone="muted"] {
+  border-style: dashed;
+}
+
+.live-run-stream-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.live-run-stream-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--heading);
+}
+
+.live-run-stream-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  text-align: right;
+}
+
+.live-run-fact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.live-run-fact {
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.live-run-fact-value {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.live-run-stream-card .run-output {
+  margin-top: 0;
+}
+
+@media (max-width: 860px) {
+  .live-run-stream-head {
+    flex-direction: column;
+  }
+
+  .live-run-stream-meta {
+    justify-content: flex-start;
+    text-align: left;
+  }
 }
 
 /* ── Phase 7: Niche Project Detail Enhancement ── */

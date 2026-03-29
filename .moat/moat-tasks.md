@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 24 | **To Do**: 0 | **Doing**: 0 | **Done**: 24
+**Total**: 26 | **To Do**: 1 | **Doing**: 0 | **Done**: 25
 
 ## Tasks
 
@@ -36,8 +36,10 @@
 22. [x] Background Container – "there is something weird, this card is stuck in this runn..." `section.kanban-column.project-kanban-column:nth-child(4) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
 23. [x] Container (listbox) – "i cant scroll down here it push me back to the top" `div[aria-label="Episode output files"]`
 24. [x] Background Container – "this tts voice generation for es (spanish) is stuck in th..." `div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(6)`
+25. [x] Background Container – "this does not reflect the actual event, for example its r..." `div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section.live-run-section:nth-child(4)`
+26. [ ] Background Container – "is 2 voices being generated at the same time? this could ..." `div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(6)`
 
 ---
 
-_Generated: 28/03/2026, 23:01:40_
+_Generated: 28/03/2026, 23:34:13_
 _Source: moat-tasks-detail.json_

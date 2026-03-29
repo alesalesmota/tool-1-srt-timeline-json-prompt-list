@@ -1,6 +1,12 @@
 # Implementation Checklist
 > Track progress across conversations. Update after each task.
 
+## Drawbridge Live-Activity Signal Clarity (2026-03-28)
+- [x] Expose stdout/stderr preview timestamps and sizes in serialized stage-run payloads
+- [x] Rebuild the `Live activity` panel so it separates run age, output source, last preview write, and preview/snapshot content
+- [x] Add regression coverage for preview-file metadata on stage runs
+- [x] Verify with `node --check tool1_dashboard/ui/app.js`, `python -m unittest discover -s tests -v` (`143` passing), and Playwright smoke on `http://127.0.0.1:8765/#/niche-projects/niche-20260326-133703-religi-o`
+
 ## Drawbridge Follow-Up (2026-03-28)
 - [x] Remove the episode-overlay sidebar so the modal reads as a single main-column workflow surface
 - [x] Move stage-run history inline under the live-activity area and remove duplicate quick actions from the overlay

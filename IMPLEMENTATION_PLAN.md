@@ -13,6 +13,11 @@ Tool 1 is the multilingual video planning pipeline for Creator Studio. The user 
 
 ## Current State Summary
 
+### Drawbridge Live-Activity Follow-Up (2026-03-28)
+- Stage-run payloads now expose preview-file timestamps and sizes for both stdout and stderr.
+- The episode live-activity surface now distinguishes real preview-file output from fallback execution snapshots using separate `Run age`, `Output source`, and `Last preview write` cards plus dedicated preview blocks.
+- Regression coverage now protects the preview-file metadata contract that feeds this UI.
+
 ### Post-Phase Refinement (2026-03-28)
 - Workflow controls now support resume-from-stop, pause-at-safe-boundary, and selected-step reruns from the episode detail/overlay UI.
 - Backend queueing now defaults failed/paused episodes to their actual stopped stage instead of always falling back to `consistency_guide`.
