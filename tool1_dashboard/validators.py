@@ -48,7 +48,7 @@ def scene_output_schema() -> dict[str, Any]:
                         "visual_intent": {"type": "string"},
                         "notes": {"type": "string"},
                     },
-                    "required": ["start", "end", "duration", "text"],
+                    "required": ["start", "end", "duration", "text", "visual_intent", "notes"],
                     "additionalProperties": False,
                 },
             }

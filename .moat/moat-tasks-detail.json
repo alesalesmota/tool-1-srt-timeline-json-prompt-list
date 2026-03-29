@@ -1,220 +1,36 @@
 [
   {
-    "id": "8ddc7f63-8e07-49b3-afdb-39262c561496",
-    "title": "Background Container",
-    "comment": "this tts voice generation for es (spanish) is stuck in the 17/328 forever, i believe the tts generation is not working",
-    "selector": "div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(6)",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774748956796-gt8s43u92.png",
-    "status": "done",
-    "timestamp": 1774748956936
-  },
-  {
-    "id": "d2a2194f-99ea-4081-9111-e8e085f74b1a",
-    "title": "Background Container",
-    "comment": "this does not reflect the actual event, for example its running codex CLI, but i dont see his cli window working and genering the content, its stuck in with this   aspects informations, but no live activity happening.",
-    "selector": "div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section.live-run-section:nth-child(4)",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774750349880-d1zo7lf6n.png",
-    "status": "done",
-    "timestamp": 1774750350035
-  },
-  {
-    "id": "4cd87630-7a8e-4068-8164-96dae4f59a2f",
-    "title": "Background Container",
-    "comment": "is 2 voices being generated at the same time? this could overload my computer, and make bad voices generations",
-    "selector": "div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(6)",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774751513460-9oo7erw17.png",
-    "status": "done",
-    "timestamp": 1774751520245
-  },
-  {
-    "id": "199abafd-e456-41cb-81ff-692bd5343e2b",
+    "id": "4c751b25-27de-471c-852e-82f0ac65d474",
     "title": "Freeform Rectangle Task",
-    "comment": "this text is glitching between auto-sync and auto-syincing",
+    "comment": "2 new erros pls check and fix",
     "selector": "freeform",
     "boundingRect": {
-      "x": 405,
-      "y": 510,
-      "w": 217,
-      "h": 42
+      "x": 384,
+      "y": 133,
+      "w": 1132,
+      "h": 150
     },
-    "screenshotPath": "./screenshots/moat-1774757100139-5we30dgda.png",
+    "screenshotPath": "./screenshots/moat-1774805225144-tu9sahfyi.png",
     "status": "done",
-    "timestamp": 1774757106540,
+    "timestamp": 1774805225269,
     "boundingBox": {
       "xyxy": {
-        "x1": 405,
-        "y1": 510,
-        "x2": 622,
-        "y2": 552
+        "x1": 384,
+        "y1": 133,
+        "x2": 1516,
+        "y2": 283
       },
       "xywh": {
-        "x": 405,
-        "y": 510,
-        "width": 217,
-        "height": 42
+        "x": 384,
+        "y": 133,
+        "width": 1132,
+        "height": 150
       },
       "normalized": {
-        "x": 0.2109375,
-        "y": 0.5396825396825397,
-        "width": 0.11302083333333333,
-        "height": 0.044444444444444446
-      },
-      "viewport": {
-        "width": 1920,
-        "height": 945
-      },
-      "type": "freeform"
-    }
-  },
-  {
-    "id": "cb450090-37b4-4d38-8a4f-81137525f350",
-    "title": "Container #episode-review-section",
-    "comment": "i see nothing in this section",
-    "selector": "#episode-review-section",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774764873546-8019iplyo.png",
-    "status": "done",
-    "timestamp": 1774764873856
-  },
-  {
-    "id": "aabf0c61-0713-4f9e-a515-b55bb273ec58",
-    "title": "span: Narration running",
-    "comment": "its showing this \"running\" state even though the app just started and i didnt press any play button",
-    "selector": "div:nth-child(1) > div.episode-detail-actions:nth-child(2) > span.tooltip-anchor.button-tooltip-shell:nth-child(1)",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774800018313-x003jv297.png",
-    "status": "done",
-    "timestamp": 1774800018477
-  },
-  {
-    "id": "91ed4e8d-978f-452e-b4eb-2b53f75129c4",
-    "title": "Freeform Rectangle Task",
-    "comment": "the button start workflow is locked, even though i just start the aplication and nothing is running",
-    "selector": "freeform",
-    "boundingRect": {
-      "x": 679,
-      "y": 269,
-      "w": 151,
-      "h": 58
-    },
-    "screenshotPath": "./screenshots/moat-1774800177589-ife1f9dc2.png",
-    "status": "done",
-    "timestamp": 1774800177751,
-    "boundingBox": {
-      "xyxy": {
-        "x1": 679,
-        "y1": 269,
-        "x2": 830,
-        "y2": 327
-      },
-      "xywh": {
-        "x": 679,
-        "y": 269,
-        "width": 151,
-        "height": 58
-      },
-      "normalized": {
-        "x": 0.3536458333333333,
-        "y": 0.28465608465608466,
-        "width": 0.07864583333333333,
-        "height": 0.061375661375661375
-      },
-      "viewport": {
-        "width": 1920,
-        "height": 945
-      },
-      "type": "freeform"
-    }
-  },
-  {
-    "id": "973e7325-4bb8-497f-a322-fab2dd9c96bf",
-    "title": "Background Container",
-    "comment": "the process started running automatically, when i opened the tool 1, thats not intended to happen, i should decide when to start once i open the aplication, by pressing the start workflow button",
-    "selector": "section.kanban-column.project-kanban-column:nth-child(4) > div.kanban-card-list:nth-child(2) > div.episode-card.surface",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774800293836-0es04argz.png",
-    "status": "done",
-    "timestamp": 1774800293996
-  },
-  {
-    "id": "51449e5b-75b1-4eb3-b7e7-b967220f3dc6",
-    "title": "Background Container",
-    "comment": "when i hover the mouse over the card the corner glowing effect glitches wayy too much,",
-    "selector": "section.kanban-column.project-kanban-column:nth-child(5) > div.kanban-card-list:nth-child(2) > div.episode-card.surface",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774801574569-c9icps0zd.png",
-    "status": "done",
-    "timestamp": 1774801574734
-  },
-  {
-    "id": "324242c5-22db-41f1-aec3-b515e1878185",
-    "title": "Background Container",
-    "comment": "new error, can you check what happened",
-    "selector": "div.board-modal-layout:nth-child(2) > div.board-modal-main > div.notice:nth-child(1)",
-    "boundingRect": {
-      "x": 0,
-      "y": 0
-    },
-    "screenshotPath": "./screenshots/moat-1774803193540-bkr6oydai.png",
-    "status": "done",
-    "timestamp": 1774803193696
-  },
-  {
-    "id": "6fdc2500-ec1e-4472-8918-a946040d3bed",
-    "title": "Freeform Rectangle Task",
-    "comment": "2 new errors on scene planning step",
-    "selector": "freeform",
-    "boundingRect": {
-      "x": 370,
-      "y": 135,
-      "w": 1137,
-      "h": 111
-    },
-    "screenshotPath": "./screenshots/moat-1774803883216-lh47him0h.png",
-    "status": "done",
-    "timestamp": 1774803883341,
-    "boundingBox": {
-      "xyxy": {
-        "x1": 370,
-        "y1": 135,
-        "x2": 1507,
-        "y2": 246
-      },
-      "xywh": {
-        "x": 370,
-        "y": 135,
-        "width": 1137,
-        "height": 111
-      },
-      "normalized": {
-        "x": 0.19270833333333334,
-        "y": 0.14285714285714285,
-        "width": 0.5921875,
-        "height": 0.11746031746031746
+        "x": 0.2,
+        "y": 0.14074074074074075,
+        "width": 0.5895833333333333,
+        "height": 0.15873015873015872
       },
       "viewport": {
         "width": 1920,
