@@ -541,7 +541,20 @@
       "y": 0
     },
     "screenshotPath": "./screenshots/moat-1774719071133-9l4gnnyb9.png",
-    "status": "to do",
+    "status": "done",
     "timestamp": 1774719071287
+  },
+  {
+    "id": "3b8aaf0a-895d-46b1-9da1-c37ed66806a4",
+    "title": "Background Container",
+    "comment": "there is something weird, this card is stuck in this running state. But thats not possible because i closed the app and just started, and also its stuck in this state for a long time.  I belive nothing is happening in the back ground. I really think you should check not only this step. But do a really deep plan to check if every step of the workflow is working properly and showing properly in the front end.",
+    "selector": "section.kanban-column.project-kanban-column:nth-child(4) > div.kanban-card-list:nth-child(2) > div.episode-card.surface",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774744913312-n5nh0n0wy.png",
+    "status": "done",
+    "timestamp": 1774744913463
   }
 ]

@@ -1,6 +1,15 @@
 # Implementation Checklist
 > Track progress across conversations. Update after each task.
 
+## Drawbridge Follow-Up (2026-03-28)
+- [x] Remove the episode-overlay sidebar so the modal reads as a single main-column workflow surface
+- [x] Move stage-run history inline under the live-activity area and remove duplicate quick actions from the overlay
+- [x] Queue TTS jobs for every unresolved configured language before entering `paused_for_tts`
+- [x] Reconcile paused-TTS episodes by refreshing running jobs, backfilling legacy pending languages, and failing unrecoverable states explicitly
+- [x] Audit workflow status copy so `paused_for_tts` episodes no longer look actively running without real work behind them
+- [x] Add pipeline regression coverage for multi-language TTS queueing, paused-TTS completion handoff, and legacy backfill recovery
+- [x] Verify with `python -m py_compile tool1_dashboard/service.py`, `node --check tool1_dashboard/ui/app.js`, `python -m pytest tests/test_video_pipeline.py -k "paused_tts or tts_stage_queues_all_pending_languages_before_pause or paused_tts_episode_requeues_alignment_after_all_languages_complete or paused_tts_episode_backfills_missing_jobs_for_pending_languages" -q`, `python -m pytest tests/test_video_pipeline.py -q`, and Playwright smoke on `http://127.0.0.1:8020/#/niche-projects/niche-20260326-133703-religi-o`
+
 ## Post-Phase Refinements (2026-03-28)
 - [x] Add workflow-control backend support for pause/resume and selected-step reruns
 - [x] Add stage-specific start guards so mid-pipeline restarts only run when prerequisite assets exist

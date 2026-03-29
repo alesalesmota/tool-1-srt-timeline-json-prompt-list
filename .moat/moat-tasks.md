@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 21 | **To Do**: 1 | **Doing**: 0 | **Done**: 20
+**Total**: 22 | **To Do**: 0 | **Doing**: 0 | **Done**: 22
 
 ## Tasks
 
@@ -30,11 +30,12 @@
 18. [x] Button: Close – "clicking its not working" `div.board-modal-backdrop > div.board-modal-shell > div.board-modal-head:nth-child(1) > button:nth-of-type(1)`
 19. [x] Background Container – "something is wrong on this step of the consistency guide,..." `div.board-modal-backdrop > div.board-modal-shell`
 20. [x] Background Container – "this area has a lot of bug, this refresh button doesnt ma..." `div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(8)`
-21. [ ] aside: Quick actions
+21. [x] aside: Quick actions
               
   – "this lateral menu is very confusing, im not sure its even..." `div.board-modal-shell > div.board-modal-layout:nth-child(2) > aside.board-modal-side`
+22. [x] Background Container – "there is something weird, this card is stuck in this runn..." `section.kanban-column.project-kanban-column:nth-child(4) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
 
 ---
 
-_Generated: 28/03/2026, 15:01:40_
+_Generated: 28/03/2026, 22:10:40_
 _Source: moat-tasks-detail.json_
