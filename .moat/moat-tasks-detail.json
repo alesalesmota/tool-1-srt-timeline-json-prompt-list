@@ -38,5 +38,18 @@
       },
       "type": "freeform"
     }
+  },
+  {
+    "id": "99ee0343-78e8-4bd8-bbf7-3cc4eb0c1c3a",
+    "title": "Background Container",
+    "comment": "new error, it ran for a while than it errored",
+    "selector": "details.run-detail-card:nth-child(2) > div.run-detail-body > div.notice:nth-child(1)",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1774806206091-4f1troszt.png",
+    "status": "done",
+    "timestamp": 1774806206241
   }
 ]

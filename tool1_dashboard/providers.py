@@ -247,6 +247,8 @@ class CliRunner:
                 "# Task\n"
                 f"{user_prompt.strip()}\n"
             )
+            # Use artifact_dir (not workspace) so Codex has no files to
+            # explore and focuses on generating structured JSON output.
             command = [
                 self.codex_bin,
                 "exec",
@@ -261,7 +263,7 @@ class CliRunner:
                 "-o",
                 str(last_message_path),
                 "-C",
-                str(workdir),
+                str(artifact_dir),
                 "-",
             ]
             returncode, stdout_text, stderr_text = self._run_streaming(
