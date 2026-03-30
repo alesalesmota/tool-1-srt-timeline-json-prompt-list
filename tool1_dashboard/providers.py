@@ -23,7 +23,6 @@ class CliExecutionError(RuntimeError):
 
 class CliRunner:
     def __init__(self) -> None:
-        self.codex_bin = os.environ.get("TOOL1_CODEX_BIN") or shutil.which("codex") or "codex"
         self.claude_bin = os.environ.get("TOOL1_CLAUDE_BIN") or shutil.which("claude") or "claude"
         self._probe_ttl_seconds = float(os.environ.get("TOOL1_PROVIDER_PROBE_TTL_SECONDS", "10"))
         self._structured_timeout_seconds = float(os.environ.get("TOOL1_PROVIDER_EXEC_TIMEOUT_SECONDS", "600"))
@@ -42,53 +41,12 @@ class CliRunner:
                 return deepcopy(self._probe_cache)
 
         payload = {
-            "codex": self._probe_codex(),
             "claude": self._probe_claude(),
         }
         with self._probe_lock:
             self._probe_cache = deepcopy(payload)
             self._probe_cached_at = now
         return payload
-
-    def _probe_codex(self) -> dict[str, Any]:
-        path = shutil.which(self.codex_bin) if self.codex_bin != "codex" else shutil.which("codex")
-        available = path is not None
-        version = None
-        logged_in = False
-        detail = ""
-        if available:
-            try:
-                version_result = subprocess.run(
-                    [self.codex_bin, "--version"],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=15,
-                )
-                version = (version_result.stdout or version_result.stderr).strip()
-            except Exception as exc:
-                detail = str(exc)
-            try:
-                login_result = subprocess.run(
-                    [self.codex_bin, "login", "status"],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=15,
-                )
-                detail = detail or (login_result.stdout or login_result.stderr).strip()
-                logged_in = login_result.returncode == 0 and "logged in" in detail.lower()
-            except Exception as exc:
-                detail = detail or str(exc)
-        return {
-            "available": available,
-            "path": path,
-            "version": version,
-            "logged_in": logged_in,
-            "detail": detail,
-        }
 
     def _probe_claude(self) -> dict[str, Any]:
         path = shutil.which(self.claude_bin) if self.claude_bin != "claude" else shutil.which("claude")

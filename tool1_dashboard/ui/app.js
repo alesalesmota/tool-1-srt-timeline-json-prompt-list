@@ -49,13 +49,6 @@ const TRANSLATION_PROFILE_PROVIDER_CATALOG = [
     description: "Runnable now. Paste a key, load available models, then save the profile.",
   },
   {
-    id: "codex_cli",
-    label: "Codex CLI",
-    mode: "cli",
-    placeholder: true,
-    description: "UI preview only for now. This tab shows the planned CLI setup shape.",
-  },
-  {
     id: "claude_cli",
     label: "Claude Code CLI",
     mode: "cli",
@@ -306,7 +299,7 @@ function providerLabel(provider) {
   return provider === "claude"
     ? "Claude CLI"
     : provider === "codex"
-      ? "Codex CLI"
+      ? "Codex (API)"
       : provider === "openai"
         ? "OpenAI API"
         : provider || "Unknown";
@@ -1139,7 +1132,6 @@ function renderSidebar() {
     <section class="sidebar-section system-health-section">
       <div class="eyebrow">System health</div>
       <div class="badge-row" style="margin-top:10px;">
-        ${healthBadge(`Codex ${providers.codex?.available ? (providers.codex?.logged_in ? "ready" : "login") : "missing"}`, providers.codex?.available ? (providers.codex?.logged_in ? true : "warn") : false)}
         ${healthBadge(`Claude ${providers.claude?.available ? (providers.claude?.logged_in ? "ready" : "login") : "missing"}`, providers.claude?.available ? (providers.claude?.logged_in ? true : "warn") : false)}
         ${healthBadge(`ffmpeg ${alignment.ffmpeg ? "ready" : "missing"}`, alignment.ffmpeg)}
         ${healthBadge(`MFA ${alignment.mfa ? "ready" : "check"}`, alignment.mfa ? true : "warn")}
@@ -2142,8 +2134,8 @@ function renderTranslationProfileEditorBody(editor) {
     `;
   }
   const activeSpec = translationProfileProviderSpec(editor.activeProvider);
-  const defaultCommand = activeSpec.id === "codex_cli" ? "codex exec" : "claude -p";
-  const defaultModel = activeSpec.id === "codex_cli" ? "gpt-5.4" : "haiku";
+  const defaultCommand = "claude -p";
+  const defaultModel = "haiku";
   return `
     <div class="profile-inline-message" data-tone="warn">Placeholder only. This tab is a UI preview and cannot be saved yet.</div>
     <div class="form-grid">
@@ -4492,9 +4484,9 @@ function renderSettings() {
         </div>
         <div class="provider-grid">
           <article class="summary-card">
-            <div class="metric-label">Codex CLI</div>
-            <div class="metric-value">${esc(state.health?.providers?.codex?.logged_in ? "Ready" : state.health?.providers?.codex?.available ? "Login" : "Missing")}</div>
-            <div class="metric-copy">Install and login state from the local machine.</div>
+            <div class="metric-label">Codex (API)</div>
+            <div class="metric-value">${esc(openaiHealth.has_api_key ? "Ready" : "Key needed")}</div>
+            <div class="metric-copy">Uses the OpenAI API. Shares the same key as the OpenAI provider.</div>
           </article>
           <article class="summary-card">
             <div class="metric-label">Claude CLI</div>

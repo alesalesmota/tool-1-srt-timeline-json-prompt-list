@@ -24,7 +24,7 @@ class FakeCliRunner:
 
     def probe(self, *, force: bool = False) -> dict[str, object]:
         return {
-            "codex": {"available": True, "logged_in": True},
+            "codex": {"available": True},
             "claude": {"available": True, "logged_in": True},
             "openai": {"available": True, "logged_in": False},
         }
@@ -1039,7 +1039,7 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
             temp_path = Path(temp_dir)
             with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
                 runner = ProbeStateCliRunner(probe_state={
-                    "codex": {"available": True, "logged_in": True},
+                    "codex": {"available": True},
                     "claude": {"available": True, "logged_in": False},
                 })
                 service = _make_service(temp_path, cli_runner=runner)
@@ -1062,7 +1062,7 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
             temp_path = Path(temp_dir)
             with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
                 runner = ProbeStateCliRunner(probe_state={
-                    "codex": {"available": True, "logged_in": True},
+                    "codex": {"available": True},
                     "claude": {"available": True, "logged_in": True},
                 })
                 service = _make_service(temp_path, cli_runner=runner)

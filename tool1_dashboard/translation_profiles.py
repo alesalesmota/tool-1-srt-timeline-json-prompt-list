@@ -15,15 +15,6 @@ TRANSLATION_PROFILE_PROVIDER_CATALOG = (
         "editable": True,
     },
     {
-        "id": "codex_cli",
-        "label": "Codex CLI",
-        "mode": "cli",
-        "placeholder": True,
-        "description": "Preview-only placeholder. CLI translation is not wired up yet.",
-        "runnable": False,
-        "editable": False,
-    },
-    {
         "id": "claude_cli",
         "label": "Claude Code CLI",
         "mode": "cli",

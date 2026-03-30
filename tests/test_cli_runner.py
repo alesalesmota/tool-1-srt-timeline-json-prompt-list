@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 import json
 import subprocess
 import tempfile
@@ -101,28 +102,29 @@ class CliRunnerTests(unittest.TestCase):
         self.assertNotIn("user", captured_command)
         self.assertEqual(result["parsed"], {"scenes": []})
 
-    def test_codex_command_writes_last_message(self) -> None:
+    def test_codex_provider_uses_openai_api(self) -> None:
         runner = CliRunner()
+        recorder: list[dict[str, object]] = []
+        response_payload = {
+            "output_text": json.dumps({"prompts": ["a", "b"]}),
+        }
 
-        def fake(command, *, stdin, stdout, stderr, text, encoding, errors, cwd, **kwargs):
-            out_index = command.index("-o") + 1
-            Path(command[out_index]).write_text(json.dumps({"prompts": ["a", "b"]}), encoding="utf-8")
-            if stdout and hasattr(stdout, "write"):
-                stdout.write("{}")
-            if stderr and hasattr(stderr, "write"):
-                stderr.write("")
-            proc = MagicMock()
-            proc.returncode = 0
-            proc.stdin = MagicMock()
-            proc.wait = MagicMock()
-            return proc
+        def fake_post(url, *, headers, json, **kwargs):
+            recorder.append({"url": url, "json": json})
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = response_payload
+            return resp
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            with patch("tool1_dashboard.providers.subprocess.Popen", side_effect=fake):
+            with patch("tool1_dashboard.providers.httpx.Client") as mock_client:
+                mock_client.return_value.__enter__ = MagicMock(return_value=MagicMock(post=fake_post))
+                mock_client.return_value.__exit__ = MagicMock(return_value=False)
                 result = runner.run_structured(
                     provider="codex",
                     model="gpt-5.4",
+                    api_key="test-key",
                     system_prompt="system",
                     user_prompt="user",
                     schema={"type": "object", "properties": {"prompts": {"type": "array"}}, "required": ["prompts"]},
@@ -130,6 +132,8 @@ class CliRunnerTests(unittest.TestCase):
                     artifact_dir=temp_path / "artifacts",
                 )
         self.assertEqual(result["parsed"], {"prompts": ["a", "b"]})
+        self.assertEqual(recorder[0]["json"]["model"], "gpt-5.4")
+        self.assertIn("openai.com", recorder[0]["url"])
 
     def test_claude_limit_error_surfaces_real_message(self) -> None:
         runner = CliRunner()
@@ -160,40 +164,25 @@ class CliRunnerTests(unittest.TestCase):
         runner = CliRunner()
         runner._structured_timeout_seconds = 30
 
-        def fake(command, *, stdin, stdout, stderr, text, encoding, errors, cwd, **kwargs):
-            if stdout and hasattr(stdout, "write"):
-                stdout.write("")
-            if stderr and hasattr(stderr, "write"):
-                stderr.write("")
-            proc = MagicMock()
-            proc.pid = 4321
-            proc.returncode = None
-            proc.stdin = MagicMock()
-            proc.stdin.write = MagicMock()
-            proc.stdin.close = MagicMock()
-            proc.wait = MagicMock(side_effect=[
-                subprocess.TimeoutExpired(cmd=command, timeout=runner._structured_timeout_seconds),
-                None,
-            ])
-            return proc
-
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            with patch("tool1_dashboard.providers.subprocess.Popen", side_effect=fake):
-                with patch("tool1_dashboard.providers.subprocess.run", return_value=MagicMock(returncode=0)):
-                    with self.assertRaises(CliExecutionError) as context:
-                        runner.run_structured(
-                            provider="codex",
-                            model="gpt-5.4-mini",
-                            system_prompt="system",
-                            user_prompt="user",
-                            schema={"type": "object", "properties": {"prompts": {"type": "array"}}, "required": ["prompts"]},
-                            workdir=temp_path,
-                            artifact_dir=temp_path / "artifacts",
-                        )
-        self.assertIn("Codex CLI execution timed out.", str(context.exception))
-        self.assertIn("timed out after 30 seconds", str(context.exception))
-        self.assertIn("timed out after 30 seconds", context.exception.stderr)
+            with patch("tool1_dashboard.providers.httpx.Client") as mock_client:
+                mock_instance = MagicMock()
+                mock_instance.post.side_effect = httpx.TimeoutException("timed out")
+                mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+                mock_client.return_value.__exit__ = MagicMock(return_value=False)
+                with self.assertRaises(CliExecutionError) as context:
+                    runner.run_structured(
+                        provider="codex",
+                        model="gpt-5.4-mini",
+                        api_key="test-key",
+                        system_prompt="system",
+                        user_prompt="user",
+                        schema={"type": "object", "properties": {"prompts": {"type": "array"}}, "required": ["prompts"]},
+                        workdir=temp_path,
+                        artifact_dir=temp_path / "artifacts",
+                    )
+        self.assertIn("timed out", str(context.exception))
 
     def test_openai_structured_request_uses_responses_api(self) -> None:
         runner = CliRunner()
@@ -248,9 +237,8 @@ class CliRunnerTests(unittest.TestCase):
                     second = runner.probe()
                     third = runner.probe()
 
-        self.assertEqual(first["codex"]["available"], second["codex"]["available"])
         self.assertEqual(first["claude"]["available"], second["claude"]["available"])
-        self.assertEqual(len(calls), 8)
+        self.assertEqual(len(calls), 4)  # 2 calls per probe (version + auth), cached on 2nd, refreshed on 3rd
         self.assertNotEqual(id(first), id(second))
         self.assertNotEqual(id(first["claude"]), id(second["claude"]))
         self.assertEqual(third["claude"]["logged_in"], first["claude"]["logged_in"])
@@ -273,7 +261,7 @@ class CliRunnerTests(unittest.TestCase):
                     runner.probe()
                     runner.probe(force=True)
 
-        self.assertEqual(len(calls), 8)
+        self.assertEqual(len(calls), 4)  # 2 calls per probe (version + auth) x 2 probes
 
 
 if __name__ == "__main__":
