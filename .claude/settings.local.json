@@ -4,5 +4,6 @@
       "Bash(python -m pytest tests/ -x -q)",
       "Bash(python -m unittest discover -s tests -v)"
     ]
-  }
+  },
+  "outputStyle": "default"
 }
