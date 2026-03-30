@@ -121,3 +121,30 @@ def build_prompt_batches(
             }
         )
     return batches
+
+
+def build_gap_fill_batches(
+    all_scenes: list[dict[str, object]],
+    received_scene_ids: set[str],
+    *,
+    batch_size: int,
+    batch_id_offset: int = 0,
+) -> list[dict[str, object]]:
+    """Build batches containing only the scenes whose scene_id was not received."""
+    missing = [s for s in all_scenes if s.get("scene_id") not in received_scene_ids]
+    if not missing:
+        return []
+    if batch_size <= 0:
+        batch_size = len(missing) or 1
+    batches: list[dict[str, object]] = []
+    for start in range(0, len(missing), batch_size):
+        batch_scenes = missing[start : start + batch_size]
+        batches.append(
+            {
+                "batch_id": batch_id_offset + len(batches) + 1,
+                "scene_start": start + 1,
+                "scene_end": start + len(batch_scenes),
+                "scenes": batch_scenes,
+            }
+        )
+    return batches

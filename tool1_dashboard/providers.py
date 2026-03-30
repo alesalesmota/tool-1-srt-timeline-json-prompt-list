@@ -120,6 +120,7 @@ class CliRunner:
                 "instructions": system_prompt,
                 "input": user_prompt,
                 "store": False,
+                "max_output_tokens": 16384,
                 "text": {
                     "format": {
                         "type": "json_schema",

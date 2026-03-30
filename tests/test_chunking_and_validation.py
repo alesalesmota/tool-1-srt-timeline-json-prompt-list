@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from tool1_dashboard.chunking import build_planning_chunks, build_prompt_batches
+from tool1_dashboard.chunking import build_gap_fill_batches, build_planning_chunks, build_prompt_batches
 from tool1_dashboard.srt_chunker.models import SubtitleCue
 from tool1_dashboard.validators import (
     apply_default_asset_types,
@@ -215,6 +215,40 @@ class ChunkingValidationTests(unittest.TestCase):
         self.assertIn("no text", prompts[0].lower())
         self.assertIn("no split-screen", prompts[0].lower())
         self.assertNotIn("same", prompts[0].lower())
+
+
+class GapFillBatchTests(unittest.TestCase):
+    def _scenes(self, ids: list[str]) -> list[dict[str, object]]:
+        return [{"scene_id": sid, "asset_type": "image"} for sid in ids]
+
+    def test_no_missing_returns_empty(self) -> None:
+        scenes = self._scenes(["s1", "s2", "s3"])
+        result = build_gap_fill_batches(scenes, {"s1", "s2", "s3"}, batch_size=4)
+        self.assertEqual(result, [])
+
+    def test_all_missing_returns_one_batch(self) -> None:
+        scenes = self._scenes(["s1", "s2", "s3"])
+        result = build_gap_fill_batches(scenes, set(), batch_size=10)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(len(result[0]["scenes"]), 3)
+
+    def test_partial_missing_returns_only_gaps(self) -> None:
+        scenes = self._scenes(["s1", "s2", "s3", "s4", "s5"])
+        result = build_gap_fill_batches(scenes, {"s1", "s3", "s5"}, batch_size=10)
+        self.assertEqual(len(result), 1)
+        ids = [s["scene_id"] for s in result[0]["scenes"]]
+        self.assertEqual(ids, ["s2", "s4"])
+
+    def test_gap_fill_respects_batch_size(self) -> None:
+        scenes = self._scenes([f"s{i}" for i in range(10)])
+        result = build_gap_fill_batches(scenes, set(), batch_size=3)
+        self.assertEqual(len(result), 4)  # 10 / 3 = 4 batches (3+3+3+1)
+        self.assertEqual(len(result[-1]["scenes"]), 1)
+
+    def test_batch_id_offset(self) -> None:
+        scenes = self._scenes(["s1", "s2"])
+        result = build_gap_fill_batches(scenes, set(), batch_size=10, batch_id_offset=5)
+        self.assertEqual(result[0]["batch_id"], 6)
 
 
 if __name__ == "__main__":

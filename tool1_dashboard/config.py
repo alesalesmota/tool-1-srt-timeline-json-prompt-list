@@ -145,7 +145,7 @@ DEFAULT_SETTINGS = {
     "leading_video_scene_count": 20,
     "planning_chunk_seconds": 360,
     "planning_overlap_seconds": 30,
-    "prompt_batch_size": 24,
+    "prompt_batch_size": 8,
     # Translation defaults
     "translation_chunk_max_words": 800,
     "translation_context_tail_words": 200,

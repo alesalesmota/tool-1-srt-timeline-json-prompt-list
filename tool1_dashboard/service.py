@@ -21,7 +21,7 @@ from .alignment_tool.config import TEMP_ROOT as ALIGNMENT_TEMP_ROOT
 from .alignment_tool.mfa_resources import mfa_resource_status, prepare_mfa_language_resources_async
 from .alignment_tool.orchestrator import run_alignment_job
 from .alignment_tool.runtime import probe_health as alignment_health
-from .chunking import build_planning_chunks, build_prompt_batches
+from .chunking import build_gap_fill_batches, build_planning_chunks, build_prompt_batches
 from .config import (
     AGENTS_ROOT,
     BOARD_STATUSES,
@@ -3431,19 +3431,23 @@ class Tool1Service:
             return
 
         settings = self._global_settings()
-        batches = build_prompt_batches(scenes, batch_size=int(settings["prompt_batch_size"]))
+        batch_size = int(settings["prompt_batch_size"])
+        batches = build_prompt_batches(scenes, batch_size=batch_size)
         template = self.templates.snapshot_template(workspace, stage, provider)
         schema = video_prompt_output_schema() if asset_type == "video" else image_prompt_output_schema()
-        payloads: list[dict[str, Any]] = []
+        stage_name = "video_prompt_generation" if asset_type == "video" else "image_prompt_generation"
+        mode_rules = (
+            "Use the structured JSON fields scene_id, subject, setting, action, camera, look, lighting, rules, character_refs, and prompt."
+            if asset_type == "video"
+            else "Use the structured JSON fields scene_id, subject, setting, composition, look, lighting, rules, character_refs, and prompt."
+        )
+        target_words = "65 to 95 words" if asset_type == "video" else "45 to 75 words"
 
-        max_batch_retries = 2
-        for batch_index, batch in enumerate(batches):
-            mode_rules = (
-                "Use the structured JSON fields scene_id, subject, setting, action, camera, look, lighting, rules, character_refs, and prompt."
-                if asset_type == "video"
-                else "Use the structured JSON fields scene_id, subject, setting, composition, look, lighting, rules, character_refs, and prompt."
-            )
-            target_words = "65 to 95 words" if asset_type == "video" else "45 to 75 words"
+        # Collect prompts indexed by scene_id — accepts partial batches
+        prompts_by_scene_id: dict[str, dict[str, Any]] = {}
+        next_batch_id = len(batches) + 1
+
+        def _run_batch(batch: dict[str, Any], run_label: str) -> None:
             prompt_context = self._build_prompt_context(visual_bible, batch["scenes"])
             user_prompt = (
                 f"Generate one {asset_type} prompt per scene in this batch.\n"
@@ -3469,83 +3473,98 @@ class Tool1Service:
                 f"Prompt context:\n{json.dumps(prompt_context, ensure_ascii=False, indent=2)}\n\n"
                 f"Batch payload:\n{json.dumps(batch, ensure_ascii=False, indent=2)}"
             )
-            expected_count = len(batch["scenes"])
-            batch_accepted = False
-            for attempt in range(1 + max_batch_retries):
-                attempt_suffix = f"-retry{attempt}" if attempt > 0 else ""
-                batch_dir = ensure_dir(workspace / "runs" / stage / f"batch-{batch['batch_id']:03d}{attempt_suffix}")
-                run_id = self._start_structured_stage_run(
-                    episode_id=episode_id,
-                    stage="video_prompt_generation" if asset_type == "video" else "image_prompt_generation",
+            batch_dir = ensure_dir(workspace / "runs" / stage / run_label)
+            run_id = self._start_structured_stage_run(
+                episode_id=episode_id,
+                stage=stage_name,
+                provider=provider,
+                template_hash=template.get("hash"),
+                workdir=workspace,
+                artifact_dir=batch_dir,
+                model=model,
+                schema=schema,
+            )
+            result: dict[str, Any] | None = None
+            parsed_output_path: str | None = None
+            try:
+                result = self.cli_runner.run_structured(
                     provider=provider,
-                    template_hash=template.get("hash"),
+                    model=model,
+                    api_key=self._stage_provider_api_key(provider),
+                    system_prompt=template["body"],
+                    user_prompt=user_prompt,
+                    schema=schema,
                     workdir=workspace,
                     artifact_dir=batch_dir,
-                    model=model,
-                    schema=schema,
                 )
-                result: dict[str, Any] | None = None
-                parsed_output_path: str | None = None
-                try:
-                    result = self.cli_runner.run_structured(
-                        provider=provider,
-                        model=model,
-                        api_key=self._stage_provider_api_key(provider),
-                        system_prompt=template["body"],
-                        user_prompt=user_prompt,
-                        schema=schema,
-                        workdir=workspace,
-                        artifact_dir=batch_dir,
-                    )
-                    parsed_output_path = str(write_json(batch_dir / "parsed.json", result["parsed"]))
-                    received_prompts = result["parsed"].get("prompts", [])
-                    received_count = len(received_prompts) if isinstance(received_prompts, list) else 0
-                    if received_count != expected_count and attempt < max_batch_retries:
-                        log.warning(
-                            "Batch %d attempt %d: expected %d prompts, got %d — retrying",
-                            batch["batch_id"], attempt + 1, expected_count, received_count,
-                        )
-                        self.db.finish_stage_run(
-                            run_id,
-                            status="completed",
-                            exit_code=0,
-                            parsed_output_path=parsed_output_path,
-                            command_payload=result.get("command_payload"),
-                            stdout_path=result.get("stdout_path"),
-                            stderr_path=result.get("stderr_path"),
-                        )
-                        continue
-                    payloads.append(result["parsed"])
-                    batch_accepted = True
-                    self.db.finish_stage_run(
-                        run_id,
-                        status="completed",
-                        exit_code=0,
-                        parsed_output_path=parsed_output_path,
-                        command_payload=result.get("command_payload"),
-                        stdout_path=result.get("stdout_path"),
-                        stderr_path=result.get("stderr_path"),
-                    )
-                    break
-                except Exception as exc:
-                    self.db.finish_stage_run(
-                        run_id,
-                        status="failed",
-                        exit_code=1,
-                        parsed_output_path=parsed_output_path,
-                        error_text=str(exc),
-                        command_payload=result.get("command_payload") if result else None,
-                        stdout_path=result.get("stdout_path") if result else None,
-                        stderr_path=result.get("stderr_path") if result else None,
-                    )
-                    raise
-            if not batch_accepted:
-                raise ValueError(
-                    f"Batch {batch['batch_id']}: expected {expected_count} prompts but received "
-                    f"{received_count} after {max_batch_retries + 1} attempts."
+                parsed_output_path = str(write_json(batch_dir / "parsed.json", result["parsed"]))
+                received = result["parsed"].get("prompts", [])
+                if isinstance(received, list):
+                    for prompt_item in received:
+                        sid = str(prompt_item.get("scene_id") or "").strip()
+                        if sid and sid not in prompts_by_scene_id:
+                            prompts_by_scene_id[sid] = prompt_item
+                self.db.finish_stage_run(
+                    run_id,
+                    status="completed",
+                    exit_code=0,
+                    parsed_output_path=parsed_output_path,
+                    command_payload=result.get("command_payload"),
+                    stdout_path=result.get("stdout_path"),
+                    stderr_path=result.get("stderr_path"),
                 )
+            except Exception as exc:
+                self.db.finish_stage_run(
+                    run_id,
+                    status="failed",
+                    exit_code=1,
+                    parsed_output_path=parsed_output_path,
+                    error_text=str(exc),
+                    command_payload=result.get("command_payload") if result else None,
+                    stdout_path=result.get("stdout_path") if result else None,
+                    stderr_path=result.get("stderr_path") if result else None,
+                )
+                raise
 
-        normalized_entries, _ = normalize_prompt_payloads(scenes, payloads or [{"prompts": []}])
+        # --- Initial pass: run all batches, accept partial results ---
+        for batch in batches:
+            _run_batch(batch, f"batch-{batch['batch_id']:03d}")
+
+        # --- Gap-fill: re-request only missing scenes (up to 2 rounds) ---
+        expected_ids = {s["scene_id"] for s in scenes}
+        for gap_round in range(2):
+            missing_ids = expected_ids - set(prompts_by_scene_id.keys())
+            if not missing_ids:
+                break
+            log.warning(
+                "Gap-fill round %d: %d/%d scenes still missing",
+                gap_round + 1, len(missing_ids), len(scenes),
+            )
+            gap_batches = build_gap_fill_batches(
+                scenes, set(prompts_by_scene_id.keys()),
+                batch_size=batch_size,
+                batch_id_offset=next_batch_id,
+            )
+            next_batch_id += len(gap_batches)
+            for gap_batch in gap_batches:
+                _run_batch(gap_batch, f"gap-{gap_round + 1}-batch-{gap_batch['batch_id']:03d}")
+
+        # --- Reconstruct ordered payload for downstream validation ---
+        final_missing = expected_ids - set(prompts_by_scene_id.keys())
+        if final_missing:
+            raise ValueError(
+                f"Prompt count mismatch: expected {len(scenes)}, received "
+                f"{len(scenes) - len(final_missing)}. Missing scene IDs: "
+                f"{', '.join(sorted(final_missing)[:10])}"
+                f"{'...' if len(final_missing) > 10 else ''}"
+            )
+        ordered_prompts = [prompts_by_scene_id[s["scene_id"]] for s in scenes]
+        log.info(
+            "Prompt generation complete: %d/%d scenes covered",
+            len(ordered_prompts), len(scenes),
+        )
+
+        normalized_entries, _ = normalize_prompt_payloads(scenes, [{"prompts": ordered_prompts}])
         normalized_entries = self._enrich_prompt_entries(normalized_entries, visual_bible)
         prompt_lines, report = validate_prompt_payloads(scenes, [{"prompts": normalized_entries}])
         if report["errors"]:
