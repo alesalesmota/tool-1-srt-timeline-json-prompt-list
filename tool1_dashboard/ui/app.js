@@ -1286,35 +1286,29 @@ function defaultModelForProvider(provider) {
   return modelCatalogFor(provider)[0]?.value || "";
 }
 
-function modelDatalistId(modelInputId) {
-  return `${modelInputId}-options`;
-}
-
-function modelOptions(provider) {
+function modelOptions(provider, selectedValue) {
   return modelCatalogFor(provider)
-    .map((option) => `<option value="${esc(option.value)}" label="${esc(option.label)}"></option>`)
+    .map((option) => `<option value="${esc(option.value)}" ${option.value === selectedValue ? "selected" : ""}>${esc(option.label)}</option>`)
     .join("");
 }
 
 function syncProviderModelSelect(providerSelectId, modelSelectId, preferredModel = "") {
   const providerSelect = $(providerSelectId);
   const modelSelect = $(modelSelectId);
-  const modelDatalist = $(modelDatalistId(modelSelectId));
-  if (!providerSelect || !modelSelect || !modelDatalist) return;
+  if (!providerSelect || !modelSelect) return;
   const provider = providerSelect.value || "claude";
   const options = modelCatalogFor(provider);
   const previousProvider = modelSelect.dataset.provider || provider;
   const current = preferredModel || modelSelect.value || modelSelect.dataset.currentValue || "";
   const knownForProvider = new Set(options.map((option) => option.value));
   const knownForPreviousProvider = new Set(modelCatalogFor(previousProvider).map((option) => option.value));
-  modelDatalist.innerHTML = modelOptions(provider);
   let nextValue = current;
   if (!nextValue) {
     nextValue = defaultModelForProvider(provider);
   } else if (!preferredModel && !knownForProvider.has(nextValue) && knownForPreviousProvider.has(nextValue)) {
     nextValue = defaultModelForProvider(provider);
   }
-  modelSelect.placeholder = defaultModelForProvider(provider) || "Type a model id";
+  modelSelect.innerHTML = modelOptions(provider, nextValue);
   modelSelect.value = nextValue;
   modelSelect.dataset.currentValue = modelSelect.value;
   modelSelect.dataset.provider = provider;
@@ -1351,7 +1345,6 @@ function renderSetupCard({ icon, title, copy, fields, tone = "neutral", compact 
 function renderStageSetupCard({
   icon,
   title,
-  copy,
   providerId,
   providerValue,
   modelId,
@@ -1360,7 +1353,7 @@ function renderStageSetupCard({
   return renderSetupCard({
     icon,
     title,
-    copy,
+    copy: "",
     tone: "active",
     fields: `
       <div class="setup-card-field-grid">
@@ -1369,19 +1362,8 @@ function renderStageSetupCard({
           <select id="${esc(providerId)}">${providerOptions(providerValue)}</select>
         </label>
         <label class="field">
-          <span class="field-label">Model id</span>
-          <input
-            id="${esc(modelId)}"
-            list="${esc(modelDatalistId(modelId))}"
-            value="${esc(modelValue || defaultModelForProvider(providerValue))}"
-            data-current-value="${esc(modelValue || defaultModelForProvider(providerValue))}"
-            data-provider="${esc(providerValue || "claude")}"
-            placeholder="${esc(defaultModelForProvider(providerValue) || "Type a model id")}"
-            spellcheck="false"
-            autocomplete="off"
-          />
-          <datalist id="${esc(modelDatalistId(modelId))}">${modelOptions(providerValue)}</datalist>
-          <span class="helper">Pick a suggestion or type a newer model id manually.</span>
+          <span class="field-label">Model</span>
+          <select id="${esc(modelId)}" data-provider="${esc(providerValue || "claude")}">${modelOptions(providerValue, modelValue)}</select>
         </label>
       </div>
     `,
@@ -3074,17 +3056,16 @@ function renderLanguageConfigSection(project, voiceProfiles, translationProfiles
 
 function renderProviderConfigSection(project) {
   const stages = [
-    { key: "scene_planning", icon: "scene", title: "Scene Planning", copy: "LLM plans scene structure" },
-    { key: "visual_bible", icon: "bible", title: "Visual Bible", copy: "Consistency guide generation" },
-    { key: "video_prompt", icon: "prompts", title: "Video Prompts", copy: "Leading scene video prompts" },
-    { key: "image_prompt", icon: "prompts", title: "Image Prompts", copy: "Remaining scene image prompts" },
+    { key: "scene_planning", icon: "scene", title: "Scene Planning" },
+    { key: "visual_bible", icon: "bible", title: "Visual Bible" },
+    { key: "video_prompt", icon: "prompts", title: "Video Prompts" },
+    { key: "image_prompt", icon: "prompts", title: "Image Prompts" },
   ];
 
   const cards = stages.map((s) =>
     renderStageSetupCard({
       icon: s.icon,
       title: s.title,
-      copy: s.copy,
       providerId: "niche-" + s.key + "-provider",
       providerValue: project[s.key + "_provider"] || "claude",
       modelId: "niche-" + s.key + "-model",
@@ -3099,7 +3080,6 @@ function renderProviderConfigSection(project) {
         <button type="button" class="button button-primary button-small has-icon" data-save-provider-config="${esc(project.id)}">${iconContent("save", "Save")}</button>
       </div>
       <div class="provider-config-grid">${cards}</div>
-      <div class="notice" style="margin-top:12px;">Model fields accept manual ids, so newer CLI models do not have to wait for a dashboard update. OpenAI stage models refresh from the shared key in Settings.</div>
       <div style="margin-top:10px;">
         <label class="field" style="max-width:200px;">
           <span class="field-label">Leading video scenes</span>
@@ -4362,7 +4342,6 @@ function renderSettings() {
             ${renderStageSetupCard({
               icon: "scene",
               title: "Scene planning",
-              copy: "Default writer for scene structure.",
               providerId: "settings-scene",
               providerValue: settings.default_scene_planning_provider || "claude",
               modelId: "settings-scene-model",
@@ -4371,7 +4350,6 @@ function renderSettings() {
             ${renderStageSetupCard({
               icon: "bible",
               title: "Consistency guide",
-              copy: "Default writer for character, place, and object consistency.",
               providerId: "settings-bible",
               providerValue: settings.default_visual_bible_provider || "claude",
               modelId: "settings-bible-model",
@@ -4380,7 +4358,6 @@ function renderSettings() {
             ${renderStageSetupCard({
               icon: "play",
               title: "Video prompts",
-              copy: "Default writer for moving scenes.",
               providerId: "settings-video",
               providerValue: settings.default_video_prompt_provider || "codex",
               modelId: "settings-video-model",
@@ -4389,7 +4366,6 @@ function renderSettings() {
             ${renderStageSetupCard({
               icon: "prompts",
               title: "Image prompts",
-              copy: "Default writer for still scenes.",
               providerId: "settings-image",
               providerValue: settings.default_image_prompt_provider || "codex",
               modelId: "settings-image-model",
@@ -4398,7 +4374,7 @@ function renderSettings() {
             ${renderSetupCard({
               icon: "timeline",
               title: "Output strategy",
-              copy: "How many opening scenes should start as video before the rest become image prompts.",
+              copy: "",
               tone: "warn",
               fields: `
                 <label class="field">
@@ -4408,12 +4384,11 @@ function renderSettings() {
               `,
             })}
           </div>
-          <div class="notice" style="margin-top:14px;">CLI model catalogs can drift as local tools update. Use the suggestions when they help, but every stage model field also accepts manual ids.</div>
           <div class="workflow-setup-grid workflow-setup-grid-compact">
             ${renderSetupCard({
               icon: "refresh",
               title: "OpenAI workflow access",
-              copy: "Shared key for scene planning, consistency guide, and prompt stages whenever their provider is set to OpenAI API.",
+              copy: "",
               tone: stageProviderOpenAi.hasSavedApiKey ? "active" : "warn",
               fields: `
                 <label class="field">
@@ -4437,7 +4412,7 @@ function renderSettings() {
             ${renderSetupCard({
               icon: "prompts",
               title: "Prompt batches",
-              copy: "How many scenes each prompt-generation run should handle at once.",
+              copy: "",
               fields: `
                 <label class="field">
                   <span class="field-label">Batch size</span>
@@ -4448,7 +4423,7 @@ function renderSettings() {
             ${renderSetupCard({
               icon: "timeline",
               title: "Planning chunk size",
-              copy: "How many subtitle seconds to feed into each planning chunk.",
+              copy: "",
               fields: `
                 <label class="field">
                   <span class="field-label">Chunk seconds</span>
@@ -4459,7 +4434,7 @@ function renderSettings() {
             ${renderSetupCard({
               icon: "rerun",
               title: "Planning overlap",
-              copy: "How many seconds neighboring chunks should overlap for safer merges.",
+              copy: "",
               fields: `
                 <label class="field">
                   <span class="field-label">Overlap seconds</span>
@@ -4484,19 +4459,13 @@ function renderSettings() {
         </div>
         <div class="provider-grid">
           <article class="summary-card">
-            <div class="metric-label">Codex (API)</div>
+            <div class="metric-label">OpenAI API</div>
             <div class="metric-value">${esc(openaiHealth.has_api_key ? "Ready" : "Key needed")}</div>
-            <div class="metric-copy">Uses the OpenAI API. Shares the same key as the OpenAI provider.</div>
+            ${openaiHealth.has_api_key && openaiHealth.model_count ? `<div class="metric-copy">${esc(openaiHealth.model_count)} model${openaiHealth.model_count === 1 ? "" : "s"} cached</div>` : ""}
           </article>
           <article class="summary-card">
             <div class="metric-label">Claude CLI</div>
-            <div class="metric-value">${esc(state.health?.providers?.claude?.logged_in ? "Ready" : state.health?.providers?.claude?.available ? "Login" : "Missing")}</div>
-            <div class="metric-copy">Used by default for planning and world-building steps.</div>
-          </article>
-          <article class="summary-card">
-            <div class="metric-label">OpenAI API</div>
-            <div class="metric-value">${esc(openaiHealth.has_api_key ? "Ready" : "Key needed")}</div>
-            <div class="metric-copy">${esc(openaiHealth.has_api_key ? `${openaiHealth.model_count || 0} cached stage model option${(openaiHealth.model_count || 0) === 1 ? "" : "s"}.` : "Shared key for workflow stages is not saved yet.")}</div>
+            <div class="metric-value">${esc(state.health?.providers?.claude?.logged_in ? "Ready" : state.health?.providers?.claude?.available ? "Login needed" : "Not installed")}</div>
           </article>
         </div>
         <div class="badge-row" style="margin-top:16px;">
@@ -4504,7 +4473,6 @@ function renderSettings() {
           ${healthBadge(`MFA ${state.health?.alignment?.mfa ? "ready" : "check"}`, state.health?.alignment?.mfa ? true : "warn")}
           ${healthBadge(`WhisperX ${state.health?.alignment?.whisperx ? "ready" : "check"}`, state.health?.alignment?.whisperx ? true : "warn")}
         </div>
-        <div class="notice" style="margin-top:18px;">Templates now live on their own page so settings stays focused on actual runtime defaults.</div>
       </section>
     </section>
   `;

@@ -676,9 +676,9 @@ body[data-theme="light"] .loading-inline {
 
 .metric-value {
   margin-top: 10px;
-  font-size: clamp(28px, 3vw, 34px);
+  font-size: clamp(22px, 2.4vw, 28px);
   font-weight: 700;
-  letter-spacing: -0.06em;
+  letter-spacing: -0.04em;
 }
 
 .metric-copy {
@@ -1112,7 +1112,7 @@ body[data-theme="light"] .board-modal-shell {
 .workflow-setup-grid {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
 
 .workflow-setup-grid-compact {
@@ -1186,6 +1186,10 @@ body[data-theme="light"] .board-modal-shell {
   font-size: 13px;
   line-height: 1.5;
   color: var(--muted);
+}
+
+.setup-card-copy:empty {
+  display: none;
 }
 
 .setup-card-fields {
