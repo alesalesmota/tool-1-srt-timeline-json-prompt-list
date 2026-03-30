@@ -20,7 +20,32 @@ To take a single script and a set of target languages, and produce a ZIP archive
 
 ---
 
-## 2. The Workflow (10-Stage Pipeline)
+## 2. Application Hierarchy & Navigation
+Google Stitch must design a navigation experience that reflects the following strictly nested hierarchy:
+
+### Layer 1: Niche Projects (Global Level)
+The top-level entry point (e.g., "Religion Channel", "World History").
+- **Navigation**: Users select a Niche from their project library.
+- **Role**: Defines the "Environment." All voice profiles, translation models, and target languages are configured here and inherited by child episodes.
+
+### Layer 2: The Kanban Dashboard (Niche Level)
+Once inside a Niche, the user arrives at its dedicated **Kanban Dashboard**.
+- **Role**: This is the "Command Center." It shows all episodes currently in production for this specific niche.
+- **Interaction**: Users drag/drop cards or monitor real-time progress across the 7 board columns (Draft, Queued, Running, etc.).
+
+### Layer 3: Episodes (Content Level)
+An **Episode** is the core execution unit. It is created directly on the Kanban board.
+- **Input**: Every episode begins with a single **Source Script**.
+- **The Engine**: The episode is where the 10-stage "Asset Factory" runs.
+
+### Layer 4: The Multi-Channel Workflow (Execution Level)
+Inside the **Episode Detail (Overlay)**, the workflow takes that single script and branches out:
+- **One Script → Multiple Channels**: It generates translated scripts, narrations, and timelines for every target language simultaneously.
+- **Structural Assets**: It also generates the visual "prompts" used to create the final videos in external tools.
+
+---
+
+## 3. The Workflow (10-Stage Pipeline)
 Every "Episode" in the system follows a rigid, sequential state machine. Users move episodes through these columns on a Kanban board.
 
 | # | Stage | Description | Tech/Service |
@@ -38,7 +63,7 @@ Every "Episode" in the system follows a rigid, sequential state machine. Users m
 
 ---
 
-## 3. Technology Stack
+## 4. Technology Stack
 - **Backend**: Python 3.10+ with **FastAPI**.
 - **Frontend**: Vanilla JavaScript (ES6+), Modern CSS (Vanilla, zero frameworks), Responsive Design.
 - **Database**: SQLite with WAL (Write-Ahead Logging) for high-frequency state updates.
@@ -48,7 +73,7 @@ Every "Episode" in the system follows a rigid, sequential state machine. Users m
 
 ---
 
-## 4. Architecture & State Machine
+## 5. Architecture & State Machine
 The system uses a **Serialized Background Worker** model:
 1. The **Service Layer** (`Tool1Service`) manages the state in SQLite.
 2. A **Background Thread** polls for "Queued" episodes and executes the 10 stages sequentially.
@@ -65,7 +90,7 @@ The system uses a **Serialized Background Worker** model:
 
 ---
 
-## 5. Information & Data Entities
+## 6. Information & Data Entities
 To design the UI, you must understand these four pillars of data:
 
 ### A. Niche Projects (The Buckets)
@@ -90,7 +115,7 @@ Every time the AI runs (e.g., Scene Planning), a record is created.
 
 ---
 
-## 6. Important Interactions (Design Touchpoints)
+## 7. Important Interactions (Design Touchpoints)
 1. **The Kanban Board**:
    - Visualizing the throughput of episodes.
    - Live progress bars showing "TTS 42/100 lines complete."
@@ -109,7 +134,7 @@ Every time the AI runs (e.g., Scene Planning), a record is created.
 
 ---
 
-## 7. Telemetry & Tracking
+## 8. Telemetry & Tracking
 What the system tracks and the UI must display:
 - **TTS Throughput**: CPU vs GPU status, queue depth, and chunk-by-chunk generation speed.
 - **Provider Health**: Are OpenAI and the local TTS worker "Online"?
@@ -118,7 +143,7 @@ What the system tracks and the UI must display:
 
 ---
 
-## 8. UX & Design Aesthetics (Target for Google Stitch)
+## 9. UX & Design Aesthetics (Target for Google Stitch)
 The application must transition from its current functional state to a **Premium Industrial Brutalist** experience.
 
 ### A. The Marathon Aesthetic
