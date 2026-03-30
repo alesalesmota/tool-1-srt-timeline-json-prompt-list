@@ -118,12 +118,26 @@ What the system tracks and the UI must display:
 
 ---
 
-## 8. UX Philosophy (Recent Overhaul)
-The application recently moved from a "Basic Dashboard" to a **"Professional Tool"** aesthetic:
-- **Information Density**: Maximum data, minimum fluff.
-- **Immediate Response**: Clicking an episode opens it *instantly* with a skeletal loader, rather than waiting for server data.
-- **Tactile Feedback**: Hover effects on cards, subtle glows for status changes, and micro-animations for progress.
-- **Compact Controls**: Sidebars collapse, and quick-actions are icon-only with rich tooltips to save screen real estate.
+## 8. UX & Design Aesthetics (Target for Google Stitch)
+The application must transition from its current functional state to a **Premium Industrial Brutalist** experience.
+
+### A. The Marathon Aesthetic
+Drawing deep inspiration from the **Marathon (Bungie)** visual language:
+- **Atmosphere**: Moody, high-contrast, and oppressive but incredibly sharp.
+- **Geometry**: Heavy blocks, raw edges, and visible structural "pipes" or "wiring" in the UI.
+- **Micro-Detail**: Tiny technical labels, coordinate readings, and status codes that make the app feel like a real industrial terminal.
+
+### B. Color Palette (High-Contrast Neon)
+- **Primary Theme**: Deep **Dark Mode** (Blacks/Off-blacks, zero pure-white backgrounds).
+- **Accents**: 
+  - **Yellow Neon**: Primary branding and action-related highlights.
+  - **Green Neon**: Positive state, system health, and "Go" actions.
+  - **Red**: Critically reserved for Errors, Stops, and items that need immediate attention.
+
+### C. Industrial Brutalism
+- **Typography**: Heavily functional, monospaced or brutalist sans-serifs (e.g., *Inter, Roboto Mono, JetBrains Mono*).
+- **Layout**: Clear, rigid grids with heavy borders or high-contrast separation. No soft shadows; use hard edges and high-contrast outlines.
+- **Interactions**: Tactile "switch-like" buttons, binary transitions, and fast, glitch-free animations that feel mechanical.
 
 ---
 **End of Specification.**
