@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 import httpx
 import json
+import logging
 import os
 import re
 import shutil
@@ -87,6 +88,8 @@ from .validators import (
     visual_bible_output_schema,
 )
 
+
+log = logging.getLogger(__name__)
 
 QUEUE_PROVIDER_TARGETS = (
     ("consistency_guide", "Consistency Guide", "visual_bible_provider", "visual_bible_model"),
@@ -3433,6 +3436,7 @@ class Tool1Service:
         schema = video_prompt_output_schema() if asset_type == "video" else image_prompt_output_schema()
         payloads: list[dict[str, Any]] = []
 
+        max_batch_retries = 2
         for batch_index, batch in enumerate(batches):
             mode_rules = (
                 "Use the structured JSON fields scene_id, subject, setting, action, camera, look, lighting, rules, character_refs, and prompt."
@@ -3465,53 +3469,81 @@ class Tool1Service:
                 f"Prompt context:\n{json.dumps(prompt_context, ensure_ascii=False, indent=2)}\n\n"
                 f"Batch payload:\n{json.dumps(batch, ensure_ascii=False, indent=2)}"
             )
-            batch_dir = ensure_dir(workspace / "runs" / stage / f"batch-{batch['batch_id']:03d}")
-            run_id = self._start_structured_stage_run(
-                episode_id=episode_id,
-                stage="video_prompt_generation" if asset_type == "video" else "image_prompt_generation",
-                provider=provider,
-                template_hash=template.get("hash"),
-                workdir=workspace,
-                artifact_dir=batch_dir,
-                model=model,
-                schema=schema,
-            )
-            result: dict[str, Any] | None = None
-            parsed_output_path: str | None = None
-            try:
-                result = self.cli_runner.run_structured(
+            expected_count = len(batch["scenes"])
+            batch_accepted = False
+            for attempt in range(1 + max_batch_retries):
+                attempt_suffix = f"-retry{attempt}" if attempt > 0 else ""
+                batch_dir = ensure_dir(workspace / "runs" / stage / f"batch-{batch['batch_id']:03d}{attempt_suffix}")
+                run_id = self._start_structured_stage_run(
+                    episode_id=episode_id,
+                    stage="video_prompt_generation" if asset_type == "video" else "image_prompt_generation",
                     provider=provider,
-                    model=model,
-                    api_key=self._stage_provider_api_key(provider),
-                    system_prompt=template["body"],
-                    user_prompt=user_prompt,
-                    schema=schema,
+                    template_hash=template.get("hash"),
                     workdir=workspace,
                     artifact_dir=batch_dir,
+                    model=model,
+                    schema=schema,
                 )
-                parsed_output_path = str(write_json(batch_dir / "parsed.json", result["parsed"]))
-                payloads.append(result["parsed"])
-                self.db.finish_stage_run(
-                    run_id,
-                    status="completed",
-                    exit_code=0,
-                    parsed_output_path=parsed_output_path,
-                    command_payload=result.get("command_payload"),
-                    stdout_path=result.get("stdout_path"),
-                    stderr_path=result.get("stderr_path"),
+                result: dict[str, Any] | None = None
+                parsed_output_path: str | None = None
+                try:
+                    result = self.cli_runner.run_structured(
+                        provider=provider,
+                        model=model,
+                        api_key=self._stage_provider_api_key(provider),
+                        system_prompt=template["body"],
+                        user_prompt=user_prompt,
+                        schema=schema,
+                        workdir=workspace,
+                        artifact_dir=batch_dir,
+                    )
+                    parsed_output_path = str(write_json(batch_dir / "parsed.json", result["parsed"]))
+                    received_prompts = result["parsed"].get("prompts", [])
+                    received_count = len(received_prompts) if isinstance(received_prompts, list) else 0
+                    if received_count != expected_count and attempt < max_batch_retries:
+                        log.warning(
+                            "Batch %d attempt %d: expected %d prompts, got %d — retrying",
+                            batch["batch_id"], attempt + 1, expected_count, received_count,
+                        )
+                        self.db.finish_stage_run(
+                            run_id,
+                            status="completed",
+                            exit_code=0,
+                            parsed_output_path=parsed_output_path,
+                            command_payload=result.get("command_payload"),
+                            stdout_path=result.get("stdout_path"),
+                            stderr_path=result.get("stderr_path"),
+                        )
+                        continue
+                    payloads.append(result["parsed"])
+                    batch_accepted = True
+                    self.db.finish_stage_run(
+                        run_id,
+                        status="completed",
+                        exit_code=0,
+                        parsed_output_path=parsed_output_path,
+                        command_payload=result.get("command_payload"),
+                        stdout_path=result.get("stdout_path"),
+                        stderr_path=result.get("stderr_path"),
+                    )
+                    break
+                except Exception as exc:
+                    self.db.finish_stage_run(
+                        run_id,
+                        status="failed",
+                        exit_code=1,
+                        parsed_output_path=parsed_output_path,
+                        error_text=str(exc),
+                        command_payload=result.get("command_payload") if result else None,
+                        stdout_path=result.get("stdout_path") if result else None,
+                        stderr_path=result.get("stderr_path") if result else None,
+                    )
+                    raise
+            if not batch_accepted:
+                raise ValueError(
+                    f"Batch {batch['batch_id']}: expected {expected_count} prompts but received "
+                    f"{received_count} after {max_batch_retries + 1} attempts."
                 )
-            except Exception as exc:
-                self.db.finish_stage_run(
-                    run_id,
-                    status="failed",
-                    exit_code=1,
-                    parsed_output_path=parsed_output_path,
-                    error_text=str(exc),
-                    command_payload=result.get("command_payload") if result else None,
-                    stdout_path=result.get("stdout_path") if result else None,
-                    stderr_path=result.get("stderr_path") if result else None,
-                )
-                raise
 
         normalized_entries, _ = normalize_prompt_payloads(scenes, payloads or [{"prompts": []}])
         normalized_entries = self._enrich_prompt_entries(normalized_entries, visual_bible)
