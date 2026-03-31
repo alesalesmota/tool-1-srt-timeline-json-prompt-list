@@ -5701,11 +5701,20 @@ document.addEventListener("click", async (event) => {
     if (target.dataset.finalizeExport) {
       const episodeId = target.dataset.finalizeExport;
       if (!confirm("Finalize and generate export ZIP?")) return;
-      resetEpisodeSupplementalState(episodeId);
-      await api('/api/episodes/' + encodeURIComponent(episodeId) + '/finalize-export', { method: "POST" });
-      await refreshData();
-      renderApp();
-      setNotice("Export complete and ready for download.", "success");
+      target.disabled = true;
+      target.textContent = "Compacting files…";
+      setNotice("Generating export ZIP — this may take a moment for large episodes.", "info");
+      try {
+        resetEpisodeSupplementalState(episodeId);
+        await api('/api/episodes/' + encodeURIComponent(episodeId) + '/finalize-export', { method: "POST" });
+        await refreshData();
+        renderApp();
+        setNotice("Export complete! Click 'Download ZIP' to save.", "success");
+      } catch (innerErr) {
+        target.disabled = false;
+        target.textContent = "Finalize & Export";
+        throw innerErr;
+      }
       return;
     }
     if (target.dataset.downloadExport) {
