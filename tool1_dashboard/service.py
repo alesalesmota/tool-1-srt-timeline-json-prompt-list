@@ -3751,6 +3751,7 @@ class Tool1Service:
 
                     mapped["start"] = round(mapped_start, 3)
                     mapped["end"] = round(mapped_end, 3)
+                    mapped["duration"] = round(mapped_end - mapped_start, 3)
                     lang_scenes.append(mapped)
 
                 lang_timeline_path = workspace / f"timeline_{lang}.json"
