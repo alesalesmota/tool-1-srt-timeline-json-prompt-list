@@ -136,6 +136,8 @@ const state = {
   isRefreshingData: false,
   lastEpisodeFilesLoadedFor: null,
   lastEpisodeReviewLoadedFor: null,
+  cachedReviewData: null,
+  cachedReviewEpisodeId: null,
   projectConfigDisclosures: {
     projectId: null,
     panels: {
@@ -558,6 +560,10 @@ function resetEpisodeSupplementalState(episodeId = null) {
   }
   if (!episodeId || state.lastEpisodeReviewLoadedFor === episodeId) {
     state.lastEpisodeReviewLoadedFor = null;
+  }
+  if (!episodeId || state.cachedReviewEpisodeId === episodeId) {
+    state.cachedReviewData = null;
+    state.cachedReviewEpisodeId = null;
   }
   clearEpisodeWorkflowActionState(episodeId);
 }
@@ -3608,6 +3614,9 @@ function renderNicheProjectDetail() {
   syncProviderModelSelect("niche-video_prompt-provider", "niche-video_prompt-model");
   syncProviderModelSelect("niche-image_prompt-provider", "niche-image_prompt-model");
   if (state.episodeOverlayId && state.episodeDetail?.episode?.id === state.episodeOverlayId) {
+    // The overlay innerHTML was just recreated, so clear the review cache
+    // to ensure the review section gets repopulated.
+    state.lastEpisodeReviewLoadedFor = null;
     ensureEpisodeSupplementalDataLoaded(state.episodeOverlayId);
   }
 }
@@ -3896,6 +3905,9 @@ function renderEpisodeDetail() {
     ${state.modal.kind === "translation-preview" ? renderTranslationPreviewModal() : ""}
   `;
 
+  // The innerHTML replacement above destroyed any previously-loaded review
+  // content, so clear the cache flag so it gets reloaded.
+  state.lastEpisodeReviewLoadedFor = null;
   // Auto-load files
   ensureEpisodeSupplementalDataLoaded(episode.id);
 }
@@ -4164,14 +4176,60 @@ async function loadEpisodeFiles(episodeId) {
   }
 }
 
+function renderReviewSectionContent(container, episodeId, ep, data) {
+  const guideStr = data.consistency_guide ? JSON.stringify(data.consistency_guide, null, 2) : "{}";
+  const timelineStr = data.timeline_draft ? JSON.stringify(data.timeline_draft, null, 2) : "[]";
+  const promptStr = data.prompt_list || "";
+
+  const canEdit = ep.current_stage === "review" && ep.pipeline_status !== "done";
+  const readonlyAttr = canEdit ? "" : "readonly";
+
+  container.innerHTML = `
+    <div class="section-header" style="margin-bottom:12px;">
+      <div class="eyebrow">Phase 9: Review & Export</div>
+      <div class="button-row">
+        ${canEdit ? '<button type="button" class="button button-primary button-small has-icon" data-save-review="' + esc(episodeId) + '">' + iconContent("save", "Save Edits") + '</button>' : ''}
+        ${canEdit ? '<button type="button" class="button button-primary button-small has-icon" style="background:var(--success);color:var(--bg)" data-finalize-export="' + esc(episodeId) + '">' + iconContent("finalize", "Finalize & Export") + '</button>' : ''}
+        ${ep.pipeline_status === "done" || ep.current_stage === "export" ? '<button type="button" class="button button-primary button-small has-icon" data-download-export="' + esc(episodeId) + '">' + iconContent("download", "Download ZIP") + '</button>' : ''}
+      </div>
+    </div>
+
+    <div class="review-editors-grid">
+      <div class="editor-col">
+        <div class="eyebrow" style="margin-bottom:6px;">Consistency Guide (JSON)</div>
+        <textarea id="review-guide" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(guideStr)}</textarea>
+      </div>
+      <div class="editor-col">
+        <div class="eyebrow" style="margin-bottom:6px;">Timeline Editor (JSON)</div>
+        <textarea id="review-timeline" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(timelineStr)}</textarea>
+      </div>
+      <div class="editor-col">
+        <div class="eyebrow" style="margin-bottom:6px;">Prompt List</div>
+        <textarea id="review-prompts" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(promptStr)}</textarea>
+      </div>
+    </div>
+
+    <div style="margin-top:16px;">
+      <details class="run-detail-card">
+        <summary>
+          <div class="run-detail-head"><strong>Per-Language Timelines (Read-Only Preview)</strong> <span class="badge badge-small">${Object.keys(data.per_language_timelines || {}).length}</span></div>
+        </summary>
+        <div class="run-detail-body" style="max-height: 400px; overflow-y: auto;">
+          <pre class="run-output">${esc(JSON.stringify(data.per_language_timelines, null, 2))}</pre>
+        </div>
+      </details>
+    </div>
+  `;
+}
+
 async function loadReviewData(episodeId) {
   const container = $("episode-review-section");
   if (!container) return;
-  
+
   const detail = state.episodeDetail;
   if (!detail) return;
   const ep = detail.episode;
-  
+
   container.style.display = "block";
   if (!["review", "export", "done"].includes(ep.pipeline_status)) {
     const stage = stageLabel(ep.current_stage || ep.queued_from_stage || "consistency_guide");
@@ -4183,58 +4241,31 @@ async function loadReviewData(episodeId) {
     `;
     return;
   }
-  
+
+  // If we have cached data for this episode, render immediately from cache
+  if (state.cachedReviewData && state.cachedReviewEpisodeId === episodeId) {
+    renderReviewSectionContent(container, episodeId, ep, state.cachedReviewData);
+    return;
+  }
+
   container.innerHTML = '<p class="helper">Loading review data…</p>';
   try {
     const data = await api("/api/episodes/" + encodeURIComponent(episodeId) + "/review-data");
-    
-    const guideStr = data.consistency_guide ? JSON.stringify(data.consistency_guide, null, 2) : "{}";
-    const timelineStr = data.timeline_draft ? JSON.stringify(data.timeline_draft, null, 2) : "[]";
-    const promptStr = data.prompt_list || "";
-    
-    // Can edit if current stage is review and it hasn't successfully exported yet
-    const canEdit = ep.current_stage === "review" && ep.pipeline_status !== "done";
-    const readonlyAttr = canEdit ? "" : "readonly";
-    
-    container.innerHTML = `
-      <div class="section-header" style="margin-bottom:12px;">
-        <div class="eyebrow">Phase 9: Review & Export</div>
-        <div class="button-row">
-          ${canEdit ? '<button type="button" class="button button-primary button-small has-icon" data-save-review="' + esc(episodeId) + '">' + iconContent("save", "Save Edits") + '</button>' : ''}
-          ${canEdit ? '<button type="button" class="button button-primary button-small has-icon" style="background:var(--success);color:var(--bg)" data-finalize-export="' + esc(episodeId) + '">' + iconContent("finalize", "Finalize & Export") + '</button>' : ''}
-          ${ep.pipeline_status === "done" || ep.current_stage === "export" ? '<button type="button" class="button button-primary button-small has-icon" data-download-export="' + esc(episodeId) + '">' + iconContent("download", "Download ZIP") + '</button>' : ''}
-        </div>
-      </div>
-      
-      <div class="review-editors-grid">
-        <div class="editor-col">
-          <div class="eyebrow" style="margin-bottom:6px;">Consistency Guide (JSON)</div>
-          <textarea id="review-guide" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(guideStr)}</textarea>
-        </div>
-        <div class="editor-col">
-          <div class="eyebrow" style="margin-bottom:6px;">Timeline Editor (JSON)</div>
-          <textarea id="review-timeline" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(timelineStr)}</textarea>
-        </div>
-        <div class="editor-col">
-          <div class="eyebrow" style="margin-bottom:6px;">Prompt List</div>
-          <textarea id="review-prompts" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(promptStr)}</textarea>
-        </div>
-      </div>
 
-      <div style="margin-top:16px;">
-        <details class="run-detail-card">
-          <summary>
-            <div class="run-detail-head"><strong>Per-Language Timelines (Read-Only Preview)</strong> <span class="badge badge-small">${Object.keys(data.per_language_timelines || {}).length}</span></div>
-          </summary>
-          <div class="run-detail-body" style="max-height: 400px; overflow-y: auto;">
-            <pre class="run-output">${esc(JSON.stringify(data.per_language_timelines, null, 2))}</pre>
-          </div>
-        </details>
-      </div>
-    `;
-    
+    // Cache the fetched data so re-renders don't need another API call
+    state.cachedReviewData = data;
+    state.cachedReviewEpisodeId = episodeId;
+
+    // Guard: container may have been destroyed during the async fetch
+    const freshContainer = $("episode-review-section");
+    if (!freshContainer) return;
+
+    renderReviewSectionContent(freshContainer, episodeId, ep, data);
   } catch (err) {
-    container.innerHTML = '<p class="helper" style="color:var(--error);">' + esc(err.message) + '</p>';
+    const freshContainer = $("episode-review-section");
+    if (freshContainer) {
+      freshContainer.innerHTML = '<p class="helper" style="color:var(--error);">' + esc(err.message) + '</p>';
+    }
   }
 }
 
