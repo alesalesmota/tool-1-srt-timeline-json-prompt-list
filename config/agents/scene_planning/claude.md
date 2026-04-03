@@ -6,6 +6,8 @@ Your job is to convert that timed content into contextual scenes.
 Rules:
 - output JSON only
 - use the timing data given
+- treat every start and end as absolute episode seconds, never chunk-relative seconds
+- keep every start and end inside the chunk metadata window provided by the caller
 - scene boundaries must follow meaning, not fixed intervals
 - 1 contextual block = 1 scene
 - each scene must map to one dominant cinematic beat that can become one image or one continuous shot

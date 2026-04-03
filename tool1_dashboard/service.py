@@ -3652,6 +3652,8 @@ class Tool1Service:
                 "- return ordered, non-overlapping scenes only\n"
                 "- prefer scenes around 6 to 16 seconds\n"
                 "- treat 18 seconds as a soft ceiling unless the text strongly resists splitting\n"
+                "- every start and end must be absolute episode seconds, never chunk-relative seconds\n"
+                "- every start and end must stay inside this chunk's start_seconds to end_seconds window\n"
                 "- anchor boundaries to meaningful subtitle cue ranges\n"
                 "- do not decide image versus video here\n"
                 "- make each scene one dominant cinematic beat that can become one image or one continuous shot\n"
@@ -3688,7 +3690,11 @@ class Tool1Service:
                     artifact_dir=chunk_dir,
                 )
                 parsed_output_path = str(write_json(chunk_dir / "parsed.json", result["parsed"]))
-                scene_group, group_warnings = normalize_scene_payload(result["parsed"], chunk_id)
+                scene_group, group_warnings = normalize_scene_payload(
+                    result["parsed"],
+                    chunk_id,
+                    chunk_window=chunk_payload,
+                )
                 validation_path = str(write_json(chunk_dir / "validated.json", scene_group))
                 all_scene_groups.append(scene_group)
                 warnings.extend(group_warnings)
@@ -3723,7 +3729,6 @@ class Tool1Service:
             cues=cues,
         )
         timeline = apply_default_asset_types(timeline, config["leading_video_scene_count"])
-        report = validate_timeline(timeline)
         report["warnings"].extend(warnings)
         if report["errors"]:
             raise ValueError("; ".join(report["errors"]))

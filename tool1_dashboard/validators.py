@@ -10,6 +10,7 @@ ALLOWED_ASSET_TYPES = {"image", "video"}
 SCENE_SOFT_MAX_DURATION_SECONDS = 18.0
 SCENE_TARGET_DURATION_SECONDS = 14.0
 SCENE_MIN_DURATION_SECONDS = 4.0
+SCENE_CUE_COVERAGE_TOLERANCE_SECONDS = 3.0
 MANDATORY_PROMPT_RULES = (
     "no text",
     "no subtitles",
@@ -307,7 +308,46 @@ def _remaining_scenes_form_malformed_tail(scenes: list[Any], start_index: int) -
     return True
 
 
-def normalize_scene_payload(payload: dict[str, Any], source_chunk_id: int) -> tuple[list[dict[str, Any]], list[str]]:
+def _chunk_window_fields(chunk_window: dict[str, Any] | None) -> tuple[float, float, float]:
+    if not isinstance(chunk_window, dict):
+        return 0.0, 0.0, 0.0
+    start = float(chunk_window.get("start_seconds") or 0.0)
+    end = float(chunk_window.get("end_seconds") or 0.0)
+    duration = float(chunk_window.get("duration_seconds") or max(0.0, end - start))
+    return start, end, duration
+
+
+def _maybe_rebase_chunk_local_scenes(
+    scenes: list[dict[str, Any]],
+    *,
+    chunk_window: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], bool]:
+    chunk_start, _, chunk_duration = _chunk_window_fields(chunk_window)
+    if not scenes or chunk_start <= 1.0 or chunk_duration <= 0:
+        return scenes, False
+
+    min_start = min(float(scene["start"]) for scene in scenes)
+    max_end = max(float(scene["end"]) for scene in scenes)
+    if min_start >= (chunk_start - 5.0):
+        return scenes, False
+    if max_end > (chunk_duration + 3.0):
+        return scenes, False
+
+    rebased: list[dict[str, Any]] = []
+    for scene in scenes:
+        updated = dict(scene)
+        updated["start"] = round(float(scene["start"]) + chunk_start, 3)
+        updated["end"] = round(float(scene["end"]) + chunk_start, 3)
+        updated["duration"] = round(float(updated["end"]) - float(updated["start"]), 3)
+        rebased.append(updated)
+    return rebased, True
+
+
+def normalize_scene_payload(
+    payload: dict[str, Any],
+    source_chunk_id: int,
+    chunk_window: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     scenes = payload.get("scenes")
     if not isinstance(scenes, list):
         raise ValueError("Scene output must contain a scenes array.")
@@ -365,6 +405,15 @@ def normalize_scene_payload(payload: dict[str, Any], source_chunk_id: int) -> tu
                 "notes": notes or None,
                 "_source_chunk_id": source_chunk_id,
             }
+        )
+    normalized, rebased = _maybe_rebase_chunk_local_scenes(
+        normalized,
+        chunk_window=chunk_window,
+    )
+    if rebased:
+        chunk_start, _, _ = _chunk_window_fields(chunk_window)
+        warnings.append(
+            f"Chunk {source_chunk_id} returned chunk-local timestamps and was rebased by +{round(chunk_start, 3)}s."
         )
     return normalized, warnings
 
@@ -684,6 +733,19 @@ def merge_scene_chunks(
     target_duration: float = SCENE_TARGET_DURATION_SECONDS,
     min_duration: float = SCENE_MIN_DURATION_SECONDS,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    rebased_groups = 0
+    if chunk_metadata and len(chunk_metadata) == len(scene_groups):
+        normalized_groups: list[list[dict[str, Any]]] = []
+        for group, chunk_window in zip(scene_groups, chunk_metadata):
+            rebased_group, was_rebased = _maybe_rebase_chunk_local_scenes(
+                group,
+                chunk_window=chunk_window,
+            )
+            normalized_groups.append(rebased_group)
+            if was_rebased:
+                rebased_groups += 1
+        scene_groups = normalized_groups
+
     selected, ownership_dropped = _select_owned_scenes(
         scene_groups,
         chunk_metadata,
@@ -714,15 +776,21 @@ def merge_scene_chunks(
                 **({"notes": scene["notes"]} if scene.get("notes") else {}),
             }
         )
-    report = validate_timeline(finalized)
+    report = validate_timeline(finalized, cues=cues)
     report["deduped_duplicates"] = deduped
     report["ownership_dropped"] = ownership_dropped
     report["split_insertions"] = split_insertions
     report["overlap_adjustments"] = overlap_adjustments
+    report["chunk_timestamp_rebases"] = rebased_groups
     return finalized, report
 
 
-def validate_timeline(scenes: list[dict[str, Any]]) -> dict[str, Any]:
+def validate_timeline(
+    scenes: list[dict[str, Any]],
+    *,
+    cues: list[SubtitleCue] | None = None,
+    coverage_tolerance_seconds: float = SCENE_CUE_COVERAGE_TOLERANCE_SECONDS,
+) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
     previous_end = None
@@ -743,12 +811,29 @@ def validate_timeline(scenes: list[dict[str, Any]]) -> dict[str, Any]:
         if duration > 18.0:
             warnings.append(f"Scene {index} is unusually long.")
         previous_end = end
+    cue_head_gap = 0.0
+    cue_tail_gap = 0.0
+    if scenes and cues:
+        first_cue_start = round(cues[0].start_ms / 1000.0, 3)
+        last_cue_end = round(cues[-1].end_ms / 1000.0, 3)
+        cue_head_gap = round(float(scenes[0]["start"]) - first_cue_start, 3)
+        cue_tail_gap = round(last_cue_end - float(scenes[-1]["end"]), 3)
+        if cue_head_gap > coverage_tolerance_seconds:
+            errors.append(
+                f"Scene coverage starts {cue_head_gap:.3f}s after the first cue."
+            )
+        if cue_tail_gap > coverage_tolerance_seconds:
+            errors.append(
+                f"Scene coverage ends {cue_tail_gap:.3f}s before the last cue."
+            )
     return {
         "status": "valid" if not errors else "invalid",
         "errors": errors,
         "warnings": warnings,
         "scene_count": len(scenes),
         "total_duration": round(float(scenes[-1]["end"]) - float(scenes[0]["start"]), 3) if scenes else 0.0,
+        "cue_head_gap_seconds": cue_head_gap,
+        "cue_tail_gap_seconds": cue_tail_gap,
     }
 
 

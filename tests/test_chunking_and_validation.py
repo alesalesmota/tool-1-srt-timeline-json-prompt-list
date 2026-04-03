@@ -161,6 +161,92 @@ class ChunkingValidationTests(unittest.TestCase):
         self.assertEqual([scene["text"] for scene in scenes], ["Opening line", "Next line"])
         self.assertTrue(any("malformed trailing scenes" in warning for warning in warnings))
 
+    def test_normalize_scene_payload_rebases_chunk_local_timestamps(self) -> None:
+        scenes, warnings = normalize_scene_payload(
+            {
+                "scenes": [
+                    {
+                        "start": 0.0,
+                        "end": 12.0,
+                        "duration": 12.0,
+                        "text": "Late section opens",
+                        "notes": "real scene",
+                    },
+                    {
+                        "start": 12.0,
+                        "end": 28.0,
+                        "duration": 16.0,
+                        "text": "Late section continues",
+                        "notes": "real scene",
+                    },
+                ]
+            },
+            10,
+            chunk_window={"chunk_id": 10, "start_seconds": 2970.0, "end_seconds": 3330.0, "duration_seconds": 360.0},
+        )
+        self.assertEqual((scenes[0]["start"], scenes[0]["end"]), (2970.0, 2982.0))
+        self.assertEqual((scenes[1]["start"], scenes[1]["end"]), (2982.0, 2998.0))
+        self.assertTrue(any("rebased" in warning for warning in warnings))
+
+    def test_merge_scene_chunks_rebases_relative_late_chunk_and_reaches_last_cue(self) -> None:
+        scenes, report = merge_scene_chunks(
+            [
+                [
+                    {
+                        "start": 3300.0,
+                        "end": 3330.0,
+                        "duration": 30.0,
+                        "text": "Late section",
+                        "asset_type": "image",
+                        "_source_chunk_id": 10,
+                    }
+                ],
+                [
+                    {
+                        "start": 30.0,
+                        "end": 61.6,
+                        "duration": 31.6,
+                        "text": "Final section",
+                        "asset_type": "image",
+                        "_source_chunk_id": 11,
+                    }
+                ],
+            ],
+            chunk_metadata=[
+                {"chunk_id": 10, "start_seconds": 2970.0, "end_seconds": 3330.0, "duration_seconds": 360.0},
+                {"chunk_id": 11, "start_seconds": 3300.0, "end_seconds": 3361.6, "duration_seconds": 61.6},
+            ],
+            overlap_seconds=30.0,
+            cues=[
+                SubtitleCue(index=1, start_ms=3300000, end_ms=3330000, text="Late section."),
+                SubtitleCue(index=2, start_ms=3330000, end_ms=3361600, text="Final section."),
+            ],
+        )
+        self.assertEqual(scenes[-1]["end"], 3361.6)
+        self.assertEqual(report["status"], "valid")
+        self.assertEqual(report["chunk_timestamp_rebases"], 1)
+        self.assertEqual(report["cue_tail_gap_seconds"], 0.0)
+
+    def test_timeline_validation_fails_when_tail_cues_are_uncovered(self) -> None:
+        report = validate_timeline(
+            [
+                {
+                    "scene_id": "scene_001",
+                    "start": 0.0,
+                    "end": 8.0,
+                    "duration": 8.0,
+                    "text": "Opening",
+                    "asset_type": "image",
+                }
+            ],
+            cues=[
+                SubtitleCue(index=1, start_ms=0, end_ms=8000, text="Opening."),
+                SubtitleCue(index=2, start_ms=8000, end_ms=16000, text="Missing tail."),
+            ],
+        )
+        self.assertEqual(report["status"], "invalid")
+        self.assertTrue(any("before the last cue" in error for error in report["errors"]))
+
     def test_visual_bible_normalization_requires_core_sections(self) -> None:
         normalized, report = normalize_visual_bible(
             {
