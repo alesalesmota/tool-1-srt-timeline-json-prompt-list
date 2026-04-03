@@ -240,6 +240,16 @@ class Tool1Database:
                 "episodes",
                 {"pause_requested": "INTEGER NOT NULL DEFAULT 0"},
             )
+            self._ensure_columns(
+                connection,
+                "niche_projects",
+                {
+                    "source_channel_name": "TEXT NOT NULL DEFAULT ''",
+                    "language_channel_names": "TEXT NOT NULL DEFAULT '{}'",
+                    "channel_replace_prompt": "INTEGER NOT NULL DEFAULT 1",
+                    "channel_replace_post": "INTEGER NOT NULL DEFAULT 1",
+                },
+            )
             # Create index after ensuring column exists
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_stage_runs_episode ON stage_runs(episode_id)"

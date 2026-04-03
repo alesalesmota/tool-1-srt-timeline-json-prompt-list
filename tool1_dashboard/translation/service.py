@@ -54,6 +54,8 @@ class TranslationService:
         max_words_per_chunk: int = 800,
         context_tail_words: int = 200,
         channel_name: str = "",
+        source_channel_name: str = "",
+        target_channel_name: str = "",
     ) -> TranslationResult:
         """Translate a full script, chunk by chunk.
 
@@ -93,6 +95,8 @@ class TranslationService:
                 chunk_index=chunk.index,
                 total_chunks=total_chunks,
                 channel_name=channel_name,
+                source_channel_name=source_channel_name,
+                target_channel_name=target_channel_name,
             )
 
             try:

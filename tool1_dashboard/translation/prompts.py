@@ -18,6 +18,7 @@ DEFAULT_TRANSLATION_PROMPT = (
     "5. Aim to keep the translated text approximately the same length as the original\n"
     "6. If the text contains names, brands, or technical terms, keep them as-is\n"
     "7. Output ONLY the translated text — no explanations, no headers\n"
+    "{channel_name_instruction}"
     "{chunk_note}"
     "{context_section}\n"
     "\n"
@@ -34,6 +35,8 @@ def build_translation_prompt(
     chunk_index: int,
     total_chunks: int,
     channel_name: str = "",
+    source_channel_name: str = "",
+    target_channel_name: str = "",
     template: str | None = None,
 ) -> str:
     """Build a translation prompt with context and chunk metadata.
@@ -50,9 +53,20 @@ def build_translation_prompt(
     else:
         context_section = ""
 
+    rule_offset = 0
+    if source_channel_name and target_channel_name:
+        channel_name_instruction = (
+            f'8. IMPORTANT: Whenever the text mentions the channel name '
+            f'"{source_channel_name}", replace it with "{target_channel_name}" '
+            f'in your translation\n'
+        )
+        rule_offset = 1
+    else:
+        channel_name_instruction = ""
+
     if total_chunks > 1:
         chunk_note = (
-            f"8. This is chunk {chunk_index + 1} of {total_chunks} "
+            f"{8 + rule_offset}. This is chunk {chunk_index + 1} of {total_chunks} "
             "— maintain consistency with the context provided\n"
         )
     else:
@@ -62,6 +76,7 @@ def build_translation_prompt(
         source_lang=source_lang,
         target_lang=target_lang,
         channel_name=channel_name,
+        channel_name_instruction=channel_name_instruction,
         chunk_note=chunk_note,
         context_section=context_section,
         text=chunk,

@@ -295,6 +295,9 @@ class Tool1Service:
         payload["configured_languages"] = normalized_languages
         payload["language_voice_profiles"] = self._parse_json_dict(payload.get("language_voice_profiles"))
         payload["language_translation_profiles"] = self._parse_json_dict(payload.get("language_translation_profiles"))
+        payload["language_channel_names"] = self._parse_json_dict(payload.get("language_channel_names"))
+        payload["channel_replace_prompt"] = bool(int(payload.get("channel_replace_prompt", 1) or 1))
+        payload["channel_replace_post"] = bool(int(payload.get("channel_replace_post", 1) or 1))
         return payload
 
     def _hydrate_episode_record(self, episode: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -2080,9 +2083,12 @@ class Tool1Service:
             fields["configured_languages"] = normalized_languages
 
         # Serialize JSON fields
-        for key in ("configured_languages", "language_voice_profiles", "language_translation_profiles"):
+        for key in ("configured_languages", "language_voice_profiles", "language_translation_profiles", "language_channel_names"):
             if key in fields and not isinstance(fields[key], str):
                 fields[key] = json.dumps(fields[key])
+        for bool_key in ("channel_replace_prompt", "channel_replace_post"):
+            if bool_key in fields and not isinstance(fields[bool_key], (int, str)):
+                fields[bool_key] = int(bool(fields[bool_key]))
         fields["updated_at"] = utc_now()
         self.db.update_niche_project(project_id, **fields)
         return {"updated": True}
@@ -2417,6 +2423,10 @@ class Tool1Service:
         episode = self.db.get_episode(episode_id)
         project = self.db.get_niche_project(episode["niche_project_id"])
         translation_profiles = json.loads(project.get("language_translation_profiles") or "{}")
+        source_channel_name = str(project.get("source_channel_name") or "").strip()
+        language_channel_names = json.loads(project.get("language_channel_names") or "{}")
+        enable_prompt = bool(int(project.get("channel_replace_prompt", 1) or 1))
+        enable_post = bool(int(project.get("channel_replace_post", 1) or 1))
         settings = self._global_settings()
         workspace = self._episode_workspace(episode)
 
@@ -2440,6 +2450,7 @@ class Tool1Service:
 
         self.db.update_episode_language_status(episode_id, lang, translation_status="running")
         try:
+            target_channel = language_channel_names.get(lang, "")
             svc = TranslationService()
             result = asyncio.run(svc.translate_script(
                 source_script=episode["script_text"],
@@ -2450,6 +2461,8 @@ class Tool1Service:
                 model=profile["model"],
                 max_words_per_chunk=settings.get("translation_chunk_max_words", 800),
                 context_tail_words=settings.get("translation_context_tail_words", 200),
+                source_channel_name=source_channel_name if enable_prompt else "",
+                target_channel_name=target_channel if enable_prompt else "",
             ))
             write_json(workspace / f"translation_log_{lang}.json", [
                 {
@@ -2463,6 +2476,11 @@ class Tool1Service:
                 for cr in result.chunk_results
             ])
             translated_script = self._validated_translation_script(result, language_code=lang)
+            if enable_post and source_channel_name and target_channel:
+                translated_script = re.sub(
+                    re.escape(source_channel_name), target_channel,
+                    translated_script, flags=re.IGNORECASE,
+                )
             translated_path = workspace / f"script_{lang}.txt"
             write_text(translated_path, translated_script)
             self.db.update_episode_language_status(
@@ -2943,6 +2961,10 @@ class Tool1Service:
         workspace = self._episode_workspace(episode)
         project = self.db.get_niche_project(episode["niche_project_id"])
         translation_profiles = json.loads(project.get("language_translation_profiles") or "{}")
+        source_channel_name = str(project.get("source_channel_name") or "").strip()
+        language_channel_names = json.loads(project.get("language_channel_names") or "{}")
+        enable_prompt = bool(int(project.get("channel_replace_prompt", 1) or 1))
+        enable_post = bool(int(project.get("channel_replace_post", 1) or 1))
         settings = self._global_settings()
         source_script = episode["script_text"]
 
@@ -2985,6 +3007,7 @@ class Tool1Service:
 
             self.db.update_episode_language_status(episode_id, lang, translation_status="running")
             try:
+                target_channel = language_channel_names.get(lang, "")
                 translation_svc = TranslationService()
                 result = asyncio.run(translation_svc.translate_script(
                     source_script=source_script,
@@ -2996,6 +3019,8 @@ class Tool1Service:
                     master_scenes=master_scenes,
                     max_words_per_chunk=settings.get("translation_chunk_max_words", 800),
                     context_tail_words=settings.get("translation_context_tail_words", 200),
+                    source_channel_name=source_channel_name if enable_prompt else "",
+                    target_channel_name=target_channel if enable_prompt else "",
                 ))
                 chunk_log = [
                     {
@@ -3010,6 +3035,11 @@ class Tool1Service:
                 ]
                 write_json(workspace / f"translation_log_{lang}.json", chunk_log)
                 translated_script = self._validated_translation_script(result, language_code=lang)
+                if enable_post and source_channel_name and target_channel:
+                    translated_script = re.sub(
+                        re.escape(source_channel_name), target_channel,
+                        translated_script, flags=re.IGNORECASE,
+                    )
                 translated_path = workspace / f"script_{lang}.txt"
                 write_text(translated_path, translated_script)
 

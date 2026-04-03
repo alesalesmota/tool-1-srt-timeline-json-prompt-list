@@ -118,6 +118,10 @@ class NicheProjectUpdateRequest(BaseModel):
     video_prompt_model: str | None = None
     image_prompt_model: str | None = None
     leading_video_scene_count: int | None = None
+    source_channel_name: str | None = None
+    language_channel_names: dict[str, str] | None = None
+    channel_replace_prompt: bool | None = None
+    channel_replace_post: bool | None = None
 
 
 class BatchQueueRequest(BaseModel):

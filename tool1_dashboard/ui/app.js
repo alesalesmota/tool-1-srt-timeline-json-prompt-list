@@ -3015,6 +3015,10 @@ function renderLanguageConfigSection(project, voiceProfiles, translationProfiles
   const langs = project.configured_languages || [];
   const vps = project.language_voice_profiles || {};
   const tps = project.language_translation_profiles || {};
+  const cns = project.language_channel_names || {};
+  const sourceChannel = project.source_channel_name || "";
+  const replacePrompt = project.channel_replace_prompt !== false && project.channel_replace_prompt !== 0;
+  const replacePost = project.channel_replace_post !== false && project.channel_replace_post !== 0;
   const allLangs = state.targetLanguages || [];
   const usedSet = new Set(langs);
 
@@ -3036,6 +3040,7 @@ function renderLanguageConfigSection(project, voiceProfiles, translationProfiles
       '<td><strong>' + esc(langLabel) + '</strong> <span class="helper">(' + esc(langCode) + ')</span></td>' +
       '<td><select class="lang-voice-select" data-lang="' + esc(langCode) + '"><option value="">— none —</option>' + vpOptions + '</select></td>' +
       '<td><select class="lang-trans-select" data-lang="' + esc(langCode) + '"><option value="">— none —</option>' + tpOptions + '</select></td>' +
+      '<td><input type="text" class="lang-channel-name" data-lang="' + esc(langCode) + '" value="' + esc(cns[langCode] || "") + '" placeholder="Channel name" /></td>' +
       '<td><button type="button" class="button button-danger button-small icon-only" data-remove-language="' + esc(langCode) + '" aria-label="Remove">' + iconContent("delete", "Remove", { iconOnly: true }) + '</button></td>' +
     '</tr>';
   }).join("");
@@ -3051,9 +3056,25 @@ function renderLanguageConfigSection(project, voiceProfiles, translationProfiles
         <div class="eyebrow">Language Configuration</div>
         <button type="button" class="button button-primary button-small has-icon" data-save-lang-config="${esc(project.id)}">${iconContent("save", "Save")}</button>
       </div>
+      <div class="channel-replace-config" style="margin-bottom:12px;">
+        <label class="field" style="max-width:300px;">
+          <span class="field-label">Source Channel Name</span>
+          <input id="source-channel-name" type="text" value="${esc(sourceChannel)}" placeholder="Original channel name" />
+        </label>
+        <div class="toggle-row" style="display:flex;gap:16px;margin-top:8px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input id="channel-replace-prompt" type="checkbox" ${replacePrompt ? "checked" : ""} />
+            <span class="field-label" style="margin:0;">Prompt-based replacement</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input id="channel-replace-post" type="checkbox" ${replacePost ? "checked" : ""} />
+            <span class="field-label" style="margin:0;">Post-translation replacement</span>
+          </label>
+        </div>
+      </div>
       <table class="lang-config-table">
-        <thead><tr><th>Language</th><th>Voice Profile</th><th>Translation Profile</th><th></th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="4" class="helper" style="text-align:center;">No languages configured.</td></tr>'}</tbody>
+        <thead><tr><th>Language</th><th>Voice Profile</th><th>Translation Profile</th><th>Channel Name</th><th></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5" class="helper" style="text-align:center;">No languages configured.</td></tr>'}</tbody>
       </table>
       ${unusedLangs.length ? '<div class="add-lang-row"><select id="add-lang-select"><option value="">Add language...</option>' + addOptions + '</select><button type="button" class="button button-ghost button-small has-icon" data-add-language="true">' + iconContent("add", "Add") + '</button></div>' : ''}
     </div>
@@ -5548,16 +5569,30 @@ document.addEventListener("click", async (event) => {
       const projectId = target.dataset.saveLangConfig;
       const langVoice = {};
       const langTrans = {};
+      const langChannelNames = {};
       document.querySelectorAll(".lang-voice-select").forEach((sel) => {
         if (sel.value) langVoice[sel.dataset.lang] = sel.value;
       });
       document.querySelectorAll(".lang-trans-select").forEach((sel) => {
         if (sel.value) langTrans[sel.dataset.lang] = sel.value;
       });
+      document.querySelectorAll(".lang-channel-name").forEach((inp) => {
+        if (inp.value.trim()) langChannelNames[inp.dataset.lang] = inp.value.trim();
+      });
+      const sourceChannelName = ($("source-channel-name") || {}).value || "";
+      const channelReplacePrompt = !!($("channel-replace-prompt") || {}).checked;
+      const channelReplacePost = !!($("channel-replace-post") || {}).checked;
       await api('/api/niche-projects/' + encodeURIComponent(projectId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ language_voice_profiles: langVoice, language_translation_profiles: langTrans }),
+        body: JSON.stringify({
+          language_voice_profiles: langVoice,
+          language_translation_profiles: langTrans,
+          language_channel_names: langChannelNames,
+          source_channel_name: sourceChannelName,
+          channel_replace_prompt: channelReplacePrompt,
+          channel_replace_post: channelReplacePost,
+        }),
       });
       await refreshData();
       renderApp();
