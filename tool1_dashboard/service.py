@@ -41,6 +41,7 @@ from .config import (
     VISUAL_BIBLE_STAGE,
 )
 from .database import Tool1Database
+from .launch_runtime import get_runtime_info, runtime_url_from_info
 from .providers import CliRunner
 from .runtime import (
     clamp_preview,
@@ -2595,6 +2596,35 @@ class Tool1Service:
             "gpu_name": health.gpu_name,
             "active_generate_jobs": health.active_generate_jobs,
             "queued_generate_jobs": health.queued_generate_jobs,
+        }
+
+    def get_app_runtime(self) -> dict[str, Any]:
+        runtime = get_runtime_info()
+        url = runtime_url_from_info(runtime)
+        mode = str(runtime.get("mode") or "server").strip().lower() or "server"
+        try:
+            pid = int(runtime.get("pid") or os.getpid())
+        except (TypeError, ValueError):
+            pid = os.getpid()
+        try:
+            port = int(runtime.get("port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+        close_copy = (
+            "Closing the Creator Studio window stops the dashboard and the voice engine."
+            if runtime.get("window_controls_shutdown")
+            else "This session is running as a browser-served page, so closing the tab does not stop the backend."
+        )
+        return {
+            "pid": pid,
+            "host": str(runtime.get("host") or "").strip() or "127.0.0.1",
+            "port": port,
+            "url": url,
+            "mode": mode,
+            "started_at": str(runtime.get("started_at") or ""),
+            "single_instance": True,
+            "window_controls_shutdown": bool(runtime.get("window_controls_shutdown")),
+            "close_copy": close_copy,
         }
 
     def get_review_data(self, episode_id: str) -> dict[str, Any]:

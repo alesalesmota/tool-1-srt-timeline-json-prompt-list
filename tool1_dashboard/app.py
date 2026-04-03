@@ -846,6 +846,11 @@ async def worker_health() -> dict[str, Any]:
     return service.get_worker_health()
 
 
+@app.get("/api/app-runtime")
+async def app_runtime() -> dict[str, Any]:
+    return service.get_app_runtime()
+
+
 @app.post("/api/worker/start")
 async def start_tts_worker() -> dict[str, Any]:
     # Deprecated compatibility route. The first-party UI now auto-starts on demand.

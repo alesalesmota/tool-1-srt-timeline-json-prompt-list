@@ -2067,6 +2067,31 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertIn("voice_tts_limits", payload["settings"])
                 self.assertEqual(payload["settings"]["voice_tts_default_preset"], "natural_stable")
 
+    def test_get_app_runtime_reports_window_owned_desktop_mode(self) -> None:
+        from tool1_dashboard.launch_runtime import clear_runtime_info, set_runtime_info
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                set_runtime_info(
+                    pid=4242,
+                    host="127.0.0.1",
+                    port=8020,
+                    url="http://127.0.0.1:8020",
+                    mode="desktop",
+                    window_controls_shutdown=True,
+                    started_at="2026-04-03T14:00:00+00:00",
+                )
+                try:
+                    payload = service.get_app_runtime()
+                finally:
+                    clear_runtime_info()
+                self.assertEqual(payload["pid"], 4242)
+                self.assertEqual(payload["mode"], "desktop")
+                self.assertTrue(payload["window_controls_shutdown"])
+                self.assertIn("Closing the Creator Studio window stops", payload["close_copy"])
+
     def test_episode_tts_submission_chunks_text_and_snapshots_profile_tuning(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

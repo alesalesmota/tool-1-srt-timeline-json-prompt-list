@@ -107,6 +107,7 @@ const state = {
   settingsFetchedAt: 0,
   modelCatalog: DEFAULT_MODEL_CATALOG,
   templates: [],
+  appRuntime: null,
   route: { view: "niche-projects" },
   theme: "dark",
   notice: { text: "", tone: "neutral" },
@@ -1458,6 +1459,29 @@ function describeWorkerHealth(wh = {}) {
     copy: "",
     meta: [queueMeta, lastHeartbeat].filter(Boolean).join(" "),
   };
+}
+
+function appRuntimeModeLabel(appRuntime = {}) {
+  const mode = String(appRuntime?.mode || "server").toLowerCase();
+  if (mode === "desktop") return "Desktop app";
+  if (mode === "browser") return "Browser tab";
+  return titleCase(mode);
+}
+
+function appRuntimeProcessCopy(appRuntime = {}) {
+  const parts = [];
+  if (appRuntime.pid) parts.push(`PID ${appRuntime.pid}`);
+  if (appRuntime.port) parts.push(`Port ${appRuntime.port}`);
+  return parts.join(" • ");
+}
+
+function workerLifecycleLabel(wh = {}) {
+  const lifecycle = String(wh?.lifecycle_state || "").toLowerCase();
+  if (lifecycle === "processing") return "Generating";
+  if (lifecycle === "starting") return "Starting";
+  if (lifecycle === "sleeping") return "Sleeping";
+  if (lifecycle === "unavailable") return "Unavailable";
+  return titleCase(wh?.status || "unknown");
 }
 
 function renderWorkerHealthBanner(wh = {}, { forceVisible = false } = {}) {
@@ -4379,6 +4403,10 @@ function renderSettings() {
   const settings = state.settings || {};
   const stageProviderOpenAi = activeStageProviderOpenAi();
   const openaiHealth = state.health?.providers?.openai || {};
+  const appRuntime = state.appRuntime || {};
+  const workerHealth = state.workerHealth || {};
+  const workerInfo = describeWorkerHealth(workerHealth);
+  const appStartedAt = appRuntime.started_at ? formatDate(appRuntime.started_at) : null;
   $("view").innerHTML = `
     <section class="split-grid">
       <section class="surface">
@@ -4511,6 +4539,21 @@ function renderSettings() {
         </div>
         <div class="provider-grid">
           <article class="summary-card">
+            <div class="metric-label">App shell</div>
+            <div class="metric-value">${esc(appRuntimeModeLabel(appRuntime))}</div>
+            ${appRuntime.close_copy ? `<div class="metric-copy">${esc(appRuntime.close_copy)}</div>` : ""}
+          </article>
+          <article class="summary-card">
+            <div class="metric-label">App process</div>
+            <div class="metric-value">${esc(appRuntime.pid ? `PID ${appRuntime.pid}` : "Unknown")}</div>
+            <div class="metric-copy">${esc(appRuntimeProcessCopy(appRuntime) || "Runtime metadata unavailable")}</div>
+          </article>
+          <article class="summary-card">
+            <div class="metric-label">Voice engine</div>
+            <div class="metric-value">${esc(workerLifecycleLabel(workerHealth))}</div>
+            <div class="metric-copy">${esc(workerInfo.copy || workerInfo.meta || "No voice-engine activity detected.")}</div>
+          </article>
+          <article class="summary-card">
             <div class="metric-label">OpenAI API</div>
             <div class="metric-value">${esc(openaiHealth.has_api_key ? "Ready" : "Key needed")}</div>
             ${openaiHealth.has_api_key && openaiHealth.model_count ? `<div class="metric-copy">${esc(openaiHealth.model_count)} model${openaiHealth.model_count === 1 ? "" : "s"} cached</div>` : ""}
@@ -4521,6 +4564,8 @@ function renderSettings() {
           </article>
         </div>
         <div class="badge-row" style="margin-top:16px;">
+          ${appRuntime.single_instance ? healthBadge("single app instance enforced", true) : ""}
+          ${appStartedAt ? statusBadge(`Started ${appStartedAt.toLocaleString()}`, "neutral") : ""}
           ${healthBadge(`ffmpeg ${state.health?.alignment?.ffmpeg ? "ready" : "missing"}`, state.health?.alignment?.ffmpeg)}
           ${healthBadge(`MFA ${state.health?.alignment?.mfa ? "ready" : "check"}`, state.health?.alignment?.mfa ? true : "warn")}
           ${healthBadge(`WhisperX ${state.health?.alignment?.whisperx ? "ready" : "check"}`, state.health?.alignment?.whisperx ? true : "warn")}
@@ -4639,9 +4684,12 @@ async function refreshData({ preserveNotice = true, routeLoading = false, force 
     const voiceProfilesPromise = route.view === "voice-profiles"
       ? api("/api/voice-profiles")
       : Promise.resolve({ profiles: state.voiceProfiles || [] });
-    const workerHealthPromise = route.view === "voice-profiles"
+    const workerHealthPromise = route.view === "voice-profiles" || route.view === "settings"
       ? api("/api/worker-health")
       : Promise.resolve(state.workerHealth);
+    const appRuntimePromise = route.view === "settings"
+      ? api("/api/app-runtime")
+      : Promise.resolve(state.appRuntime);
     const translationProfilesPromise = route.view === "translation-profiles"
       ? api("/api/translation-profiles")
       : Promise.resolve({ profiles: state.translationProfiles || [] });
@@ -4662,6 +4710,7 @@ async function refreshData({ preserveNotice = true, routeLoading = false, force 
       targetLanguages,
       voiceProfiles,
       workerHealth,
+      appRuntime,
       translationProfiles,
       projectDetailResultRaw,
     ] = await Promise.all([
@@ -4672,6 +4721,7 @@ async function refreshData({ preserveNotice = true, routeLoading = false, force 
       targetLanguagesPromise,
       voiceProfilesPromise,
       workerHealthPromise,
+      appRuntimePromise,
       translationProfilesPromise,
       projectDetailPromise,
     ]);
@@ -4748,7 +4798,12 @@ async function refreshData({ preserveNotice = true, routeLoading = false, force 
 
     if (route.view === "voice-profiles") {
       state.voiceProfiles = voiceProfiles.profiles || [];
+    }
+    if (route.view === "voice-profiles" || route.view === "settings") {
       state.workerHealth = workerHealth || null;
+    }
+    if (route.view === "settings") {
+      state.appRuntime = appRuntime || null;
     }
     if (route.view === "translation-profiles") {
       state.translationProfiles = translationProfiles.profiles || [];

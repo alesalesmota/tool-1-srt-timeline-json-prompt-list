@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0"
-python run_tool1_dashboard.py
+start "" pythonw run_tool1_dashboard.py
