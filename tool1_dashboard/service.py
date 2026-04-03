@@ -1583,13 +1583,103 @@ class Tool1Service:
         }
 
     @staticmethod
-    def _validated_translation_script(result: Any, *, language_code: str) -> str:
+    def _normalize_translation_compare_text(text: str) -> str:
+        return re.sub(r"\s+", " ", str(text or "").strip().lower())
+
+    @classmethod
+    def _translation_source_paragraphs(cls, text: str) -> list[str]:
+        paragraphs: list[str] = []
+        for paragraph in re.split(r"\n\s*\n+", str(text or "").strip()):
+            normalized = cls._normalize_translation_compare_text(paragraph)
+            if len(normalized.split()) >= 6:
+                paragraphs.append(normalized)
+        return paragraphs
+
+    @staticmethod
+    def _translation_uses_non_english_target(language_code: str) -> bool:
+        normalized = str(language_code or "").strip().lower()
+        return not normalized.startswith("en")
+
+    @classmethod
+    def _apply_channel_cta_fallback(
+        cls,
+        translated_script: str,
+        *,
+        language_code: str,
+        target_channel_name: str,
+    ) -> str:
+        if not translated_script or not target_channel_name:
+            return translated_script
+        language = str(language_code or "").strip().lower().split("-", 1)[0]
+        replacements = {
+            "es": f"Suscríbete a {target_channel_name}",
+            "it": f"Iscriviti a {target_channel_name}",
+            "de": f"Abonniere {target_channel_name}",
+            "fr": f"Abonne-toi a {target_channel_name}",
+        }
+        replacement = replacements.get(language)
+        if not replacement:
+            return translated_script
+        pattern = re.compile(rf"\bSubscribe to\s+{re.escape(target_channel_name)}\b", re.IGNORECASE)
+        return pattern.sub(replacement, translated_script)
+
+    @classmethod
+    def _translation_script_validation_issues(
+        cls,
+        *,
+        source_script: str,
+        translated_script: str,
+        language_code: str,
+        source_channel_name: str = "",
+        target_channel_name: str = "",
+    ) -> list[str]:
+        issues: list[str] = []
+        translated_clean = str(translated_script or "").strip()
+        if not translated_clean:
+            return ["Translation returned empty text."]
+
+        translated_norm = cls._normalize_translation_compare_text(translated_clean)
+        leaked_source = [
+            paragraph
+            for paragraph in cls._translation_source_paragraphs(source_script)
+            if paragraph and paragraph in translated_norm
+        ]
+        if leaked_source:
+            issues.append("Translation still contains untranslated source paragraphs.")
+
+        if cls._translation_uses_non_english_target(language_code):
+            english_cta_patterns = (
+                re.compile(r"\bsubscribe to\b", re.IGNORECASE),
+                re.compile(r"\bshare this video\b", re.IGNORECASE),
+                re.compile(r"\blike this video\b", re.IGNORECASE),
+            )
+            if any(pattern.search(translated_clean) for pattern in english_cta_patterns):
+                issues.append("Translation still contains English CTA wording.")
+
+        if source_channel_name and target_channel_name:
+            if re.search(re.escape(source_channel_name), translated_clean, flags=re.IGNORECASE):
+                issues.append(f'Translation still contains the source channel name "{source_channel_name}".')
+            if re.search(re.escape(source_channel_name), source_script, flags=re.IGNORECASE) and not re.search(
+                re.escape(target_channel_name),
+                translated_clean,
+                flags=re.IGNORECASE,
+            ):
+                issues.append(f'Translation did not use the configured channel name "{target_channel_name}".')
+        return issues
+
+    @classmethod
+    def _validated_translation_script(
+        cls,
+        result: Any,
+        *,
+        language_code: str,
+        source_script: str = "",
+        source_channel_name: str = "",
+        target_channel_name: str = "",
+    ) -> str:
         translated_script = str(getattr(result, "translated_script", "") or "").strip()
         status = str(getattr(result, "status", "done") or "done").strip().lower()
         chunk_results = list(getattr(result, "chunk_results", []) or [])
-
-        if translated_script and status not in {"partial", "error"}:
-            return translated_script
 
         first_chunk_error = next(
             (
@@ -1607,7 +1697,33 @@ class Tool1Service:
             raise ValueError(f"Translation returned partial output for {language_code}.{suffix}")
         if status == "error":
             raise ValueError(f"Translation failed for {language_code}.{suffix}")
-        raise ValueError(f"Translation status for {language_code} was '{status or 'unknown'}'.{suffix}")
+        if status not in {"done", "completed", "success"}:
+            raise ValueError(f"Translation status for {language_code} was '{status or 'unknown'}'.{suffix}")
+
+        if source_channel_name and target_channel_name:
+            translated_script = re.sub(
+                re.escape(source_channel_name),
+                target_channel_name,
+                translated_script,
+                flags=re.IGNORECASE,
+            )
+            translated_script = cls._apply_channel_cta_fallback(
+                translated_script,
+                language_code=language_code,
+                target_channel_name=target_channel_name,
+            )
+
+        issues = cls._translation_script_validation_issues(
+            source_script=source_script,
+            translated_script=translated_script,
+            language_code=language_code,
+            source_channel_name=source_channel_name,
+            target_channel_name=target_channel_name,
+        )
+        if issues:
+            issue_text = "; ".join(issues)
+            raise ValueError(f"Translation quality validation failed for {language_code}: {issue_text}.{suffix}")
+        return translated_script
 
     # ── translation profile management ──────────────────────────────
 
@@ -2478,6 +2594,9 @@ class Tool1Service:
 
         self.db.update_episode_language_status(episode_id, lang, translation_status="running")
         try:
+            master_scenes = None
+            if episode.get("timeline_draft_path") and Path(episode["timeline_draft_path"]).exists():
+                master_scenes = read_json(Path(episode["timeline_draft_path"]), default=[])
             target_channel = language_channel_names.get(lang, "")
             svc = TranslationService()
             result = asyncio.run(svc.translate_script(
@@ -2487,6 +2606,7 @@ class Tool1Service:
                 provider=profile["provider"],
                 api_key=profile["api_key_ref"],
                 model=profile["model"],
+                master_scenes=master_scenes,
                 max_words_per_chunk=settings.get("translation_chunk_max_words", 800),
                 context_tail_words=settings.get("translation_context_tail_words", 200),
                 source_channel_name=source_channel_name if enable_prompt else "",
@@ -2503,12 +2623,13 @@ class Tool1Service:
                 }
                 for cr in result.chunk_results
             ])
-            translated_script = self._validated_translation_script(result, language_code=lang)
-            if enable_post and source_channel_name and target_channel:
-                translated_script = re.sub(
-                    re.escape(source_channel_name), target_channel,
-                    translated_script, flags=re.IGNORECASE,
-                )
+            translated_script = self._validated_translation_script(
+                result,
+                language_code=lang,
+                source_script=episode["script_text"],
+                source_channel_name=source_channel_name if enable_post else "",
+                target_channel_name=target_channel if enable_post else "",
+            )
             translated_path = workspace / f"script_{lang}.txt"
             write_text(translated_path, translated_script)
             self.db.update_episode_language_status(
@@ -3295,12 +3416,13 @@ class Tool1Service:
                     for cr in result.chunk_results
                 ]
                 write_json(workspace / f"translation_log_{lang}.json", chunk_log)
-                translated_script = self._validated_translation_script(result, language_code=lang)
-                if enable_post and source_channel_name and target_channel:
-                    translated_script = re.sub(
-                        re.escape(source_channel_name), target_channel,
-                        translated_script, flags=re.IGNORECASE,
-                    )
+                translated_script = self._validated_translation_script(
+                    result,
+                    language_code=lang,
+                    source_script=source_script,
+                    source_channel_name=source_channel_name if enable_post else "",
+                    target_channel_name=target_channel if enable_post else "",
+                )
                 translated_path = workspace / f"script_{lang}.txt"
                 write_text(translated_path, translated_script)
 

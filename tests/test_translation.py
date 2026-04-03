@@ -6,6 +6,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -14,7 +15,7 @@ from tool1_dashboard.translation.chunker import (
     build_scene_aware_chunks,
     build_text_chunks,
 )
-from tool1_dashboard.translation.prompts import build_translation_prompt
+from tool1_dashboard.translation.prompts import build_translation_prompt, build_translation_repair_prompt
 from tool1_dashboard.translation.service import TranslationService
 from tool1_dashboard.translation.adapter import TranslationAdapter, TranslationError
 from tool1_dashboard.translation_profiles import (
@@ -23,6 +24,7 @@ from tool1_dashboard.translation_profiles import (
     sanitize_translation_profile,
 )
 from tool1_dashboard.database import Tool1Database
+from tool1_dashboard.service import Tool1Service
 
 
 class FakeHttpxResponse:
@@ -191,6 +193,39 @@ class PromptBuildingTests(unittest.TestCase):
         self.assertNotIn("{text}", prompt)
         self.assertNotIn("{context_section}", prompt)
         self.assertNotIn("{chunk_note}", prompt)
+
+    def test_prompt_includes_target_language_only_and_no_duplication_rules(self):
+        prompt = build_translation_prompt(
+            chunk="Subscribe to True Light",
+            context="",
+            source_lang="English",
+            target_lang="Spanish",
+            chunk_index=0,
+            total_chunks=1,
+            source_channel_name="True Light",
+            target_channel_name="Biblo Viral",
+        )
+        self.assertIn("Translate EVERYTHING into Spanish", prompt)
+        self.assertIn("Do NOT output both the original text and the translation", prompt)
+        self.assertIn("translate those calls to action fully into Spanish", prompt)
+        self.assertIn('"True Light"', prompt)
+        self.assertIn('"Biblo Viral"', prompt)
+
+    def test_repair_prompt_includes_issues_and_rejected_output(self):
+        prompt = build_translation_repair_prompt(
+            chunk="Subscribe to True Light",
+            invalid_output="Subscribe to Biblo Viral",
+            issues=["Output still contains English CTA wording."],
+            context="ctx words",
+            source_lang="English",
+            target_lang="Spanish",
+            source_channel_name="True Light",
+            target_channel_name="Biblo Viral",
+        )
+        self.assertIn("[WHY THE PREVIOUS OUTPUT WAS REJECTED]", prompt)
+        self.assertIn("Output still contains English CTA wording.", prompt)
+        self.assertIn("Subscribe to Biblo Viral", prompt)
+        self.assertIn("ctx words", prompt)
 
 
 class TranslationAdapterOpenAiTests(unittest.TestCase):
@@ -396,6 +431,72 @@ class TranslationServiceTests(unittest.TestCase):
         self.assertEqual(result.status, "done")
         self.assertEqual(result.translated_script, "")
 
+    def test_mixed_language_chunk_is_repaired_before_acceptance(self):
+        adapter = self._make_fake_adapter([
+            "This source paragraph should not remain untranslated.\n\nEste parrafo aun no sirve.",
+            "Este parrafo ya fue traducido correctamente.",
+        ])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="This source paragraph should not remain untranslated.",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+        ))
+        self.assertEqual(result.status, "done")
+        self.assertEqual(result.translated_script, "Este parrafo ya fue traducido correctamente.")
+        self.assertEqual(result.chunk_results[0].status, "ok")
+
+    def test_inflated_duplicate_chunk_fails_after_repair_attempt(self):
+        duplicate = "Hello world. " * 120
+        adapter = self._make_fake_adapter([duplicate, duplicate])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="Hello world.",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+        ))
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.chunk_results[0].status, "error")
+        self.assertIn("quality check failed", (result.chunk_results[0].error or "").lower())
+
+
+class TranslationValidationTests(unittest.TestCase):
+
+    def test_validated_translation_script_repairs_exact_subscribe_prefix(self):
+        result = SimpleNamespace(
+            translated_script="Subscribe to Biblo Viral if you need a community.",
+            status="done",
+            chunk_results=[],
+        )
+        translated = Tool1Service._validated_translation_script(
+            result,
+            language_code="es",
+            source_script="Subscribe to True Light if you need a community.",
+            source_channel_name="True Light",
+            target_channel_name="Biblo Viral",
+        )
+        self.assertEqual(translated, "Suscríbete a Biblo Viral if you need a community.")
+
+    def test_validated_translation_script_rejects_leaked_source_paragraphs(self):
+        result = SimpleNamespace(
+            translated_script="This is a leaked English paragraph from the source.\n\nEste es el texto corregido.",
+            status="done",
+            chunk_results=[],
+        )
+        with self.assertRaises(ValueError) as ctx:
+            Tool1Service._validated_translation_script(
+                result,
+                language_code="es",
+                source_script="This is a leaked English paragraph from the source.",
+            )
+        self.assertIn("source paragraphs", str(ctx.exception).lower())
+
 
 class TranslationProfileCrudTests(unittest.TestCase):
 
@@ -457,6 +558,62 @@ class TranslationProfileCrudTests(unittest.TestCase):
         self.db.delete_translation_profile("tp3")
         self.assertIsNone(self.db.get_translation_profile("tp3"))
         self.assertEqual(len(self.db.list_translation_profiles()), 0)
+
+
+class TranslationRetryFlowTests(unittest.TestCase):
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self.db = Tool1Database(Path(self._tmpdir) / "test.db")
+        self.db.initialize()
+        self.service = Tool1Service(db=self.db)
+
+    def test_single_language_retry_uses_master_scenes_when_timeline_exists(self):
+        from tool1_dashboard.runtime import utc_now
+
+        now = utc_now()
+        self.db.create_translation_profile({
+            "id": "tp1",
+            "name": "Test Profile",
+            "provider": "openai",
+            "api_key_ref": "sk-test",
+            "model": "gpt-5-nano",
+            "is_default": 0,
+            "created_at": now,
+            "updated_at": now,
+        })
+        project_payload = self.service.create_niche_project(
+            name="Retry Project",
+            configured_languages=["en", "es"],
+            language_translation_profiles={"es": "tp1"},
+        )
+        project = project_payload["project"]
+        episode_payload = self.service.submit_episode(
+            project["id"],
+            title="Retry Episode",
+            script_text="Hello world.",
+        )
+        episode = episode_payload["episode"]
+        workspace = Path(episode["workspace_dir"])
+        timeline_path = workspace / "timeline_draft.json"
+        timeline_path.write_text(
+            '[{"scene_id":"scene_001","start":0.0,"end":3.0,"duration":3.0,"text":"Hello world.","asset_type":"image"}]',
+            encoding="utf-8",
+        )
+        self.db.update_episode(episode["id"], timeline_draft_path=str(timeline_path), updated_at=now)
+
+        mocked_result = SimpleNamespace(
+            translated_script="Hola mundo.",
+            status="done",
+            chunk_results=[],
+        )
+        with patch(
+            "tool1_dashboard.translation.TranslationService.translate_script",
+            new=AsyncMock(return_value=mocked_result),
+        ) as mocked_translate:
+            self.service._episode_retry_single_translation(episode["id"], "es")
+
+        self.assertTrue(mocked_translate.await_args.kwargs["master_scenes"])
 
 
 class TranslationProfilePresentationTests(unittest.TestCase):
