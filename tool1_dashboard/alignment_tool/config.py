@@ -34,7 +34,7 @@ LANGUAGE_PROFILES: list[LanguageProfile] = [
     LanguageProfile("es", "Spanish", "es", "spanish_mfa", "spanish_mfa"),
     LanguageProfile("fr", "French", "fr", "french_mfa", "french_mfa"),
     LanguageProfile("de", "German", "de", "german_mfa", "german_mfa"),
-    LanguageProfile("it", "Italian", "it", "italian_mfa", "italian_mfa"),
+    LanguageProfile("it", "Italian", "it", "italian_cv", "italian_cv"),
     LanguageProfile("ko", "Korean", "ko", "korean_mfa", "korean_mfa"),
 ]
 
@@ -62,4 +62,3 @@ def resolve_mfa_resources(profile: LanguageProfile) -> dict[str, str]:
     dictionary = os.environ.get(f"{env_prefix}_DICTIONARY", profile.mfa_dictionary)
     acoustic = os.environ.get(f"{env_prefix}_ACOUSTIC", profile.mfa_acoustic)
     return {"dictionary": dictionary, "acoustic": acoustic}
-

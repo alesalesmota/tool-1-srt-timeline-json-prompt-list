@@ -3716,6 +3716,8 @@ function renderEpisodeDetailOverlay() {
   const langRows = langStatuses.map((ls) => {
     const canRetryTranslation = !["running", "queued", "paused_for_tts"].includes(episode.pipeline_status || "idle") && (ls.translation_status === "failed" || ls.translation_status === "skipped");
     const canRetryTts = !["running", "queued", "paused_for_tts"].includes(episode.pipeline_status || "idle") && (ls.tts_status === "failed" || ls.tts_status === "skipped");
+    const canRetryAlignment = !["running", "queued", "paused_for_tts"].includes(episode.pipeline_status || "idle") && ls.tts_status === "done" && (ls.srt_status === "failed" || ls.srt_status === "skipped");
+    const canRetryTimeline = !["running", "queued", "paused_for_tts"].includes(episode.pipeline_status || "idle") && ls.srt_status === "done" && (ls.timeline_status === "failed" || ls.timeline_status === "skipped");
     const hasTranslation = ls.translation_status === "done" && ls.language_code !== (episode.master_language || "en");
     const ttsProgressLabel = languageTtsJobCopy(ls);
     const ttsProgress = ttsProgressLabel ? ' <span class="helper" style="font-size:0.7rem;">(' + esc(ttsProgressLabel) + ')</span>' : '';
@@ -3728,8 +3730,12 @@ function renderEpisodeDetailOverlay() {
       '<td>' + langStatusBadge(ls.tts_status) + ttsProgress +
         (canRetryTts ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="tts">Retry</button>' : '') +
       '</td>' +
-      '<td>' + langStatusBadge(ls.srt_status) + '</td>' +
-      '<td>' + langStatusBadge(ls.timeline_status) + '</td>' +
+      '<td>' + langStatusBadge(ls.srt_status) +
+        (canRetryAlignment ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="alignment">Retry</button>' : '') +
+      '</td>' +
+      '<td>' + langStatusBadge(ls.timeline_status) +
+        (canRetryTimeline ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="timeline_mapping">Retry</button>' : '') +
+      '</td>' +
       '<td class="helper" style="font-size:0.75rem;">' + esc(ls.error_message || "") + '</td>' +
     '</tr>';
   }).join("");
@@ -3850,6 +3856,8 @@ function renderEpisodeDetail() {
   const langRows = langStatuses.map((ls) => {
     const canRetryTranslation = isPipelineIdle && (ls.translation_status === "failed" || ls.translation_status === "skipped");
     const canRetryTts = isPipelineIdle && (ls.tts_status === "failed" || ls.tts_status === "skipped");
+    const canRetryAlignment = isPipelineIdle && ls.tts_status === "done" && (ls.srt_status === "failed" || ls.srt_status === "skipped");
+    const canRetryTimeline = isPipelineIdle && ls.srt_status === "done" && (ls.timeline_status === "failed" || ls.timeline_status === "skipped");
     const hasTranslation = ls.translation_status === "done" && ls.language_code !== (episode.master_language || "en");
     const ttsProgressLabel = languageTtsJobCopy(ls);
     const ttsProgress = ttsProgressLabel ? ' <span class="helper" style="font-size:0.7rem;">(' + esc(ttsProgressLabel) + ')</span>' : '';
@@ -3863,8 +3871,12 @@ function renderEpisodeDetail() {
       '<td>' + langStatusBadge(ls.tts_status) + ttsProgress +
         (canRetryTts ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="tts">Retry</button>' : '') +
       '</td>' +
-      '<td>' + langStatusBadge(ls.srt_status) + '</td>' +
-      '<td>' + langStatusBadge(ls.timeline_status) + '</td>' +
+      '<td>' + langStatusBadge(ls.srt_status) +
+        (canRetryAlignment ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="alignment">Retry</button>' : '') +
+      '</td>' +
+      '<td>' + langStatusBadge(ls.timeline_status) +
+        (canRetryTimeline ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="timeline_mapping">Retry</button>' : '') +
+      '</td>' +
       '<td class="helper" style="font-size:0.75rem;">' + esc(ls.error_message || "") + '</td>' +
     '</tr>';
   }).join("");

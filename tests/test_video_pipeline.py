@@ -6,10 +6,12 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from fastapi.testclient import TestClient
 
+from tool1_dashboard.alignment_tool.config import resolve_language_profile, resolve_mfa_resources
 from tool1_dashboard.database import Tool1Database
 from tool1_dashboard.providers import CliRunner
 from tool1_dashboard.runtime import utc_now
@@ -2015,6 +2017,129 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertEqual(ptbr_tl[1]["end"], 12.0)
                 # First scene end should be approximately 6.0 (5.0 * 1.2)
                 self.assertAlmostEqual(ptbr_tl[0]["end"], 6.0, places=1)
+
+    def test_italian_alignment_uses_available_mfa_models(self) -> None:
+        profile = resolve_language_profile("it")
+        resources = resolve_mfa_resources(profile)
+        self.assertEqual(resources["dictionary"], "italian_cv")
+        self.assertEqual(resources["acoustic"], "italian_cv")
+
+    def test_timeline_mapping_preserves_alignment_error_when_srt_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                project = service.create_niche_project(
+                    name="TL Error",
+                    master_language="en",
+                    configured_languages=["en", "it"],
+                )
+                pid = project["project"]["id"]
+                episode_result = service.submit_episode(pid, title="TL Error Video", script_text="Test")
+                episode_id = episode_result["episode"]["id"]
+                workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+
+                from tool1_dashboard.runtime import write_json
+                timeline_data = [
+                    {"scene_id": "s01", "start": 0.0, "end": 5.0, "asset_type": "video", "text": "first"},
+                ]
+                timeline_path = write_json(workspace / "timeline_draft.json", timeline_data)
+                service.db.update_episode(episode_id, timeline_draft_path=str(timeline_path))
+
+                master_srt = "1\n00:00:00,000 --> 00:00:05,000\nFirst subtitle.\n"
+                master_srt_path = workspace / "final_en.srt"
+                master_srt_path.write_text(master_srt, encoding="utf-8")
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "en",
+                    srt_status="done",
+                    srt_path=str(master_srt_path),
+                )
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "it",
+                    srt_status="failed",
+                    srt_path=None,
+                    error_message="Alignment failed: missing Italian MFA model",
+                )
+
+                service._episode_run_timeline_mapping(episode_id)
+
+                it_status = service.db.get_episode_language_status(episode_id, "it")
+                self.assertEqual(it_status["timeline_status"], "skipped")
+                self.assertEqual(it_status["error_message"], "Alignment failed: missing Italian MFA model")
+
+    def test_retry_single_language_alignment_reruns_timeline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                project = service.create_niche_project(
+                    name="Retry IT",
+                    master_language="en",
+                    configured_languages=["en", "it"],
+                )
+                pid = project["project"]["id"]
+                episode_result = service.submit_episode(pid, title="Retry IT Video", script_text="Test")
+                episode_id = episode_result["episode"]["id"]
+                workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+
+                from tool1_dashboard.runtime import write_json
+                timeline_data = [
+                    {"scene_id": "s01", "start": 0.0, "end": 5.0, "asset_type": "video", "text": "first"},
+                    {"scene_id": "s02", "start": 5.0, "end": 10.0, "asset_type": "image", "text": "second"},
+                ]
+                timeline_path = write_json(workspace / "timeline_draft.json", timeline_data)
+                service.db.update_episode(episode_id, timeline_draft_path=str(timeline_path))
+
+                master_srt = (
+                    "1\n00:00:00,000 --> 00:00:05,000\nFirst subtitle.\n\n"
+                    "2\n00:00:05,000 --> 00:00:10,000\nSecond subtitle.\n"
+                )
+                master_srt_path = workspace / "final_en.srt"
+                master_srt_path.write_text(master_srt, encoding="utf-8")
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "en",
+                    srt_status="done",
+                    srt_path=str(master_srt_path),
+                )
+
+                it_script_path = workspace / "script_it.txt"
+                it_script_path.write_text("Ciao mondo", encoding="utf-8")
+                it_audio_path = workspace / "narration_it.wav"
+                it_audio_path.write_bytes(b"fake-wav")
+                aligned_it_srt_path = workspace / "aligned_it.srt"
+                aligned_it_srt_path.write_text(
+                    "1\n00:00:00,000 --> 00:00:06,000\nPrima legenda.\n\n"
+                    "2\n00:00:06,000 --> 00:00:12,000\nSeconda legenda.\n",
+                    encoding="utf-8",
+                )
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "it",
+                    translation_status="done",
+                    tts_status="done",
+                    script_path=str(it_script_path),
+                    tts_audio_path=str(it_audio_path),
+                    srt_status="failed",
+                    timeline_status="skipped",
+                    error_message="Old alignment failure",
+                )
+
+                fake_result = SimpleNamespace(
+                    artifacts=SimpleNamespace(final_srt=aligned_it_srt_path),
+                )
+                with patch("tool1_dashboard.service.run_alignment_job", return_value=fake_result):
+                    result = service.retry_episode_language(episode_id, "it", "alignment")
+
+                self.assertEqual(result["stage"], "alignment")
+                it_status = service.db.get_episode_language_status(episode_id, "it")
+                self.assertEqual(it_status["srt_status"], "done")
+                self.assertEqual(it_status["timeline_status"], "done")
+                self.assertTrue(Path(it_status["srt_path"]).exists())
+                self.assertTrue(Path(it_status["timeline_path"]).exists())
+                self.assertIsNone(it_status["error_message"])
 
     def test_niche_project_auto_includes_master_language(self) -> None:
         """Master language is always included in configured_languages."""

@@ -2395,6 +2395,11 @@ class Tool1Service:
         if lang_status is None:
             raise FileNotFoundError(f"No language status for '{language_code}'.")
 
+        stage = {
+            "srt": "alignment",
+            "timeline": "timeline_mapping",
+        }.get(stage, stage)
+
         if stage == "translation":
             self.db.update_episode_language_status(
                 episode_id, language_code,
@@ -2407,6 +2412,33 @@ class Tool1Service:
                 tts_status="pending", error_message=None,
             )
             self._episode_retry_single_tts(episode_id, language_code)
+        elif stage == "alignment":
+            self.db.update_episode_language_status(
+                episode_id,
+                language_code,
+                srt_status="pending",
+                srt_path=None,
+                timeline_status="pending",
+                timeline_path=None,
+                error_message=None,
+            )
+            self._episode_retry_single_alignment(episode_id, language_code)
+            refreshed_status = self.db.get_episode_language_status(episode_id, language_code)
+            if (
+                refreshed_status
+                and refreshed_status.get("srt_status") == "done"
+                and self._timeline_mapping_ready(episode_id)
+            ):
+                self._episode_retry_single_timeline_mapping(episode_id, language_code)
+        elif stage == "timeline_mapping":
+            self.db.update_episode_language_status(
+                episode_id,
+                language_code,
+                timeline_status="pending",
+                timeline_path=None,
+                error_message=None,
+            )
+            self._episode_retry_single_timeline_mapping(episode_id, language_code)
         else:
             raise ValueError(f"Retry not supported for stage '{stage}'.")
 
@@ -2546,6 +2578,210 @@ class Tool1Service:
             tts_audio_path=None,
             error_message=None,
         )
+
+    def _episode_retry_single_alignment(self, episode_id: str, lang: str) -> None:
+        """Retry subtitle alignment for a single language."""
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        lang_status = self.db.get_episode_language_status(episode_id, lang)
+        if lang_status is None:
+            raise FileNotFoundError(f"No language status for '{lang}'.")
+
+        workspace = self._episode_workspace(episode)
+        audio_path = lang_status.get("tts_audio_path")
+        script_path = lang_status.get("script_path")
+        if not audio_path or not Path(audio_path).exists():
+            self.db.update_episode_language_status(
+                episode_id,
+                lang,
+                srt_status="skipped",
+                srt_path=None,
+                error_message="No TTS audio available",
+            )
+            return
+        if not script_path or not Path(script_path).exists():
+            self.db.update_episode_language_status(
+                episode_id,
+                lang,
+                srt_status="skipped",
+                srt_path=None,
+                error_message="No script available",
+            )
+            return
+
+        self.db.update_episode_language_status(episode_id, lang, srt_status="running", error_message=None)
+        try:
+            output_root = ensure_dir(workspace / "alignment" / lang)
+            result = run_alignment_job(
+                audio_path=Path(audio_path),
+                script_path=Path(script_path),
+                language_code=lang,
+                engine_config=None,
+                segmentation_config=None,
+                output_root=output_root,
+            )
+            srt_path = workspace / f"final_{lang}.srt"
+            shutil.copy2(result.artifacts.final_srt, srt_path)
+            self.db.update_episode_language_status(
+                episode_id,
+                lang,
+                srt_status="done",
+                srt_path=str(srt_path),
+                error_message=None,
+            )
+        except Exception as exc:
+            self.db.update_episode_language_status(
+                episode_id,
+                lang,
+                srt_status="failed",
+                srt_path=None,
+                error_message=str(exc)[:500],
+            )
+
+    def _timeline_mapping_ready(self, episode_id: str) -> bool:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            return False
+        timeline_path = episode.get("timeline_draft_path")
+        if not timeline_path or not Path(timeline_path).exists():
+            return False
+        master_status = self.db.get_episode_language_status(episode_id, episode["master_language"])
+        master_srt_path = master_status.get("srt_path") if master_status else None
+        return bool(master_srt_path and Path(master_srt_path).exists())
+
+    def _load_timeline_mapping_context(
+        self,
+        episode_id: str,
+    ) -> tuple[dict[str, Any], Path, str, list[dict[str, Any]], float]:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        workspace = self._episode_workspace(episode)
+        master_lang = episode["master_language"]
+
+        timeline_path = episode.get("timeline_draft_path")
+        if not timeline_path or not Path(timeline_path).exists():
+            raise ValueError("Master timeline draft is missing.")
+        master_scenes = read_json(Path(timeline_path), default=[])
+        if not master_scenes:
+            raise ValueError("Master timeline is empty.")
+
+        master_status = self.db.get_episode_language_status(episode_id, master_lang)
+        master_srt_path = master_status.get("srt_path") if master_status else None
+        if not master_srt_path or not Path(master_srt_path).exists():
+            raise ValueError("Master SRT not available.")
+        master_cues = parse_srt_text(Path(master_srt_path).read_text(encoding="utf-8"))
+        master_total = master_cues[-1].end_ms / 1000.0 if master_cues else 0.0
+        if master_total <= 0:
+            raise ValueError("Master SRT has zero duration.")
+
+        return episode, workspace, master_lang, master_scenes, master_total
+
+    def _episode_retry_single_timeline_mapping(
+        self,
+        episode_id: str,
+        lang: str,
+        *,
+        context: tuple[dict[str, Any], Path, str, list[dict[str, Any]], float] | None = None,
+    ) -> str:
+        """Retry timeline mapping for a single language."""
+        lang_status = self.db.get_episode_language_status(episode_id, lang)
+        if lang_status is None:
+            raise FileNotFoundError(f"No language status for '{lang}'.")
+
+        try:
+            if context is None:
+                context = self._load_timeline_mapping_context(episode_id)
+            _, workspace, master_lang, master_scenes, master_total = context
+            self.db.update_episode_language_status(episode_id, lang, timeline_status="running")
+
+            if lang == master_lang:
+                lang_timeline_path = workspace / f"timeline_{lang}.json"
+                write_json(lang_timeline_path, master_scenes)
+                self.db.update_episode_language_status(
+                    episode_id,
+                    lang,
+                    timeline_status="done",
+                    timeline_path=str(lang_timeline_path),
+                    error_message=None,
+                )
+                return "done"
+
+            lang_srt_path = lang_status.get("srt_path")
+            if not lang_srt_path or not Path(lang_srt_path).exists():
+                self.db.update_episode_language_status(
+                    episode_id,
+                    lang,
+                    timeline_status="skipped",
+                    timeline_path=None,
+                    error_message=lang_status.get("error_message") or "No SRT available for timing",
+                )
+                return "skipped"
+
+            lang_cues = parse_srt_text(Path(lang_srt_path).read_text(encoding="utf-8"))
+            lang_total = lang_cues[-1].end_ms / 1000.0 if lang_cues else 0.0
+            if lang_total <= 0:
+                self.db.update_episode_language_status(
+                    episode_id,
+                    lang,
+                    timeline_status="skipped",
+                    timeline_path=None,
+                    error_message="Zero-duration SRT",
+                )
+                return "skipped"
+
+            ratio = lang_total / master_total
+            lang_boundaries = sorted({c.start_ms / 1000.0 for c in lang_cues} | {c.end_ms / 1000.0 for c in lang_cues})
+
+            def snap_to_boundary(t: float) -> float:
+                if not lang_boundaries:
+                    return t
+                closest = min(lang_boundaries, key=lambda b: abs(b - t))
+                if abs(closest - t) <= 0.5:
+                    return closest
+                return round(t, 3)
+
+            lang_scenes: list[dict[str, Any]] = []
+            for i, scene in enumerate(master_scenes):
+                mapped = dict(scene)
+                raw_start = scene["start"] * ratio
+                raw_end = scene["end"] * ratio
+
+                mapped_start = snap_to_boundary(raw_start)
+                mapped_end = snap_to_boundary(raw_end)
+
+                if lang_scenes and mapped_start < lang_scenes[-1]["end"]:
+                    mapped_start = lang_scenes[-1]["end"]
+                if mapped_end - mapped_start < 1.0:
+                    mapped_end = mapped_start + 1.0
+                if i == len(master_scenes) - 1:
+                    mapped_end = lang_total
+
+                mapped["start"] = round(mapped_start, 3)
+                mapped["end"] = round(mapped_end, 3)
+                mapped["duration"] = round(mapped_end - mapped_start, 3)
+                lang_scenes.append(mapped)
+
+            lang_timeline_path = workspace / f"timeline_{lang}.json"
+            write_json(lang_timeline_path, lang_scenes)
+            self.db.update_episode_language_status(
+                episode_id,
+                lang,
+                timeline_status="done",
+                timeline_path=str(lang_timeline_path),
+                error_message=None,
+            )
+            return "done"
+        except Exception as exc:
+            self.db.update_episode_language_status(
+                episode_id,
+                lang,
+                timeline_status="failed",
+                timeline_path=None,
+                error_message=str(exc)[:500],
+            )
+            return "failed"
 
     def get_translation_preview(self, episode_id: str, language_code: str) -> dict[str, Any]:
         """Return original and translated script side-by-side for preview."""
@@ -3743,26 +3979,9 @@ class Tool1Service:
 
     def _episode_run_timeline_mapping(self, episode_id: str) -> None:
         """Map master scene structure to each language's duration proportionally."""
-        episode = self.db.get_episode(episode_id)
+        episode, _, _, _, _ = self._load_timeline_mapping_context(episode_id)
         langs = json.loads(episode.get("configured_languages") or "[]")
-        workspace = self._episode_workspace(episode)
-        master_lang = episode["master_language"]
-
-        # Load master timeline
-        timeline_path = episode.get("timeline_draft_path")
-        if not timeline_path or not Path(timeline_path).exists():
-            raise ValueError("Master timeline draft is missing.")
-        master_scenes = read_json(Path(timeline_path), default=[])
-        if not master_scenes:
-            raise ValueError("Master timeline is empty.")
-
-        # Load master SRT cues for timing reference
-        master_status = self.db.get_episode_language_status(episode_id, master_lang)
-        master_srt_path = master_status.get("srt_path") if master_status else None
-        if not master_srt_path or not Path(master_srt_path).exists():
-            raise ValueError("Master SRT not available.")
-        master_cues = parse_srt_text(Path(master_srt_path).read_text(encoding="utf-8"))
-        master_total = master_cues[-1].end_ms / 1000.0 if master_cues else 0.0
+        context = self._load_timeline_mapping_context(episode_id)
 
         failed_count = 0
         attempted = 0
@@ -3771,100 +3990,11 @@ class Tool1Service:
             lang_status = self.db.get_episode_language_status(episode_id, lang)
             if not lang_status or lang_status.get("timeline_status") == "done":
                 continue
-
-            self.db.update_episode_language_status(episode_id, lang, timeline_status="running")
-            attempted += 1
-
-            try:
-                if lang == master_lang:
-                    # Master language: just copy timeline as-is
-                    lang_timeline_path = workspace / f"timeline_{lang}.json"
-                    write_json(lang_timeline_path, master_scenes)
-                    self.db.update_episode_language_status(
-                        episode_id, lang,
-                        timeline_status="done",
-                        timeline_path=str(lang_timeline_path),
-                    )
-                    continue
-
-                # Get language SRT for timing
-                lang_srt_path = lang_status.get("srt_path")
-                if not lang_srt_path or not Path(lang_srt_path).exists():
-                    self.db.update_episode_language_status(
-                        episode_id, lang,
-                        timeline_status="skipped",
-                        error_message="No SRT available for timing",
-                    )
-                    attempted -= 1  # Don't count as failed
-                    continue
-
-                lang_cues = parse_srt_text(Path(lang_srt_path).read_text(encoding="utf-8"))
-                lang_total = lang_cues[-1].end_ms / 1000.0 if lang_cues else 0.0
-
-                if master_total <= 0 or lang_total <= 0:
-                    self.db.update_episode_language_status(
-                        episode_id, lang,
-                        timeline_status="skipped",
-                        error_message="Zero-duration SRT",
-                    )
-                    attempted -= 1
-                    continue
-
-                ratio = lang_total / master_total
-
-                # Build cue boundary list for snapping
-                lang_boundaries = sorted({c.start_ms / 1000.0 for c in lang_cues} | {c.end_ms / 1000.0 for c in lang_cues})
-
-                def snap_to_boundary(t: float) -> float:
-                    """Snap a time to the nearest language cue boundary."""
-                    if not lang_boundaries:
-                        return t
-                    closest = min(lang_boundaries, key=lambda b: abs(b - t))
-                    # Only snap if within 0.5s
-                    if abs(closest - t) <= 0.5:
-                        return closest
-                    return round(t, 3)
-
-                lang_scenes: list[dict[str, Any]] = []
-                for i, scene in enumerate(master_scenes):
-                    mapped = dict(scene)
-                    raw_start = scene["start"] * ratio
-                    raw_end = scene["end"] * ratio
-
-                    mapped_start = snap_to_boundary(raw_start)
-                    mapped_end = snap_to_boundary(raw_end)
-
-                    # Ensure no overlap with previous scene
-                    if lang_scenes and mapped_start < lang_scenes[-1]["end"]:
-                        mapped_start = lang_scenes[-1]["end"]
-
-                    # Ensure minimum 1s duration
-                    if mapped_end - mapped_start < 1.0:
-                        mapped_end = mapped_start + 1.0
-
-                    # Clamp last scene to lang total
-                    if i == len(master_scenes) - 1:
-                        mapped_end = lang_total
-
-                    mapped["start"] = round(mapped_start, 3)
-                    mapped["end"] = round(mapped_end, 3)
-                    mapped["duration"] = round(mapped_end - mapped_start, 3)
-                    lang_scenes.append(mapped)
-
-                lang_timeline_path = workspace / f"timeline_{lang}.json"
-                write_json(lang_timeline_path, lang_scenes)
-                self.db.update_episode_language_status(
-                    episode_id, lang,
-                    timeline_status="done",
-                    timeline_path=str(lang_timeline_path),
-                )
-            except Exception as exc:
+            result = self._episode_retry_single_timeline_mapping(episode_id, lang, context=context)
+            if result in {"done", "failed"}:
+                attempted += 1
+            if result == "failed":
                 failed_count += 1
-                self.db.update_episode_language_status(
-                    episode_id, lang,
-                    timeline_status="failed",
-                    error_message=str(exc)[:500],
-                )
 
         if failed_count == attempted and attempted > 0:
             raise RuntimeError("All timeline mappings failed.")
