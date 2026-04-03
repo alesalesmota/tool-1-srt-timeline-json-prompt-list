@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from tool1_dashboard.translation.chunker import (
     TranslationChunk,
@@ -23,6 +23,38 @@ from tool1_dashboard.translation_profiles import (
     sanitize_translation_profile,
 )
 from tool1_dashboard.database import Tool1Database
+
+
+class FakeHttpxResponse:
+
+    def __init__(self, status_code: int, payload: dict[str, Any], text: str = "") -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+class FakeHttpxClient:
+
+    def __init__(self, response: FakeHttpxResponse, recorder: list[dict[str, Any]]) -> None:
+        self.response = response
+        self.recorder = recorder
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url: str, headers: dict[str, str] | None = None, json: dict[str, Any] | None = None):
+        self.recorder.append({
+            "url": url,
+            "headers": headers or {},
+            "json": json or {},
+        })
+        return self.response
 
 
 class SceneAwareChunkingTests(unittest.TestCase):
@@ -161,6 +193,65 @@ class PromptBuildingTests(unittest.TestCase):
         self.assertNotIn("{chunk_note}", prompt)
 
 
+class TranslationAdapterOpenAiTests(unittest.TestCase):
+
+    def _run_async(self, coro):
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def test_gpt5_translation_uses_minimal_reasoning_and_reads_message_text(self):
+        recorder: list[dict[str, Any]] = []
+        response = FakeHttpxResponse(200, {
+            "status": "completed",
+            "output": [
+                {"type": "reasoning", "summary": []},
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "output_text", "text": "Hola mundo"},
+                    ],
+                },
+            ],
+        })
+        with patch(
+            "tool1_dashboard.translation.adapter.httpx.AsyncClient",
+            side_effect=lambda *args, **kwargs: FakeHttpxClient(response, recorder),
+        ):
+            adapter = TranslationAdapter()
+            text = self._run_async(adapter.translate_chunk(
+                provider="openai",
+                api_key="sk-test",
+                model="gpt-5-nano",
+                prompt="Translate to Spanish.",
+            ))
+
+        self.assertEqual(text, "Hola mundo")
+        request_payload = recorder[0]["json"]
+        self.assertEqual(request_payload["reasoning"]["effort"], "minimal")
+        self.assertEqual(request_payload["text"]["verbosity"], "low")
+
+    def test_incomplete_openai_response_raises_translation_error(self):
+        recorder: list[dict[str, Any]] = []
+        response = FakeHttpxResponse(200, {
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [{"type": "reasoning", "summary": []}],
+        })
+        with patch(
+            "tool1_dashboard.translation.adapter.httpx.AsyncClient",
+            side_effect=lambda *args, **kwargs: FakeHttpxClient(response, recorder),
+        ):
+            adapter = TranslationAdapter()
+            with self.assertRaises(TranslationError) as ctx:
+                self._run_async(adapter.translate_chunk(
+                    provider="openai",
+                    api_key="sk-test",
+                    model="gpt-5-nano",
+                    prompt="Translate to Spanish.",
+                ))
+
+        self.assertIn("max_output_tokens", str(ctx.exception))
+
+
 class TranslationServiceTests(unittest.TestCase):
 
     def _run_async(self, coro):
@@ -259,6 +350,21 @@ class TranslationServiceTests(unittest.TestCase):
         self.assertEqual(result.status, "partial")
         self.assertEqual(result.chunk_results[0].status, "error")
         self.assertEqual(result.chunk_results[1].status, "ok")
+
+    def test_empty_chunk_response_is_treated_as_error(self):
+        adapter = self._make_fake_adapter([""])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="Hello world. This should fail if the model returns nothing.",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+        ))
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.chunk_results[0].status, "error")
+        self.assertIn("empty translation", (result.chunk_results[0].error or "").lower())
 
     def test_all_chunks_fail(self):
         adapter = self._make_fake_adapter([

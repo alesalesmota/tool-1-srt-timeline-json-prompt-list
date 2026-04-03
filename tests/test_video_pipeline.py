@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from tool1_dashboard.database import Tool1Database
 from tool1_dashboard.providers import CliRunner
 from tool1_dashboard.runtime import utc_now
-from tool1_dashboard.service import Tool1Service
+from tool1_dashboard.service import QueueBlockedError, Tool1Service
 
 
 class FakeCliRunner:
@@ -1746,6 +1746,7 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 mock_result = MagicMock()
                 mock_result.translated_script = "Olá mundo"
                 mock_result.chunk_results = []
+                mock_result.status = "done"
                 with patch("tool1_dashboard.translation.TranslationService") as MockTS:
                     mock_instance = MockTS.return_value
                     mock_instance.translate_script = MagicMock(return_value=mock_result)
@@ -1758,6 +1759,104 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertEqual(ptbr["translation_status"], "done")
                 self.assertIsNotNone(ptbr["script_path"])
                 self.assertEqual(Path(ptbr["script_path"]).read_text(encoding="utf-8"), "Olá mundo")
+
+    def test_translations_fail_when_service_returns_empty_script(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+
+                now = utc_now()
+                service.db.create_translation_profile({
+                    "id": "tp-ptbr",
+                    "name": "PT-BR OpenAI",
+                    "provider": "openai",
+                    "api_key_ref": "fake-key",
+                    "model": "gpt-5-nano",
+                    "created_at": now,
+                    "updated_at": now,
+                })
+
+                project = service.create_niche_project(
+                    name="Blank Translation",
+                    master_language="en",
+                    configured_languages=["en", "pt-BR"],
+                    language_translation_profiles={"pt-BR": "tp-ptbr"},
+                )
+                episode_id = service.submit_episode(
+                    project["project"]["id"],
+                    title="Blank response",
+                    script_text="Hello world",
+                )["episode"]["id"]
+
+                mock_result = MagicMock()
+                mock_result.translated_script = ""
+                mock_result.chunk_results = []
+                mock_result.status = "done"
+
+                with patch("tool1_dashboard.translation.TranslationService") as MockTS:
+                    mock_instance = MockTS.return_value
+                    mock_instance.translate_script = MagicMock(return_value=mock_result)
+                    with patch("tool1_dashboard.service.asyncio") as mock_asyncio:
+                        mock_asyncio.run.return_value = mock_result
+                        with self.assertRaises(RuntimeError):
+                            service._episode_run_translations(episode_id)
+
+                ptbr = service.db.get_episode_language_status(episode_id, "pt-BR")
+                assert ptbr is not None
+                self.assertEqual(ptbr["translation_status"], "failed")
+                self.assertIsNone(ptbr["script_path"])
+                self.assertIn("empty text", ptbr["error_message"])
+
+    def test_queue_from_tts_blocks_empty_translation_script_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                voice_profiles, translation_profiles = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    ["en", "pt-BR"],
+                    master_language="en",
+                )
+                project = service.create_niche_project(
+                    name="Block TTS",
+                    master_language="en",
+                    configured_languages=["en", "pt-BR"],
+                    language_voice_profiles=voice_profiles,
+                    language_translation_profiles=translation_profiles,
+                    video_prompt_provider="claude",
+                    image_prompt_provider="claude",
+                )
+                pid = project["project"]["id"]
+                episode = service.submit_episode(pid, title="Block TTS", script_text="Hello world")["episode"]
+                episode_id = episode["id"]
+                workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+                empty_script = workspace / "script_pt-BR.txt"
+                empty_script.write_text("", encoding="utf-8")
+
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "en",
+                    translation_status="done",
+                    script_path=str(workspace / "script_original.txt"),
+                )
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "pt-BR",
+                    translation_status="done",
+                    script_path=str(empty_script),
+                )
+                service.db.update_episode(
+                    episode_id,
+                    current_stage="tts",
+                    pipeline_status="failed",
+                )
+
+                with self.assertRaises(QueueBlockedError) as ctx:
+                    service.queue_episode(episode_id, start_stage="tts")
+
+                self.assertIn("translated scripts for pt-BR", str(ctx.exception))
 
     def test_chunking_produces_manifest(self) -> None:
         """Chunking stage parses SRT and produces manifest with chunk files."""

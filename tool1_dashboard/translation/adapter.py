@@ -67,28 +67,28 @@ class TranslationAdapter:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
-        body = {
-            "model": model,
-            "input": prompt,
-            "max_output_tokens": _MAX_TOKENS,
-        }
+        body = self._build_openai_request_body(model=model, prompt=prompt)
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=body)
         if resp.status_code != 200:
             msg = self._extract_error(resp, "error", "message")
             raise TranslationError("OpenAI", resp.status_code, msg)
         data = resp.json()
-        if isinstance(data.get("output_text"), str):
-            return data["output_text"]
-        try:
-            return "".join(
-                item.get("text", "")
-                for output in data["output"]
-                for item in output["content"]
-                if item.get("type") == "output_text"
-            )
-        except (KeyError, IndexError, TypeError):
-            return ""
+        if str(data.get("status") or "").strip().lower() == "incomplete":
+            reason = self._extract_openai_incomplete_reason(data)
+            raise TranslationError("OpenAI", resp.status_code, f"Response incomplete: {reason}")
+
+        text = self._extract_openai_output_text(data)
+        if text:
+            return text
+
+        output_types = ", ".join(
+            str(item.get("type") or "").strip()
+            for item in data.get("output") or []
+            if isinstance(item, dict) and str(item.get("type") or "").strip()
+        )
+        detail = f" (output types: {output_types})" if output_types else ""
+        raise TranslationError("OpenAI", resp.status_code, f"Empty response from model{detail}")
 
     async def _call_anthropic(self, api_key: str, model: str, prompt: str) -> str:
         url = "https://api.anthropic.com/v1/messages"
@@ -123,3 +123,45 @@ class TranslationAdapter:
             return str(value)
         except Exception:
             return resp.text[:300] if resp.text else f"HTTP {resp.status_code}"
+
+    @staticmethod
+    def _build_openai_request_body(*, model: str, prompt: str) -> dict[str, object]:
+        body: dict[str, object] = {
+            "model": model,
+            "input": prompt,
+            "max_output_tokens": _MAX_TOKENS,
+        }
+        normalized_model = str(model or "").strip().lower()
+        if normalized_model.startswith("gpt-5"):
+            # Keep GPT-5 translation runs focused on the final text instead of
+            # spending the chunk budget on internal reasoning.
+            body["reasoning"] = {"effort": "minimal"}
+            body["text"] = {"verbosity": "low"}
+        return body
+
+    @staticmethod
+    def _extract_openai_output_text(data: dict[str, object]) -> str:
+        output_text = data.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+
+        try:
+            text = "".join(
+                str(item.get("text") or "")
+                for output in data.get("output") or []
+                if isinstance(output, dict)
+                for item in output.get("content") or []
+                if isinstance(item, dict) and item.get("type") == "output_text"
+            ).strip()
+        except (AttributeError, TypeError):
+            text = ""
+        return text
+
+    @staticmethod
+    def _extract_openai_incomplete_reason(data: dict[str, object]) -> str:
+        details = data.get("incomplete_details")
+        if isinstance(details, dict):
+            reason = str(details.get("reason") or "").strip()
+            if reason:
+                return reason
+        return "unknown"

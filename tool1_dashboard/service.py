@@ -315,6 +315,22 @@ class Tool1Service:
         return bool(value) and Path(str(value)).exists()
 
     @staticmethod
+    def _read_path_text(value: Any) -> str:
+        if not value:
+            return ""
+        path = Path(str(value))
+        if not path.exists() or not path.is_file():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    @classmethod
+    def _path_has_non_empty_text(cls, value: Any) -> bool:
+        return bool(cls._read_path_text(value).strip())
+
+    @staticmethod
     def _language_list_text(language_codes: list[str]) -> str:
         cleaned = [str(code or "").strip() for code in language_codes if str(code or "").strip()]
         return ", ".join(cleaned) if cleaned else "the configured languages"
@@ -357,7 +373,7 @@ class Tool1Service:
                 if language_code != master_language
                 and (
                     str(language_statuses.get(language_code, {}).get("translation_status") or "").lower() != "done"
-                    or not self._path_exists(language_statuses.get(language_code, {}).get("script_path"))
+                    or not self._path_has_non_empty_text(language_statuses.get(language_code, {}).get("script_path"))
                 )
             ]
             if missing_scripts:
@@ -375,7 +391,7 @@ class Tool1Service:
                 language_code
                 for language_code in configured_languages
                 if not self._path_exists(language_statuses.get(language_code, {}).get("tts_audio_path"))
-                or not self._path_exists(language_statuses.get(language_code, {}).get("script_path"))
+                or not self._path_has_non_empty_text(language_statuses.get(language_code, {}).get("script_path"))
             ]
             if missing_alignment_inputs:
                 blockers.append(self._queue_issue(
@@ -1567,6 +1583,33 @@ class Tool1Service:
             "tts_config": tts_config,
         }
 
+    @staticmethod
+    def _validated_translation_script(result: Any, *, language_code: str) -> str:
+        translated_script = str(getattr(result, "translated_script", "") or "").strip()
+        status = str(getattr(result, "status", "done") or "done").strip().lower()
+        chunk_results = list(getattr(result, "chunk_results", []) or [])
+
+        if translated_script and status not in {"partial", "error"}:
+            return translated_script
+
+        first_chunk_error = next(
+            (
+                str(getattr(chunk, "error", "") or "").strip()
+                for chunk in chunk_results
+                if str(getattr(chunk, "status", "") or "").strip().lower() != "ok"
+                and str(getattr(chunk, "error", "") or "").strip()
+            ),
+            "",
+        )
+        suffix = f" First chunk error: {first_chunk_error}" if first_chunk_error else ""
+        if not translated_script:
+            raise ValueError(f"Translation returned empty text for {language_code}.{suffix}")
+        if status == "partial":
+            raise ValueError(f"Translation returned partial output for {language_code}.{suffix}")
+        if status == "error":
+            raise ValueError(f"Translation failed for {language_code}.{suffix}")
+        raise ValueError(f"Translation status for {language_code} was '{status or 'unknown'}'.{suffix}")
+
     # ── translation profile management ──────────────────────────────
 
     def list_translation_profiles(self) -> list[dict[str, Any]]:
@@ -2353,7 +2396,7 @@ class Tool1Service:
         if stage == "translation":
             self.db.update_episode_language_status(
                 episode_id, language_code,
-                translation_status="pending", error_message=None,
+                translation_status="pending", script_path=None, error_message=None,
             )
             self._episode_retry_single_translation(episode_id, language_code)
         elif stage == "tts":
@@ -2408,8 +2451,6 @@ class Tool1Service:
                 max_words_per_chunk=settings.get("translation_chunk_max_words", 800),
                 context_tail_words=settings.get("translation_context_tail_words", 200),
             ))
-            translated_path = workspace / f"script_{lang}.txt"
-            write_text(translated_path, result.translated_script)
             write_json(workspace / f"translation_log_{lang}.json", [
                 {
                     "chunk_index": cr.chunk_index,
@@ -2421,6 +2462,9 @@ class Tool1Service:
                 }
                 for cr in result.chunk_results
             ])
+            translated_script = self._validated_translation_script(result, language_code=lang)
+            translated_path = workspace / f"script_{lang}.txt"
+            write_text(translated_path, translated_script)
             self.db.update_episode_language_status(
                 episode_id, lang,
                 translation_status="done",
@@ -2430,6 +2474,7 @@ class Tool1Service:
             self.db.update_episode_language_status(
                 episode_id, lang,
                 translation_status="failed",
+                script_path=None,
                 error_message=str(exc)[:500],
             )
 
@@ -2952,10 +2997,6 @@ class Tool1Service:
                     max_words_per_chunk=settings.get("translation_chunk_max_words", 800),
                     context_tail_words=settings.get("translation_context_tail_words", 200),
                 ))
-                translated_path = workspace / f"script_{lang}.txt"
-                write_text(translated_path, result.translated_script)
-
-                # Save translation log
                 chunk_log = [
                     {
                         "chunk_index": cr.chunk_index,
@@ -2968,6 +3009,9 @@ class Tool1Service:
                     for cr in result.chunk_results
                 ]
                 write_json(workspace / f"translation_log_{lang}.json", chunk_log)
+                translated_script = self._validated_translation_script(result, language_code=lang)
+                translated_path = workspace / f"script_{lang}.txt"
+                write_text(translated_path, translated_script)
 
                 self.db.update_episode_language_status(
                     episode_id, lang,
@@ -2979,6 +3023,7 @@ class Tool1Service:
                 self.db.update_episode_language_status(
                     episode_id, lang,
                     translation_status="failed",
+                    script_path=None,
                     error_message=str(exc)[:500],
                 )
 
@@ -2993,11 +3038,8 @@ class Tool1Service:
     ) -> str:
         master_language = str(episode.get("master_language") or "en").strip() or "en"
         if language_code == master_language:
-            return str(episode.get("script_text") or "")
-        script_path = str((language_status or {}).get("script_path") or "").strip()
-        if script_path and Path(script_path).exists():
-            return read_text(Path(script_path))
-        return str(episode.get("script_text") or "")
+            return str(episode.get("script_text") or "").strip()
+        return self._read_path_text((language_status or {}).get("script_path")).strip()
 
     def _queue_episode_tts_jobs(
         self,

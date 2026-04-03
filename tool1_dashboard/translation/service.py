@@ -102,6 +102,9 @@ class TranslationService:
                     model=model,
                     prompt=prompt,
                 )
+                translated = str(translated or "").strip()
+                if not translated:
+                    raise TranslationError(provider.title(), 200, "Model returned empty translation.")
                 words_out = len(translated.split())
                 chunk_results.append(ChunkResult(
                     chunk_index=chunk.index,
