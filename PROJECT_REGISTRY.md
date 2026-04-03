@@ -149,6 +149,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - **2026-04-03**: Repeated XTTS `character limit of 250` warnings during live narration are a real production bug signal, not harmless noise; when those warnings appear in a batch run, stop the job, fix the chunk sizing, and regenerate instead of letting a potentially truncated narration finish
 - **2026-04-03**: TTS must stay strictly one language at a time; if two narration jobs run in parallel the machine load is unacceptable, so duplicate workers should be treated as a production bug and collapsed back to a single queue consumer immediately
 - **2026-04-03**: The app cannot behave like a browser tab with hidden Python processes behind it; the user needs one visible desktop window, a clear place inside the app to see whether the backend/voice engine are running, guaranteed single-instance behavior, and closing that window must stop all background work without requiring terminals or Task Manager
+- **2026-04-03**: Scene planning should stop asking the model to invent raw `start/end` timings when a precise SRT already exists; the model should focus on contextual scene grouping only, and the backend should derive deterministic timings from subtitle anchors instead of fuzzy text matching
 - **2026-03-26**: The project page should be the real workspace: project Kanban first, not a flat episode list and not a global board
 - **2026-03-26**: Adding an episode should leave it in Draft; queueing must be explicit instead of automatic
 - **2026-03-26**: The primary project CTA should say `Create episode`; the Draft state is secondary detail and should be explained in helper copy instead of the main button label
@@ -204,6 +205,8 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - Consider carrying `last_completed_chunk` in job metadata so the UI can hold 100% during the final merge step without relying on progress-string parsing
 - Add a clearer “production safe” vs “more expressive” explanation in the tuning modal so preset choice is more obvious before users touch the advanced controls
 - Consider inline stage-run diffing/retry tools in the episode overlay once the current workflow remains stable
+- Refactor `scene_planning` into an anchor-based flow where the model returns scene groups tied to master subtitle cue ids or cue ranges, and the backend computes `start/end/duration/text` deterministically from the SRT
+- Keep cross-language timing deterministic by reusing cue indices or a cue-map artifact during `timeline_mapping`, instead of trying to rediscover translated scene text by similarity search
 
 ## Phase Plan
 
