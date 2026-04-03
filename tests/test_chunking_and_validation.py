@@ -145,6 +145,22 @@ class ChunkingValidationTests(unittest.TestCase):
         self.assertEqual([scene["text"] for scene in scenes], ["Opening line", "Next line"])
         self.assertTrue(any("gap marker" in warning for warning in warnings))
 
+    def test_normalize_scene_payload_trims_malformed_trailing_suffix(self) -> None:
+        scenes, warnings = normalize_scene_payload(
+            {
+                "scenes": [
+                    {"start": 0.0, "end": 6.0, "duration": 6.0, "text": "Opening line", "notes": "real scene"},
+                    {"start": 6.0, "end": 12.0, "duration": 6.0, "text": "Next line", "notes": "real scene"},
+                    {"start": 12.0, "end": 10.0, "duration": -2.0, "text": "Broken tail", "notes": ""},
+                    {"start": 10.0, "end": 10.0, "duration": 0.0, "text": "More broken tail", "notes": ""},
+                    {"start": 10.0, "end": 10.0, "duration": 0.0, "text": "", "notes": "gap absorbed"},
+                ]
+            },
+            5,
+        )
+        self.assertEqual([scene["text"] for scene in scenes], ["Opening line", "Next line"])
+        self.assertTrue(any("malformed trailing scenes" in warning for warning in warnings))
+
     def test_visual_bible_normalization_requires_core_sections(self) -> None:
         normalized, report = normalize_visual_bible(
             {

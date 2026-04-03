@@ -279,6 +279,34 @@ def _is_gap_placeholder(
     return "skip" in note_lower or "gap" in note_lower or "absorbed" in note_lower
 
 
+def _remaining_scenes_form_malformed_tail(scenes: list[Any], start_index: int) -> bool:
+    for raw_scene in scenes[start_index:]:
+        if not isinstance(raw_scene, dict):
+            return False
+        try:
+            start = round(_as_float(raw_scene.get("start"), "start"), 3)
+            end = round(_as_float(raw_scene.get("end"), "end"), 3)
+            requested_duration = round(_as_float(raw_scene.get("duration", end - start), "duration"), 3)
+        except ValueError:
+            return False
+        text = _clean_text(raw_scene.get("text"))
+        notes = _clean_text(raw_scene.get("notes"))
+        if _is_gap_placeholder(
+            start=start,
+            end=end,
+            requested_duration=requested_duration,
+            text=text,
+            notes=notes,
+        ):
+            continue
+        if end <= start:
+            continue
+        if not text:
+            continue
+        return False
+    return True
+
+
 def normalize_scene_payload(payload: dict[str, Any], source_chunk_id: int) -> tuple[list[dict[str, Any]], list[str]]:
     scenes = payload.get("scenes")
     if not isinstance(scenes, list):
@@ -304,9 +332,22 @@ def normalize_scene_payload(payload: dict[str, Any], source_chunk_id: int) -> tu
                 f"Chunk {source_chunk_id} scene {position} was a zero-length gap marker and was discarded."
             )
             continue
+        malformed_tail = normalized and _remaining_scenes_form_malformed_tail(scenes, position - 1)
         if end <= start:
+            if malformed_tail:
+                warnings.append(
+                    f"Chunk {source_chunk_id} emitted malformed trailing scenes starting at scene {position}; "
+                    f"trimmed {len(scenes) - position + 1} trailing scene(s)."
+                )
+                break
             raise ValueError(f"Scene {position} ends before it starts.")
         if not text:
+            if malformed_tail:
+                warnings.append(
+                    f"Chunk {source_chunk_id} emitted trailing empty scenes starting at scene {position}; "
+                    f"trimmed {len(scenes) - position + 1} trailing scene(s)."
+                )
+                break
             raise ValueError(f"Scene {position} has no text.")
         actual_duration = round(end - start, 3)
         if math.fabs(actual_duration - requested_duration) > 0.35:
