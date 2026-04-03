@@ -40,7 +40,7 @@ VOICE_TTS_LIMITS: dict[str, dict[str, float | int]] = {
     "top_p": {"min": 0.60, "max": 0.95},
     "top_k": {"min": 10, "max": 80},
     "speed": {"min": 0.96, "max": 1.05},
-    "chunk_max_chars": {"min": 120, "max": 260},
+    "chunk_max_chars": {"min": 120, "max": 250},
     "silence_gap_seconds": {"min": 0.00, "max": 0.25},
 }
 

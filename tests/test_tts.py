@@ -20,7 +20,6 @@ from tool1_dashboard.tts.audio import generate_silence_wav, merge_wav_chunks_str
 from tool1_dashboard.tts.chunker import TTSChunk, chunk_text_for_tts
 from tool1_dashboard.tts.constants import (
     CHUNK_MAX_CHARS,
-    GENERATE_MIN_CHUNK_MAX_CHARS,
     INTERACTIVE_IDLE_SHUTDOWN_SECONDS,
     WORKER_IDLE_RECHECK_SECONDS,
     XTTS_LANG_MAP,
@@ -347,7 +346,7 @@ class VoiceTtsConfigTests(unittest.TestCase):
         self.assertEqual(config["top_p"], 0.6)
         self.assertEqual(config["top_k"], 80)
         self.assertEqual(config["speed"], 0.96)
-        self.assertEqual(config["chunk_max_chars"], 260)
+        self.assertEqual(config["chunk_max_chars"], 250)
         self.assertEqual(config["silence_gap_seconds"], 0.0)
 
     def test_xtts_inference_kwargs_are_explicit_and_disable_internal_split(self):
@@ -887,12 +886,9 @@ class ServiceVoiceRuntimeTests(unittest.TestCase):
             text=long_text,
         )
 
-        self.assertEqual(
-            generate_payload["tts_config"]["chunk_max_chars"],
-            GENERATE_MIN_CHUNK_MAX_CHARS,
-        )
+        self.assertEqual(generate_payload["tts_config"]["chunk_max_chars"], 180)
         self.assertEqual(voice_test_payload["tts_config"]["chunk_max_chars"], 180)
-        self.assertLessEqual(len(generate_payload["texts"]), len(voice_test_payload["texts"]))
+        self.assertEqual(generate_payload["texts"], voice_test_payload["texts"])
 
     def test_completed_job_payload_keeps_final_chunk_totals_and_percent(self):
         job_payload = self.service._build_tts_job_client_payload({

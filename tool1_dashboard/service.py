@@ -65,7 +65,7 @@ from .translation_profiles import (
     sanitize_translation_profile,
     sort_openai_models,
 )
-from .tts.constants import GENERATE_MIN_CHUNK_MAX_CHARS, STALE_PROCESSING_SECONDS
+from .tts.constants import STALE_PROCESSING_SECONDS
 from .tts.voice_config import (
     DEFAULT_VOICE_TTS_PRESET,
     chunk_text_for_voice_tts,
@@ -1544,12 +1544,7 @@ class Tool1Service:
             raise ValueError("No valid text to generate audio.")
         xtts_language = map_language_code(str(language or "").strip() or "en")
         tts_config = self._resolve_voice_tts_config(profile)
-        production_tts_config = dict(tts_config)
-        production_tts_config["chunk_max_chars"] = max(
-            int(production_tts_config.get("chunk_max_chars", 0) or 0),
-            GENERATE_MIN_CHUNK_MAX_CHARS,
-        )
-        texts = chunk_text_for_voice_tts(resolved_text, production_tts_config)
+        texts = chunk_text_for_voice_tts(resolved_text, tts_config)
         if not texts:
             raise ValueError("No valid text to generate audio.")
         return {
@@ -1559,7 +1554,7 @@ class Tool1Service:
             "text": resolved_text,
             "texts": texts,
             "chunked": True,
-            "tts_config": production_tts_config,
+            "tts_config": tts_config,
         }
 
     def _build_voice_test_payload(
