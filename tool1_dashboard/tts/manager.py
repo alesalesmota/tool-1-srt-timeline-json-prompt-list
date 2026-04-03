@@ -9,6 +9,7 @@ import importlib
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -227,6 +228,7 @@ class TTSManager:
             raise RuntimeError(runtime.error or "TTS runtime unavailable.")
 
         self._remember_usage(intent)
+        self._enforce_single_worker()
         health = self.get_worker_health()
         if health.running and not health.is_stale:
             self._schedule_shutdown_check()
@@ -251,25 +253,136 @@ class TTSManager:
 
     # ── worker lifecycle ─────────────────────────────────────────────
 
+    @staticmethod
+    def _pid_is_alive(pid: Any) -> bool:
+        try:
+            pid_value = int(pid or 0)
+        except (TypeError, ValueError):
+            return False
+        if pid_value <= 0:
+            return False
+        try:
+            os.kill(pid_value, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+
+    @staticmethod
+    def _terminate_pid(pid: Any) -> bool:
+        try:
+            pid_value = int(pid or 0)
+        except (TypeError, ValueError):
+            return False
+        if pid_value <= 0 or pid_value == os.getpid():
+            return False
+        if sys.platform.startswith("win"):
+            result = subprocess.run(
+                ["taskkill", "/PID", str(pid_value), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                return True
+            output = f"{result.stdout}\n{result.stderr}".lower()
+            return "not found" in output or "não há ocorrência da tarefa" in output
+        try:
+            os.kill(pid_value, signal.SIGTERM)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        except OSError:
+            return False
+        return True
+
+    def _list_live_worker_heartbeats(self) -> list[dict[str, Any]]:
+        cutoff = time.time() - HEARTBEAT_STALE_TIMEOUT
+        live_workers: list[dict[str, Any]] = []
+        seen_pids: set[int] = set()
+        for heartbeat in self._db.list_worker_heartbeats():
+            status = str(heartbeat.get("status") or "").strip().lower()
+            heartbeat_at = float(heartbeat.get("heartbeat_at") or 0)
+            pid = heartbeat.get("pid")
+            try:
+                pid_value = int(pid or 0)
+            except (TypeError, ValueError):
+                pid_value = 0
+            if status in {"stopped", "unavailable"}:
+                continue
+            if heartbeat_at <= 0 or heartbeat_at < cutoff:
+                continue
+            if pid_value <= 0 or not self._pid_is_alive(pid_value):
+                continue
+            if pid_value in seen_pids:
+                continue
+            seen_pids.add(pid_value)
+            live_workers.append(dict(heartbeat))
+        return live_workers
+
+    def _preferred_live_worker_locked(
+        self,
+        live_workers: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if not live_workers:
+            return None
+        process_pid = None
+        if self._process is not None and self._process.poll() is None:
+            process_pid = self._process.pid
+        if process_pid is not None:
+            for worker in live_workers:
+                if int(worker.get("pid") or 0) == process_pid:
+                    return worker
+        if self._active_worker_id:
+            for worker in live_workers:
+                if str(worker.get("worker_id") or "").strip() == self._active_worker_id:
+                    return worker
+        return live_workers[0]
+
+    def _enforce_single_worker(self) -> None:
+        with self._lock:
+            live_workers = self._list_live_worker_heartbeats()
+            preferred = self._preferred_live_worker_locked(live_workers)
+            if preferred is not None:
+                self._active_worker_id = str(preferred.get("worker_id") or "").strip() or None
+            if len(live_workers) <= 1:
+                return
+
+            reason = "Stopped duplicate TTS worker to enforce single-worker generation."
+            preferred_worker_id = str((preferred or {}).get("worker_id") or "").strip()
+            for worker in live_workers:
+                worker_id = str(worker.get("worker_id") or "").strip()
+                if worker_id == preferred_worker_id:
+                    continue
+                pid = worker.get("pid")
+                if not self._terminate_pid(pid):
+                    continue
+                self._db.mark_worker_heartbeat_stopped(worker_id, last_error=reason)
+                current_job_id = str(worker.get("current_job_id") or "").strip()
+                if current_job_id:
+                    self._db.requeue_tts_job(
+                        current_job_id,
+                        progress="Requeued after duplicate worker shutdown.",
+                    )
+
     def start_worker(self) -> bool:
         """Spawn the TTS worker subprocess.  Returns True if started."""
         with self._lock:
+            self._enforce_single_worker()
             if self._process is not None and self._process.poll() is None:
                 return False  # already running
 
-            existing_heartbeat = self._db.get_latest_worker_heartbeat()
-            if existing_heartbeat is not None:
-                heartbeat_status = str(existing_heartbeat.get("status") or "").strip().lower()
-                heartbeat_at = float(existing_heartbeat.get("heartbeat_at") or 0)
-                if (
-                    heartbeat_status not in {"stopped", "unavailable"}
-                    and heartbeat_at
-                    and (time.time() - heartbeat_at) <= HEARTBEAT_STALE_TIMEOUT
-                ):
-                    self._active_worker_id = str(existing_heartbeat.get("worker_id") or "").strip() or None
-                    self._starting_since = None
-                    self._last_startup_error = None
-                    return False
+            live_workers = self._list_live_worker_heartbeats()
+            if live_workers:
+                preferred = self._preferred_live_worker_locked(live_workers)
+                self._active_worker_id = str((preferred or {}).get("worker_id") or "").strip() or None
+                self._starting_since = None
+                self._last_startup_error = None
+                return False
 
             runtime = self.get_runtime_status()
             if not runtime.available:
@@ -366,7 +479,6 @@ class TTSManager:
             self.start_worker()
 
     def get_worker_health(self) -> WorkerHealth:
-        heartbeat = self._db.get_latest_worker_heartbeat()
         running = self.is_worker_alive()
         runtime = self.get_runtime_status()
         active_tts_jobs = self._db.list_active_tts_jobs()
@@ -391,7 +503,13 @@ class TTSManager:
             remembered_startup_error = self._last_startup_error
         startup_error = runtime.error if not runtime.available else remembered_startup_error
 
-        current_heartbeat = heartbeat
+        current_heartbeat = (
+            self._db.get_worker_heartbeat(active_worker_id)
+            if active_worker_id
+            else None
+        )
+        if current_heartbeat is None:
+            current_heartbeat = self._db.get_latest_worker_heartbeat()
         heartbeat_is_current = current_heartbeat is not None
         if current_heartbeat is not None:
             heartbeat_worker_id = str(current_heartbeat.get("worker_id") or "").strip()

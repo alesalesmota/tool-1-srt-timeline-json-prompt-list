@@ -176,6 +176,27 @@ class WorkerHeartbeatDbTests(unittest.TestCase):
         self.assertEqual(hb["status"], "processing")
         self.assertEqual(hb["current_job_id"], "j1")
 
+    def test_list_worker_heartbeats_newest_first(self):
+        now = time.time()
+        self.db.record_worker_heartbeat(
+            worker_id="older",
+            status="idle",
+            current_job_id=None,
+            pid=100,
+            started_at=now - 10,
+        )
+        time.sleep(0.01)
+        self.db.record_worker_heartbeat(
+            worker_id="newer",
+            status="processing",
+            current_job_id="job-1",
+            pid=200,
+            started_at=now,
+        )
+        rows = self.db.list_worker_heartbeats()
+        self.assertEqual(rows[0]["worker_id"], "newer")
+        self.assertEqual(rows[1]["worker_id"], "older")
+
 
 class TTSJobDbTests(unittest.TestCase):
 
@@ -303,6 +324,54 @@ class TTSJobDbTests(unittest.TestCase):
         job = self.db.get_tts_job("fresh-worker-job")
         self.assertEqual(job["status"], "processing")
         self.assertEqual(job["worker_id"], "active-worker")
+
+    def test_requeue_tts_job_resets_job_and_language_status(self):
+        now = time.time()
+        self.db.create_episode({
+            "id": "ep-1",
+            "niche_project_id": "np-1",
+            "title": "Episode",
+            "script_text": "hello",
+            "workspace_dir": str(Path(self._tmpdir) / "ep-1"),
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+        })
+        self.db.create_episode_language_status({
+            "id": "els-1",
+            "episode_id": "ep-1",
+            "language_code": "en",
+            "translation_status": "done",
+            "tts_status": "running",
+            "srt_status": "pending",
+            "timeline_status": "pending",
+            "tts_job_id": "job-1",
+            "updated_at": utc_now(),
+        })
+        self.db.create_tts_job({
+            "job_id": "job-1",
+            "job_type": "generate",
+            "profile_id": "p1",
+            "status": "processing",
+            "progress": "Generating chunk 3/10...",
+            "payload_json": "{}",
+            "meta_json": "{}",
+            "queue_priority": 10,
+            "worker_id": "worker-a",
+            "created_at": now,
+            "updated_at": now,
+        })
+
+        changed = self.db.requeue_tts_job(
+            "job-1",
+            progress="Requeued after duplicate worker shutdown.",
+        )
+
+        self.assertTrue(changed)
+        job = self.db.get_tts_job("job-1")
+        self.assertEqual(job["status"], "queued")
+        self.assertIsNone(job["worker_id"])
+        lang_status = self.db.get_episode_language_status("ep-1", "en")
+        self.assertEqual(lang_status["tts_status"], "queued")
 
     def test_latest_latent_job_for_profile(self):
         now = time.time()
@@ -630,9 +699,97 @@ class ManagerJobSubmissionTests(unittest.TestCase):
             started_at=now,
         )
         mgr = TTSManager(self.db)
-        started = mgr.start_worker()
+        with patch.object(mgr, "_pid_is_alive", return_value=True):
+            started = mgr.start_worker()
         self.assertFalse(started)
         self.assertEqual(mgr._active_worker_id, "worker-live")
+
+    def test_ensure_worker_ready_stops_duplicate_worker_and_requeues_its_job(self):
+        from tool1_dashboard.tts.manager import TTSManager, WorkerRuntimeStatus
+
+        now = time.time()
+        self.db.create_episode({
+            "id": "ep-1",
+            "niche_project_id": "np-1",
+            "title": "Episode",
+            "script_text": "hello",
+            "workspace_dir": str(Path(self._tmpdir) / "ep-1"),
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+        })
+        self.db.create_episode_language_status({
+            "id": "els-1",
+            "episode_id": "ep-1",
+            "language_code": "es",
+            "translation_status": "done",
+            "tts_status": "running",
+            "srt_status": "pending",
+            "timeline_status": "pending",
+            "tts_job_id": "job-dup",
+            "updated_at": utc_now(),
+        })
+        self.db.create_tts_job({
+            "job_id": "job-dup",
+            "job_type": "generate",
+            "profile_id": "p1",
+            "status": "processing",
+            "progress": "Generating chunk 10/100...",
+            "payload_json": json.dumps({"texts": ["hello"]}),
+            "meta_json": "{}",
+            "queue_priority": 10,
+            "worker_id": "worker-dup",
+            "created_at": now,
+            "updated_at": now,
+        })
+        self.db.record_worker_heartbeat(
+            worker_id="worker-main",
+            status="processing",
+            current_job_id="job-main",
+            pid=1111,
+            started_at=now - 5,
+        )
+        self.db.record_worker_heartbeat(
+            worker_id="worker-dup",
+            status="processing",
+            current_job_id="job-dup",
+            pid=2222,
+            started_at=now - 4,
+        )
+
+        mgr = TTSManager(self.db)
+        mgr._active_worker_id = "worker-main"
+        with patch.object(
+            mgr,
+            "get_runtime_status",
+            return_value=WorkerRuntimeStatus(
+                available=True,
+                missing_dependencies=[],
+                error=None,
+            ),
+        ), patch.object(
+            mgr,
+            "_pid_is_alive",
+            return_value=True,
+        ), patch.object(
+            mgr,
+            "_terminate_pid",
+            return_value=True,
+        ) as terminate_mock, patch.object(
+            mgr,
+            "_schedule_shutdown_check",
+        ) as schedule_mock:
+            mgr.ensure_worker_ready(intent="pipeline")
+
+        terminate_mock.assert_called_once_with(2222)
+        job = self.db.get_tts_job("job-dup")
+        self.assertEqual(job["status"], "queued")
+        self.assertIsNone(job["worker_id"])
+        lang_status = self.db.get_episode_language_status("ep-1", "es")
+        self.assertEqual(lang_status["tts_status"], "queued")
+        duplicate_hb = self.db.get_worker_heartbeat("worker-dup")
+        self.assertEqual(duplicate_hb["status"], "stopped")
+        self.assertEqual(mgr._active_worker_id, "worker-main")
+        schedule_mock.assert_called_once()
 
     def test_ensure_worker_ready_restarts_stale_worker(self):
         from tool1_dashboard.tts.manager import TTSManager, WorkerHealth, WorkerRuntimeStatus

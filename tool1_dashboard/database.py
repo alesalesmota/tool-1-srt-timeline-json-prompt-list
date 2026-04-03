@@ -703,6 +703,65 @@ class Tool1Database:
             (worker_id,),
         )
 
+    def list_worker_heartbeats(self, limit: int | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM worker_heartbeats ORDER BY heartbeat_at DESC"
+        params: tuple[Any, ...] = ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (int(limit),)
+        return self._fetchall(query, params)
+
+    def mark_worker_heartbeat_stopped(
+        self,
+        worker_id: str,
+        *,
+        last_error: str | None = None,
+    ) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE worker_heartbeats
+                SET status = 'stopped',
+                    current_job_id = NULL,
+                    heartbeat_at = ?,
+                    last_error = ?
+                WHERE worker_id = ?
+                """,
+                (time.time(), last_error, worker_id),
+            )
+
+    def requeue_tts_job(self, job_id: str, *, progress: str) -> bool:
+        job = self.get_tts_job(job_id)
+        if job is None:
+            return False
+        self.update_tts_job(
+            job_id,
+            status="queued",
+            progress=progress,
+            worker_id=None,
+            control_action=None,
+            error_message=None,
+            finished_at=None,
+            updated_at=time.time(),
+        )
+        rows = self._fetchall(
+            """
+            SELECT episode_id, language_code
+            FROM episode_language_status
+            WHERE tts_job_id = ?
+            """,
+            (job_id,),
+        )
+        for row in rows:
+            self.update_episode_language_status(
+                row["episode_id"],
+                row["language_code"],
+                tts_status="queued",
+                tts_audio_path=None,
+                error_message=None,
+            )
+        return True
+
     def claim_next_tts_job(self, worker_id: str) -> dict[str, Any] | None:
         """Atomically claim the next queued TTS job for *worker_id*.
 
