@@ -24,7 +24,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 - **Tool 1** (this project) — Planning & pre-generation: translation → TTS → alignment → scene planning → timeline → prompts
 - **Tool 2** (separate) — Final video assembly: takes Tool 1 outputs + shared assets → produces final localized videos
 
-## Current State (as of 2026-04-03)
+## Current State (as of 2026-04-04)
 
 ### What Exists & Works
 - **Dashboard app** (`tool1_dashboard/`) — FastAPI-based, Kanban-style pipeline UI
@@ -79,6 +79,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - Paused-TTS recovery now requeues orphaned `processing` jobs whose worker has no fresh heartbeat even when another worker is healthy, and duplicate worker starts are blocked when a fresh shared-worker heartbeat already exists
   - The dashboard Python environment was repaired on 2026-03-29 to use `torch 2.3.1+cu121` / `torchaudio 2.3.1+cu121`; runtime verification now reports `device = cuda` on the RTX 3050 Laptop GPU
   - The voice-profile card action row is now fully compact: play, tuning, and delete use icon-only controls with hover tooltips, and active play-test states stay visually tight instead of expanding into large text-button blocks
+  - Operational visibility note on 2026-04-04: long-form XTTS runs execute in a detached background worker (`python -m tool1_dashboard.tts.worker`), so the shell can sit at a normal prompt while narration is still active; the authoritative live signals are `worker_heartbeats`, `tts_jobs.progress`, and fresh files under `workspace/tts/chunks/<job_id>/`, while `workspace/tts/worker.log` can look stale because stdout is buffered
 - **Stage-run logging for provider stages**
   - consistency guide, scene planning, and prompt generation now preserve structured stage runs and full failure details
 - **Template/settings reads**
@@ -107,9 +108,9 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 - Fresh Windows environments still need the XTTS runtime installed manually; long-form throughput is only acceptable when the dashboard Python environment uses the CUDA build of the pinned `torch` / `torchaudio`, and Coqui TTS may still require Microsoft C++ Build Tools before voice cloning can work
 
 ### Git State
-- Branch: `fix/italian-alignment-retry` (active)
-- Previous: `codex/tts-throughput-stabilization` (CUDA runtime repair, production-chunk override, orphaned-job requeue recovery, duplicate-worker start blocking, throttled generate progress writes, CPU/GPU + queue-depth telemetry)
-- Latest: Drawbridge bug-fix pass on 2026-03-29 — quiesces stale paused_for_tts episodes on startup so nothing auto-resumes, removes auto-sync text flicker, shows contextual message in empty review section
+- Branch: `codex/episode-205-repair-hardening` (active)
+- Previous: `fix/italian-alignment-retry` (Italian MFA model-id repair, per-language retry expansion to alignment/timeline mapping, preserved upstream alignment failures on skipped timelines)
+- Latest: 2026-04-04 operational verification confirmed that the live XTTS worker can keep generating narration in the background while the shell is idle, and that progress is visible from SQLite heartbeat/job rows plus the per-job chunk directory even when `worker.log` is unchanged
 - Remote: `https://github.com/alesalesmota/tool-1-srt-timeline-json-prompt-list.git`
 
 ## Architecture Decisions
@@ -148,6 +149,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 ## User Observations & Insights
 
+- **2026-04-04**: An idle terminal does not mean the TTS worker is hung; when a long narration run is active in the background, the user needs a reliable way to tell the difference between real progress and a stuck agent without hunting through Task Manager
 - **2026-04-02**: A bridge-reported `TTS / Voice` failure can actually be an upstream translation problem; empty translated-script artifacts must not be treated as valid output, and the retry path should bring the episode back to `translation` instead of leaving a misleading empty-audio error on the TTS step
 - **2026-04-03**: Repeated XTTS `character limit of 250` warnings during live narration are a real production bug signal, not harmless noise; when those warnings appear in a batch run, stop the job, fix the chunk sizing, and regenerate instead of letting a potentially truncated narration finish
 - **2026-04-03**: TTS must stay strictly one language at a time; if two narration jobs run in parallel the machine load is unacceptable, so duplicate workers should be treated as a production bug and collapsed back to a single queue consumer immediately
@@ -234,6 +236,7 @@ See `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` for the 10-phase 
 
 | Date | What Changed |
 |------|-------------|
+| 2026-04-04 | **Background XTTS worker health verified during a seemingly idle terminal**: confirmed that the shared narration worker was not stuck. The thread shell was already idle at a normal PowerShell prompt, while `python -m tool1_dashboard.tts.worker` kept running on CUDA in the background. Live verification showed the worker heartbeat advancing, `tts_jobs.progress` moving from `Generating chunk 307/358...` to `308/358...`, and the active job directory `workspace/tts/chunks/d596e093-85fa-4a91-8db9-5e0d7c4c369d/` growing from `612` to `616` chunk files in 10 seconds. Also recorded the operational caveat that `workspace/tts/worker.log` may appear stale because worker stdout is buffered. |
 | 2026-04-03 | **Episode `205` export review failed the shared-asset completeness check**: manual verification of `workspace/episodes/niche-20260326-133703-religi-o/ep-20260402-201657-205` confirmed that all five language rows in `episode_language_status` are `done` and their script/audio/SRT/timeline files exist, but the shared review/export assets are truncated. `master_scenes.json`, `timeline_draft.json`, `prompt_list_draft.txt`, and `prompt_blueprint.jsonl` all end at `scene_382` / `2982.0s` (`the center of Christian faith.`) while `final_en.srt` continues to cue `904` / `3361.6s` and the localized SRTs run even longer. No export zip existed at review time, and the episode remained in `board_status = Review` / `pipeline_status = review`. |
 | 2026-04-03 | **Italian alignment fix + single-language recovery complete**: corrected the Italian MFA model ids from the nonexistent `italian_mfa` to `italian_cv`, added backend/UI retry support for per-language `alignment` and `timeline_mapping`, preserved upstream alignment errors when timeline mapping skips for missing SRT, and verified the repair with targeted pytest coverage plus live single-language reruns that regenerated `final_it.srt` and `timeline_it.json` for episodes `204` and `205`. |
 | 2026-04-03 | **Scene-planning malformed-tail recovery complete**: taught `tool1_dashboard/validators.py` to trim a fully malformed trailing suffix when the remaining LLM scene entries are only zero/negative-duration spillover or gap markers, added regression coverage in `tests/test_chunking_and_validation.py`, and replayed episode `205` through `scene_planning` on the patched code. The episode now has a regenerated `timeline_draft.json` and sits paused at `video_prompt_generation` instead of failing on `Scene 70 ends before it starts.` |
