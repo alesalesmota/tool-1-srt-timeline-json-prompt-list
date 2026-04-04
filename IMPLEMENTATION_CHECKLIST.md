@@ -1,6 +1,15 @@
 # Implementation Checklist
 > Track progress across conversations. Update after each task.
 
+## Episode 205 Repair Plan (2026-04-04)
+- [x] Harden scene-planning prompts, scene merge normalization, and cue-tail coverage checks so chunk-local timestamps cannot silently truncate shared review assets
+- [x] Add regression coverage for late chunk timestamp rebasing and final cue coverage validation
+- [x] Harden translation prompts/audits/retry behavior for mixed-language leakage, untranslated CTA text, and configured per-language channel names
+- [x] Preserve full source-script text during scene-aware translation retries and make `gpt-5.4*` translation requests compatible with the Responses API reasoning contract
+- [x] Reprocess episode `205` shared assets through `scene_planning -> video_prompt_generation -> image_prompt_generation -> timeline_mapping` and verify coverage through `3361.6s`
+- [x] Regenerate repaired localized outputs for `es`, `fr`, and `it` through `translation -> tts -> alignment -> timeline_mapping`
+- [x] Re-audit episode `205` outputs and record the remaining French subtitle-warning risk in `PROJECT_REGISTRY.md`
+
 ## Drawbridge Live-Activity Signal Clarity (2026-03-28)
 - [x] Expose stdout/stderr preview timestamps and sizes in serialized stage-run payloads
 - [x] Rebuild the `Live activity` panel so it separates run age, output source, last preview write, and preview/snapshot content

@@ -1,5 +1,5 @@
 # Tool 1 Creator Studio — Reconstruction Plan
-> Last updated: 2026-03-28
+> Last updated: 2026-04-04
 
 ## Context
 
@@ -22,6 +22,13 @@ Tool 1 is the multilingual video planning pipeline for Creator Studio. The user 
 - Workflow controls now support resume-from-stop, pause-at-safe-boundary, and selected-step reruns from the episode detail/overlay UI.
 - Backend queueing now defaults failed/paused episodes to their actual stopped stage instead of always falling back to `consistency_guide`.
 - Selected-step reruns can reset downstream outputs safely, and mid-pipeline starts now validate that prerequisite assets exist before queueing.
+
+### Episode 205 Repair Pass (2026-04-04)
+- Scene-planning now requires absolute episode seconds, rebases late chunk-local timestamps when they slip through, and fails fast when merged coverage stops materially before the final master cue.
+- Translation retries now preserve the original source script text instead of relying only on lossy `master_scenes` text, so CTA/opening paragraphs are not dropped during single-language repairs.
+- Translation audits now explicitly reject mixed-language CTA leakage while preserving configured per-language channel names such as `Biblo Viral` and `Orizzonte`.
+- Episode `205` was reprocessed through shared scene planning plus localized ES/FR/IT regeneration. Shared review assets now cover `378` scenes through `3361.6s`; ES/FR/IT scripts, TTS, SRT, and timeline files were regenerated on the repaired code.
+- Residual risk: French still has a much noisier alignment report than the other languages even after the script repair, so Tool 2 handoff should include a human review of the French subtitles rather than assuming the warning-heavy pass is production-clean.
 
 ### What works (backend)
 - FastAPI app with ~50+ endpoints, SQLite database, service layer with worker loop
