@@ -226,7 +226,7 @@ class TranslationService:
         """
         # Build chunks
         if master_scenes:
-            chunks = build_scene_aware_chunks(master_scenes, max_words_per_chunk)
+            chunks = build_scene_aware_chunks(master_scenes, max_words_per_chunk, source_script=source_script)
         else:
             chunks = build_text_chunks(source_script, max_words_per_chunk)
 

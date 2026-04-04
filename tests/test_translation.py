@@ -120,6 +120,34 @@ class SceneAwareChunkingTests(unittest.TestCase):
         self.assertEqual(len(chunks), 1)
         self.assertEqual(chunks[0].scene_ids, ["s1", "s3"])
 
+    def test_source_script_is_preserved_when_scene_text_is_lossy(self):
+        source_script = "\n\n".join([
+            "This is how it began.",
+            "Welcome to True Light.",
+            "And if this is your first time here, please subscribe.",
+            "Now. Let us go deeper.",
+            "The disciples approached Jesus and asked him where to prepare the Passover meal.",
+        ])
+        scenes = [
+            {"scene_id": "scene-1", "text": "This is how it began."},
+            {"scene_id": "scene-2", "text": "Welcome to True Light."},
+            {
+                "scene_id": "scene-3",
+                "text": "The disciples approached Jesus and asked him where to prepare the Passover meal.",
+            },
+        ]
+
+        chunks = build_scene_aware_chunks(
+            scenes,
+            max_words_per_chunk=200,
+            source_script=source_script,
+        )
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].scene_ids, ["scene-1", "scene-2", "scene-3"])
+        self.assertIn("And if this is your first time here, please subscribe.", chunks[0].text)
+        self.assertIn("Now. Let us go deeper.", chunks[0].text)
+
 
 class TextFallbackChunkingTests(unittest.TestCase):
 
@@ -262,6 +290,14 @@ class TranslationAdapterOpenAiTests(unittest.TestCase):
         self.assertEqual(text, "Hola mundo")
         request_payload = recorder[0]["json"]
         self.assertEqual(request_payload["reasoning"]["effort"], "minimal")
+        self.assertEqual(request_payload["text"]["verbosity"], "low")
+
+    def test_gpt54_request_uses_low_reasoning_hint(self):
+        request_payload = TranslationAdapter._build_openai_request_body(
+            model="gpt-5.4",
+            prompt="Translate to Italian.",
+        )
+        self.assertEqual(request_payload["reasoning"]["effort"], "low")
         self.assertEqual(request_payload["text"]["verbosity"], "low")
 
     def test_incomplete_openai_response_raises_translation_error(self):

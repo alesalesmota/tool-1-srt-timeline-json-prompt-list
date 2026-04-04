@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 import re
 from dataclasses import dataclass, field
 
@@ -23,6 +24,8 @@ def _word_count(text: str) -> int:
 def build_scene_aware_chunks(
     master_scenes: list[dict],
     max_words_per_chunk: int = 800,
+    *,
+    source_script: str = "",
 ) -> list[TranslationChunk]:
     """Group consecutive scenes into translation chunks.
 
@@ -31,7 +34,16 @@ def build_scene_aware_chunks(
     - If adding a scene would exceed *max_words_per_chunk*, start a new chunk.
     - A single scene that exceeds the limit becomes its own chunk.
     - Each chunk records which scene_ids it contains.
+
+    When *source_script* is provided, chunk the original script text and use
+    scene metadata only to attach approximate contiguous ``scene_ids``. This
+    preserves the full script even when localized timeline scene text is lossy
+    or omits connective paragraphs.
     """
+    if str(source_script or "").strip():
+        text_chunks = build_text_chunks(source_script, max_words=max_words_per_chunk)
+        return _attach_scene_ids_to_text_chunks(text_chunks, master_scenes)
+
     chunks: list[TranslationChunk] = []
     current_ids: list[str] = []
     current_texts: list[str] = []
@@ -71,6 +83,71 @@ def build_scene_aware_chunks(
         ))
 
     return chunks
+
+
+def _attach_scene_ids_to_text_chunks(
+    text_chunks: list[TranslationChunk],
+    master_scenes: list[dict],
+) -> list[TranslationChunk]:
+    if not text_chunks:
+        return []
+
+    scene_entries: list[tuple[str, int]] = []
+    for scene in master_scenes:
+        scene_id = str(scene.get("scene_id", "")).strip()
+        scene_text = str(scene.get("text", "")).strip()
+        if not scene_id or not scene_text:
+            continue
+        scene_entries.append((scene_id, max(_word_count(scene_text), 1)))
+
+    if not scene_entries:
+        return [
+            TranslationChunk(
+                index=chunk.index,
+                scene_ids=[],
+                text=chunk.text,
+                word_count=chunk.word_count,
+            )
+            for chunk in text_chunks
+        ]
+
+    total_scene_words = sum(words for _, words in scene_entries)
+    total_text_words = sum(max(chunk.word_count, 1) for chunk in text_chunks)
+    scene_prefix: list[int] = []
+    running_scene_words = 0
+    for _, words in scene_entries:
+        running_scene_words += words
+        scene_prefix.append(running_scene_words)
+
+    attached: list[TranslationChunk] = []
+    scene_start = 0
+    text_words_so_far = 0
+    scene_count = len(scene_entries)
+    chunk_count = len(text_chunks)
+
+    for chunk_index, chunk in enumerate(text_chunks):
+        text_words_so_far += max(chunk.word_count, 1)
+        remaining_chunks = chunk_count - chunk_index - 1
+        remaining_scenes = scene_count - scene_start
+
+        if chunk_index == chunk_count - 1 or scene_start >= scene_count:
+            scene_end = scene_count
+        else:
+            target_scene_words = (text_words_so_far / total_text_words) * total_scene_words
+            proposed_end = bisect_left(scene_prefix, target_scene_words) + 1
+            min_end = min(scene_count, scene_start + 1)
+            max_end = scene_count if remaining_scenes <= remaining_chunks else scene_count - remaining_chunks
+            scene_end = max(min_end, min(proposed_end, max_end))
+
+        attached.append(TranslationChunk(
+            index=chunk.index,
+            scene_ids=[scene_id for scene_id, _ in scene_entries[scene_start:scene_end]],
+            text=chunk.text,
+            word_count=chunk.word_count,
+        ))
+        scene_start = scene_end
+
+    return attached
 
 
 def build_text_chunks(

@@ -135,7 +135,8 @@ class TranslationAdapter:
         if normalized_model.startswith("gpt-5"):
             # Keep GPT-5 translation runs focused on the final text instead of
             # spending the chunk budget on internal reasoning.
-            body["reasoning"] = {"effort": "minimal"}
+            effort = "low" if normalized_model.startswith("gpt-5.4") else "minimal"
+            body["reasoning"] = {"effort": effort}
             body["text"] = {"verbosity": "low"}
         return body
 
