@@ -297,6 +297,8 @@ class PromptBuildingTests(unittest.TestCase):
         self.assertIn("naturalness", prompt)
         self.assertIn("faithfulness", prompt)
         self.assertIn("channel-name compliance", prompt)
+        self.assertIn("Do not cite source-language phrases unless they appear verbatim in the translated script.", prompt)
+        self.assertIn("Every issue must quote or paraphrase the exact translated wording", prompt)
         self.assertIn("\"passed\": true", prompt)
 
 
@@ -624,6 +626,51 @@ class TranslationServiceTests(unittest.TestCase):
         ))
         self.assertEqual(result.status, "done")
         self.assertEqual(result.translated_script, "Le texte sonne naturellement.")
+
+    def test_review_false_positive_channel_name_is_pruned_and_high_scores_pass(self):
+        adapter = self._make_fake_adapter([
+            "Abonne-toi à Lumiére. Active la cloche.",
+            '{"passed": false, "issues": [{"criterion": "channel_name_compliance", "problem": "Le script garde \\"True Light\\"."}], "scores": {"fluency": 5, "naturalness": 4, "faithfulness": 5, "cta_quality": 4, "channel_name_compliance": 1}, "summary": "Mostly good."}',
+        ])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="Subscribe to True Light. Hit the bell.",
+            source_lang="English",
+            target_lang="French",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5.4-mini",
+            reviewer_required=True,
+            reviewer_api_key="judge-key",
+            source_channel_name="True Light",
+            target_channel_name="Lumiére",
+        ))
+        self.assertEqual(result.status, "done")
+        assert result.review_report is not None
+        self.assertTrue(result.review_report["passed"])
+        self.assertEqual(result.review_report["issues"], [])
+        self.assertEqual(result.review_report["scores"]["channel_name_compliance"], 5)
+
+    def test_review_minor_suggestions_with_all_scores_four_or_higher_do_not_fail(self):
+        adapter = self._make_fake_adapter([
+            "Texto fluido y natural.",
+            '{"passed": false, "issues": ["Minor phrasing suggestion."], "scores": {"fluency": 4, "naturalness": 4, "faithfulness": 5, "cta_quality": 4, "channel_name_compliance": 5}, "summary": "Good overall."}',
+        ])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="Natural translated text.",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+            reviewer_required=True,
+            reviewer_api_key="judge-key",
+        ))
+        self.assertEqual(result.status, "done")
+        assert result.review_report is not None
+        self.assertTrue(result.review_report["passed"])
+        self.assertEqual(result.review_report["issues"], ["Minor phrasing suggestion."])
 
     def test_judge_unavailable_fails_closed(self):
         adapter = self._make_fake_adapter([

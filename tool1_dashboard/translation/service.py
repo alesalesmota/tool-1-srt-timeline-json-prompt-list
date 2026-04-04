@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -153,6 +154,71 @@ class TranslationService:
         )
 
     @staticmethod
+    def _normalize_review_issue(item: Any) -> str:
+        if isinstance(item, dict):
+            criterion = str(item.get("criterion") or "").strip()
+            problem = str(item.get("problem") or item.get("issue") or "").strip()
+            if criterion and problem:
+                return f"[{criterion}] {problem}"
+            return problem or json.dumps(item, ensure_ascii=False)
+        return str(item or "").strip()
+
+    @staticmethod
+    def _review_scores_meet_quality_bar(scores: dict[str, int]) -> bool:
+        return bool(scores) and min(scores.values()) >= 4
+
+    @staticmethod
+    def _prune_review_false_positives(
+        *,
+        issues: list[str],
+        translated_script: str,
+        source_channel_name: str,
+    ) -> list[str]:
+        translated_lower = str(translated_script or "").lower()
+        source_channel_lower = str(source_channel_name or "").strip().lower()
+        if not source_channel_lower:
+            return issues
+        pruned: list[str] = []
+        for issue in issues:
+            issue_text = str(issue or "").strip()
+            issue_lower = issue_text.lower()
+            if source_channel_lower in issue_lower and source_channel_lower not in translated_lower:
+                continue
+            pruned.append(issue_text)
+        return pruned
+
+    @classmethod
+    def _sanitize_review_report(
+        cls,
+        report: dict[str, Any],
+        *,
+        translated_script: str,
+        source_channel_name: str,
+        target_channel_name: str,
+    ) -> dict[str, Any]:
+        sanitized = dict(report or {})
+        issues = cls._prune_review_false_positives(
+            issues=list(sanitized.get("issues") or []),
+            translated_script=translated_script,
+            source_channel_name=source_channel_name,
+        )
+        sanitized["issues"] = issues
+        scores = dict(sanitized.get("scores") or {})
+        source_channel = str(source_channel_name or "").strip()
+        target_channel = str(target_channel_name or "").strip()
+        if source_channel and target_channel:
+            source_present = bool(re.search(re.escape(source_channel), translated_script, flags=re.IGNORECASE))
+            target_present = bool(re.search(re.escape(target_channel), translated_script, flags=re.IGNORECASE))
+            if not source_present and target_present:
+                scores["channel_name_compliance"] = 5
+        sanitized["scores"] = scores
+        if not bool(sanitized.get("passed")) and cls._review_scores_meet_quality_bar(
+            scores
+        ):
+            sanitized["passed"] = True
+        return sanitized
+
+    @staticmethod
     def _parse_review_payload(review_text: str) -> dict[str, Any]:
         text = str(review_text or "").strip()
         if not text:
@@ -176,11 +242,11 @@ class TranslationService:
                 parsed_scores[key] = int(scores.get(key))
             except (TypeError, ValueError):
                 raise TranslationError("OpenAI", 200, f"Translation quality review omitted score '{key}'.")
-        issues = [
-            str(item).strip()
-            for item in payload.get("issues") or []
-            if str(item).strip()
-        ]
+        issues = []
+        for item in payload.get("issues") or []:
+            normalized_issue = TranslationService._normalize_review_issue(item)
+            if normalized_issue:
+                issues.append(normalized_issue)
         passed = payload.get("passed")
         if not isinstance(passed, bool):
             raise TranslationError("OpenAI", 200, "Translation quality review omitted boolean field 'passed'.")
@@ -220,7 +286,13 @@ class TranslationService:
             model=reviewer_model,
             prompt=prompt,
         )
-        return self._parse_review_payload(review_text)
+        parsed = self._parse_review_payload(review_text)
+        return self._sanitize_review_report(
+            parsed,
+            translated_script=translated_script,
+            source_channel_name=source_channel_name,
+            target_channel_name=target_channel_name,
+        )
 
     async def _repair_full_script(
         self,

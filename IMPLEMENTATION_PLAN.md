@@ -37,6 +37,7 @@ Tool 1 is the multilingual video planning pipeline for Creator Studio. The user 
 - Readable and spoken scripts are now distinct artifacts. TTS/alignment prefer the spoken script; review/export keep the readable script primary.
 - OpenAI translation calls now retry once with a larger output budget when `Responses API` returns `status = incomplete` because of `max_output_tokens`.
 - Operational implication: lower-quality translation profiles that previously slipped through can now fail closed. Episode `205` French is the first confirmed case.
+- Reviewer follow-up on 2026-04-04: the judge path now prunes unsupported source-channel complaints and treats all-`4+` score outputs as pass-with-suggestions rather than hard failures, which was necessary to keep French acceptance focused on real issues instead of reviewer hallucinations.
 
 ### What works (backend)
 - FastAPI app with ~50+ endpoints, SQLite database, service layer with worker loop

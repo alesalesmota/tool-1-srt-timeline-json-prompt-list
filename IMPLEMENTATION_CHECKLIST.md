@@ -11,6 +11,7 @@
 - [x] Add/refresh regression coverage for prompts, QA, spoken scripts, exports, queue/TTS orchestration, and OpenAI retry behavior
 - [x] Run full backend verification with `python -m pytest tests -q` (`198` passing, `4` subtests passing)
 - [x] Live-check episode `205` under the new gate, confirm French now fails safely on quality, and restore the last usable French artifacts with a spoken-script sidecar
+- [x] Add reviewer-sanity filtering for unsupported source-channel complaints / contradictory `4+` score failures, rerun French with `gpt-5.4-mini`, and regenerate French TTS + alignment + timeline from the accepted script
 
 ## Episode 205 Repair Plan (2026-04-04)
 - [x] Harden scene-planning prompts, scene merge normalization, and cue-tail coverage checks so chunk-local timestamps cannot silently truncate shared review assets
