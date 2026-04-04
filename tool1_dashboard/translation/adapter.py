@@ -17,6 +17,7 @@ class TranslationError(Exception):
 _TIMEOUT = httpx.Timeout(120.0, connect=30.0)
 _TEMPERATURE = 0.3
 _MAX_TOKENS = 8192
+_OPENAI_RETRY_MAX_TOKENS = 16384
 
 
 class TranslationAdapter:
@@ -67,9 +68,26 @@ class TranslationAdapter:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
-        body = self._build_openai_request_body(model=model, prompt=prompt)
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            body = self._build_openai_request_body(
+                model=model,
+                prompt=prompt,
+                max_output_tokens=_MAX_TOKENS,
+            )
             resp = await client.post(url, headers=headers, json=body)
+            if resp.status_code == 200:
+                data = resp.json()
+                if (
+                    str(data.get("status") or "").strip().lower() == "incomplete"
+                    and self._extract_openai_incomplete_reason(data) == "max_output_tokens"
+                    and _OPENAI_RETRY_MAX_TOKENS > _MAX_TOKENS
+                ):
+                    retry_body = self._build_openai_request_body(
+                        model=model,
+                        prompt=prompt,
+                        max_output_tokens=_OPENAI_RETRY_MAX_TOKENS,
+                    )
+                    resp = await client.post(url, headers=headers, json=retry_body)
         if resp.status_code != 200:
             msg = self._extract_error(resp, "error", "message")
             raise TranslationError("OpenAI", resp.status_code, msg)
@@ -125,11 +143,16 @@ class TranslationAdapter:
             return resp.text[:300] if resp.text else f"HTTP {resp.status_code}"
 
     @staticmethod
-    def _build_openai_request_body(*, model: str, prompt: str) -> dict[str, object]:
+    def _build_openai_request_body(
+        *,
+        model: str,
+        prompt: str,
+        max_output_tokens: int = _MAX_TOKENS,
+    ) -> dict[str, object]:
         body: dict[str, object] = {
             "model": model,
             "input": prompt,
-            "max_output_tokens": _MAX_TOKENS,
+            "max_output_tokens": max_output_tokens,
         }
         normalized_model = str(model or "").strip().lower()
         if normalized_model.startswith("gpt-5"):

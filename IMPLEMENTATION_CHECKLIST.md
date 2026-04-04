@@ -1,6 +1,17 @@
 # Implementation Checklist
 > Track progress across conversations. Update after each task.
 
+## Multilingual Translation Quality Upgrade (2026-04-04)
+- [x] Add shared per-language translation rulepacks for CTA/channel/reference guidance and known bad literal patterns
+- [x] Add deterministic translation QA that runs at chunk level and script level
+- [x] Add a fixed-model script reviewer gate (`gpt-5.4-mini`) with one repair attempt and fail-closed behavior
+- [x] Add readable + spoken script artifacts and persist `spoken_script_path` in language status rows
+- [x] Make TTS/alignment prefer spoken scripts and include readable + spoken scripts in export bundles
+- [x] Add OpenAI incomplete-response retry for `max_output_tokens`
+- [x] Add/refresh regression coverage for prompts, QA, spoken scripts, exports, queue/TTS orchestration, and OpenAI retry behavior
+- [x] Run full backend verification with `python -m pytest tests -q` (`198` passing, `4` subtests passing)
+- [x] Live-check episode `205` under the new gate, confirm French now fails safely on quality, and restore the last usable French artifacts with a spoken-script sidecar
+
 ## Episode 205 Repair Plan (2026-04-04)
 - [x] Harden scene-planning prompts, scene merge normalization, and cue-tail coverage checks so chunk-local timestamps cannot silently truncate shared review assets
 - [x] Add regression coverage for late chunk timestamp rebasing and final cue coverage validation

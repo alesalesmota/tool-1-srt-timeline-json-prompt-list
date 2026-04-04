@@ -1,0 +1,231 @@
+"""Per-language translation guidance and spoken-form normalization."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import re
+
+
+@dataclass(frozen=True)
+class LanguageRulepack:
+    code: str
+    language_name: str
+    cta_template: str
+    cta_notes: tuple[str, ...]
+    localized_channel_behavior: str
+    bad_literal_patterns: tuple[tuple[str, str], ...]
+    bad_literal_examples: tuple[str, ...]
+    protected_terms: tuple[str, ...]
+    chapter_word: str
+    verse_word: str
+    verses_word: str
+    range_word: str
+    ordinal_books: dict[int, str]
+    reference_example: str
+
+
+_GENERIC_PROTECTED_TERMS = ("Amen", "Hallelujah", "Yahweh", "Messiah")
+
+_RULEPACKS: dict[str, LanguageRulepack] = {
+    "en": LanguageRulepack(
+        code="en",
+        language_name="English",
+        cta_template="Subscribe to {channel}",
+        cta_notes=(
+            'For bell-icon CTAs, prefer idiomatic phrasing like "Click the bell" or "Tap the bell", not a pronoun-only command.',
+        ),
+        localized_channel_behavior="Preserve the configured localized channel name exactly.",
+        bad_literal_patterns=(),
+        bad_literal_examples=(),
+        protected_terms=_GENERIC_PROTECTED_TERMS,
+        chapter_word="chapter",
+        verse_word="verse",
+        verses_word="verses",
+        range_word="through",
+        ordinal_books={1: "First", 2: "Second", 3: "Third"},
+        reference_example="John chapter 18 verse 2",
+    ),
+    "de": LanguageRulepack(
+        code="de",
+        language_name="German",
+        cta_template="Abonniere {channel}",
+        cta_notes=(
+            'For bell-icon CTAs, prefer idiomatic phrasing like "Klicke auf die Glocke" instead of literal pronoun-only commands.',
+        ),
+        localized_channel_behavior="Preserve the configured German channel name exactly and do not retranslate it.",
+        bad_literal_patterns=(
+            (r"\bKlicke es\b", "Output contains awkward literal German CTA phrasing."),
+            (r"\bSubscribe to\b", "Output still contains English CTA wording."),
+        ),
+        bad_literal_examples=("Klicke es",),
+        protected_terms=_GENERIC_PROTECTED_TERMS,
+        chapter_word="Kapitel",
+        verse_word="Vers",
+        verses_word="Verse",
+        range_word="bis",
+        ordinal_books={1: "Erster", 2: "Zweiter", 3: "Dritter"},
+        reference_example="Johannes Kapitel 18 Vers 2",
+    ),
+    "es": LanguageRulepack(
+        code="es",
+        language_name="Spanish",
+        cta_template="Suscríbete a {channel}",
+        cta_notes=(
+            'For bell-icon CTAs, prefer idiomatic phrasing like "Haz clic en la campana" or "Pulsa la campana".',
+        ),
+        localized_channel_behavior="Preserve the configured Spanish channel name exactly and do not translate it again.",
+        bad_literal_patterns=(
+            (r"\bSubscribe to\b", "Output still contains English CTA wording."),
+            (r"\bClick here\b", "Output still contains English CTA wording."),
+        ),
+        bad_literal_examples=(),
+        protected_terms=_GENERIC_PROTECTED_TERMS,
+        chapter_word="capítulo",
+        verse_word="versículo",
+        verses_word="versículos",
+        range_word="al",
+        ordinal_books={1: "Primera", 2: "Segunda", 3: "Tercera"},
+        reference_example="Juan capítulo 18 versículo 2",
+    ),
+    "fr": LanguageRulepack(
+        code="fr",
+        language_name="French",
+        cta_template="Abonne-toi à {channel}",
+        cta_notes=(
+            'For bell-icon CTAs, prefer idiomatic phrasing like "Clique dessus" or "Active la cloche", never "Cliquez-la".',
+        ),
+        localized_channel_behavior="Preserve the configured French channel name exactly and keep the CTA idiomatic.",
+        bad_literal_patterns=(
+            (r"\bCliquez-la\b", "Output contains awkward literal French CTA phrasing."),
+            (r"\bse leva de la soupe\b", "Output contains a literal French calque that sounds unnatural."),
+            (r"\bextraordinaire détermination\b", "Output contains awkward literal French phrasing."),
+            (r"\bSubscribe to\b", "Output still contains English CTA wording."),
+        ),
+        bad_literal_examples=("Cliquez-la", "se leva de la soupe"),
+        protected_terms=_GENERIC_PROTECTED_TERMS,
+        chapter_word="chapitre",
+        verse_word="verset",
+        verses_word="versets",
+        range_word="à",
+        ordinal_books={1: "Premier", 2: "Deuxième", 3: "Troisième"},
+        reference_example="Jean chapitre 18 verset 2",
+    ),
+    "it": LanguageRulepack(
+        code="it",
+        language_name="Italian",
+        cta_template="Iscriviti a {channel}",
+        cta_notes=(
+            'For bell-icon CTAs, prefer idiomatic phrasing like "Clicca sulla campanella" instead of literal pronoun-only commands.',
+        ),
+        localized_channel_behavior="Preserve the configured Italian channel name exactly and do not retranslate it.",
+        bad_literal_patterns=(
+            (r"\bClicca-la\b", "Output contains awkward literal Italian CTA phrasing."),
+            (r"\bSubscribe to\b", "Output still contains English CTA wording."),
+        ),
+        bad_literal_examples=("Clicca-la",),
+        protected_terms=_GENERIC_PROTECTED_TERMS,
+        chapter_word="capitolo",
+        verse_word="versetto",
+        verses_word="versetti",
+        range_word="a",
+        ordinal_books={1: "Primo", 2: "Secondo", 3: "Terzo"},
+        reference_example="Giovanni capitolo 18 versetto 2",
+    ),
+}
+
+_LANGUAGE_ALIASES = {
+    "de": "de",
+    "de-de": "de",
+    "german": "de",
+    "deutsch": "de",
+    "en": "en",
+    "en-us": "en",
+    "en-gb": "en",
+    "english": "en",
+    "es": "es",
+    "es-es": "es",
+    "es-mx": "es",
+    "spanish": "es",
+    "espanol": "es",
+    "español": "es",
+    "fr": "fr",
+    "fr-fr": "fr",
+    "french": "fr",
+    "francais": "fr",
+    "français": "fr",
+    "it": "it",
+    "it-it": "it",
+    "italian": "it",
+    "italiano": "it",
+}
+
+_REFERENCE_PATTERN = re.compile(
+    r"\b((?:[1-3]\s+)?[A-ZÀ-ÖØ-Ý][A-Za-zÀ-ÖØ-öø-ÿ'’.-]*(?:\s+[A-ZÀ-ÖØ-Ý][A-Za-zÀ-ÖØ-öø-ÿ'’.-]*){0,3})\s+"
+    r"(\d{1,3}):(\d{1,3})(?:\s*[-–]\s*(\d{1,3}))?"
+)
+
+
+def normalize_language_code(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "en"
+    normalized = raw.lower()
+    if normalized in _LANGUAGE_ALIASES:
+        return _LANGUAGE_ALIASES[normalized]
+    primary = normalized.split("-", 1)[0]
+    return _LANGUAGE_ALIASES.get(primary, primary or "en")
+
+
+def resolve_language_rulepack(value: str) -> LanguageRulepack:
+    return _RULEPACKS.get(normalize_language_code(value), _RULEPACKS["en"])
+
+
+def display_language_name(value: str) -> str:
+    return resolve_language_rulepack(value).language_name
+
+
+def prompt_guidance_lines(language_code: str, *, target_channel_name: str = "") -> list[str]:
+    pack = resolve_language_rulepack(language_code)
+    channel_label = target_channel_name or "the configured localized channel name"
+    lines = [
+        f"Write like a native {pack.language_name} narrator and avoid literal calques or robotic phrasing.",
+        f'Render Bible references and citations naturally in {pack.language_name}; spoken example: "{pack.reference_example}".',
+        f'Use natural CTA wording in {pack.language_name}; preferred style: "{pack.cta_template.format(channel=channel_label)}".',
+        pack.localized_channel_behavior,
+    ]
+    lines.extend(pack.cta_notes)
+    if pack.protected_terms:
+        lines.append("These terms may stay as-is when already correct: " + ", ".join(pack.protected_terms) + ".")
+    if pack.bad_literal_examples:
+        lines.append("Avoid awkward literal phrasing such as: " + ", ".join(pack.bad_literal_examples) + ".")
+    return lines
+
+
+def _normalize_reference_book_name(book_name: str, pack: LanguageRulepack) -> str:
+    match = re.match(r"^\s*([1-3])\s+(.+?)\s*$", book_name)
+    if not match:
+        return book_name.strip()
+    prefix = int(match.group(1))
+    rest = match.group(2).strip()
+    ordinal = pack.ordinal_books.get(prefix)
+    if not ordinal:
+        return book_name.strip()
+    return f"{ordinal} {rest}"
+
+
+def build_spoken_script(text: str, language_code: str) -> str:
+    pack = resolve_language_rulepack(language_code)
+    source_text = str(text or "")
+    if not source_text.strip():
+        return ""
+
+    def replace_reference(match: re.Match[str]) -> str:
+        book = _normalize_reference_book_name(match.group(1), pack)
+        chapter = match.group(2)
+        verse_start = match.group(3)
+        verse_end = match.group(4)
+        if verse_end:
+            return f"{book} {pack.chapter_word} {chapter} {pack.verses_word} {verse_start} {pack.range_word} {verse_end}"
+        return f"{book} {pack.chapter_word} {chapter} {pack.verse_word} {verse_start}"
+
+    return _REFERENCE_PATTERN.sub(replace_reference, source_text)

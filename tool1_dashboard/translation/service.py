@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import json
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,81 +13,15 @@ from .chunker import (
     build_scene_aware_chunks,
     build_text_chunks,
 )
-from .prompts import build_translation_prompt, build_translation_repair_prompt
+from .prompts import (
+    build_translation_prompt,
+    build_translation_repair_prompt,
+    build_translation_review_prompt,
+    build_translation_script_repair_prompt,
+)
+from .quality import collect_translation_quality_issues
 
 log = logging.getLogger(__name__)
-_ENGLISH_CTA_PATTERNS = (
-    re.compile(r"\bsubscribe to\b", re.IGNORECASE),
-    re.compile(r"\bshare this video\b", re.IGNORECASE),
-    re.compile(r"\blike this video\b", re.IGNORECASE),
-)
-_SUSPICIOUS_WORD_EXPANSION_RATIO = 1.6
-_SUSPICIOUS_WORD_EXPANSION_MARGIN = 180
-_MIN_PARAGRAPH_WORDS = 6
-
-
-def _normalize_compare_text(text: str) -> str:
-    return re.sub(r"\s+", " ", str(text or "").strip().lower())
-
-
-def _significant_paragraphs(text: str) -> list[str]:
-    paragraphs: list[str] = []
-    for paragraph in re.split(r"\n\s*\n+", str(text or "").strip()):
-        normalized = _normalize_compare_text(paragraph)
-        if len(normalized.split()) >= _MIN_PARAGRAPH_WORDS:
-            paragraphs.append(normalized)
-    return paragraphs
-
-
-def _is_non_english_target(target_lang: str) -> bool:
-    normalized = str(target_lang or "").strip().lower()
-    return not normalized.startswith("en") and "english" not in normalized
-
-
-def _translation_quality_issues(
-    *,
-    source_text: str,
-    translated_text: str,
-    target_lang: str,
-    words_in: int,
-    words_out: int,
-    source_channel_name: str = "",
-    target_channel_name: str = "",
-) -> list[str]:
-    issues: list[str] = []
-    translated_clean = str(translated_text or "").strip()
-    if not translated_clean:
-        return ["Model returned empty translation."]
-
-    if words_in > 0:
-        suspicious_limit = max(
-            int(words_in * _SUSPICIOUS_WORD_EXPANSION_RATIO),
-            words_in + _SUSPICIOUS_WORD_EXPANSION_MARGIN,
-        )
-        if words_out > suspicious_limit:
-            issues.append("Output is suspiciously long and may contain duplicated source text.")
-
-    translated_norm = _normalize_compare_text(translated_clean)
-    source_paragraphs = _significant_paragraphs(source_text)
-    leaked_source = [paragraph for paragraph in source_paragraphs if paragraph and paragraph in translated_norm]
-    if leaked_source:
-        issues.append("Output still contains untranslated source paragraphs.")
-
-    if _is_non_english_target(target_lang):
-        if any(pattern.search(translated_clean) for pattern in _ENGLISH_CTA_PATTERNS):
-            issues.append("Output still contains English CTA wording.")
-
-    if source_channel_name and target_channel_name:
-        if re.search(re.escape(source_channel_name), translated_clean, flags=re.IGNORECASE):
-            issues.append(f'Output still contains the source channel name "{source_channel_name}".')
-        if re.search(re.escape(source_channel_name), source_text, flags=re.IGNORECASE) and not re.search(
-            re.escape(target_channel_name),
-            translated_clean,
-            flags=re.IGNORECASE,
-        ):
-            issues.append(f'Output did not use the configured channel name "{target_channel_name}".')
-
-    return issues
 
 
 @dataclass
@@ -107,6 +41,8 @@ class TranslationResult:
     translated_script: str
     chunk_results: list[ChunkResult] = field(default_factory=list)
     status: str = "done"  # "done" | "partial" | "error"
+    error_message: str | None = None
+    review_report: dict[str, Any] | None = None
 
 
 class TranslationService:
@@ -152,10 +88,10 @@ class TranslationService:
             or ""
         ).strip()
         words_out = len(translated.split())
-        issues = _translation_quality_issues(
+        issues = collect_translation_quality_issues(
             source_text=chunk.text,
             translated_text=translated,
-            target_lang=target_lang,
+            language_code=target_lang,
             words_in=chunk.word_count,
             words_out=words_out,
             source_channel_name=source_channel_name,
@@ -184,10 +120,10 @@ class TranslationService:
             or ""
         ).strip()
         repaired_words_out = len(repaired.split())
-        repair_issues = _translation_quality_issues(
+        repair_issues = collect_translation_quality_issues(
             source_text=chunk.text,
             translated_text=repaired,
-            target_lang=target_lang,
+            language_code=target_lang,
             words_in=chunk.word_count,
             words_out=repaired_words_out,
             source_channel_name=source_channel_name,
@@ -197,6 +133,221 @@ class TranslationService:
             issue_text = "; ".join(repair_issues)
             raise TranslationError(provider.title(), 200, f"Translation quality check failed: {issue_text}")
         return repaired, repaired_words_out
+
+    @staticmethod
+    def _error_result(
+        *,
+        target_lang: str,
+        translated_parts: list[str],
+        chunk_results: list[ChunkResult],
+        error_message: str,
+        review_report: dict[str, Any] | None = None,
+    ) -> TranslationResult:
+        return TranslationResult(
+            language_code=target_lang,
+            translated_script="\n\n".join(translated_parts).strip(),
+            chunk_results=chunk_results,
+            status="error",
+            error_message=error_message,
+            review_report=review_report,
+        )
+
+    @staticmethod
+    def _parse_review_payload(review_text: str) -> dict[str, Any]:
+        text = str(review_text or "").strip()
+        if not text:
+            raise TranslationError("OpenAI", 200, "Translation quality review returned empty output.")
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            raise TranslationError("OpenAI", 200, "Translation quality review returned invalid JSON.")
+        try:
+            payload = json.loads(text[start:end + 1])
+        except json.JSONDecodeError as exc:
+            raise TranslationError("OpenAI", 200, f"Translation quality review returned invalid JSON: {exc.msg}") from exc
+        if not isinstance(payload, dict):
+            raise TranslationError("OpenAI", 200, "Translation quality review returned an unexpected payload.")
+
+        scores_raw = payload.get("scores")
+        scores = scores_raw if isinstance(scores_raw, dict) else {}
+        parsed_scores: dict[str, int] = {}
+        for key in ("fluency", "naturalness", "faithfulness", "cta_quality", "channel_name_compliance"):
+            try:
+                parsed_scores[key] = int(scores.get(key))
+            except (TypeError, ValueError):
+                raise TranslationError("OpenAI", 200, f"Translation quality review omitted score '{key}'.")
+        issues = [
+            str(item).strip()
+            for item in payload.get("issues") or []
+            if str(item).strip()
+        ]
+        passed = payload.get("passed")
+        if not isinstance(passed, bool):
+            raise TranslationError("OpenAI", 200, "Translation quality review omitted boolean field 'passed'.")
+        return {
+            "passed": passed,
+            "issues": issues,
+            "scores": parsed_scores,
+            "summary": str(payload.get("summary") or "").strip(),
+            "raw_text": text,
+        }
+
+    async def _review_script_quality(
+        self,
+        *,
+        source_script: str,
+        translated_script: str,
+        source_lang: str,
+        target_lang: str,
+        reviewer_api_key: str,
+        reviewer_model: str,
+        source_channel_name: str,
+        target_channel_name: str,
+    ) -> dict[str, Any]:
+        if not str(reviewer_api_key or "").strip():
+            raise TranslationError("OpenAI", 500, "Translation quality review requires an OpenAI API key.")
+        prompt = build_translation_review_prompt(
+            source_text=source_script,
+            translated_text=translated_script,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            source_channel_name=source_channel_name,
+            target_channel_name=target_channel_name,
+        )
+        review_text = await self.adapter.translate_chunk(
+            provider="openai",
+            api_key=reviewer_api_key,
+            model=reviewer_model,
+            prompt=prompt,
+        )
+        return self._parse_review_payload(review_text)
+
+    async def _repair_full_script(
+        self,
+        *,
+        source_script: str,
+        translated_script: str,
+        issues: list[str],
+        source_lang: str,
+        target_lang: str,
+        provider: str,
+        api_key: str,
+        model: str,
+        source_channel_name: str,
+        target_channel_name: str,
+    ) -> str:
+        repair_prompt = build_translation_script_repair_prompt(
+            source_text=source_script,
+            invalid_output=translated_script,
+            issues=issues,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            source_channel_name=source_channel_name,
+            target_channel_name=target_channel_name,
+        )
+        repaired = await self.adapter.translate_chunk(
+            provider=provider,
+            api_key=api_key,
+            model=model,
+            prompt=repair_prompt,
+        )
+        return str(repaired or "").strip()
+
+    async def _apply_script_quality_gate(
+        self,
+        *,
+        source_script: str,
+        translated_script: str,
+        source_lang: str,
+        target_lang: str,
+        provider: str,
+        api_key: str,
+        model: str,
+        source_channel_name: str,
+        target_channel_name: str,
+        reviewer_required: bool,
+        reviewer_api_key: str,
+        reviewer_model: str,
+    ) -> tuple[str, dict[str, Any] | None]:
+        words_in = len(str(source_script or "").split())
+        translated_clean = str(translated_script or "").strip()
+        words_out = len(translated_clean.split())
+        script_issues = collect_translation_quality_issues(
+            source_text=source_script,
+            translated_text=translated_clean,
+            language_code=target_lang,
+            words_in=words_in,
+            words_out=words_out,
+            source_channel_name=source_channel_name,
+            target_channel_name=target_channel_name,
+        )
+
+        if not script_issues:
+            review_report = None
+            if reviewer_required:
+                review_report = await self._review_script_quality(
+                    source_script=source_script,
+                    translated_script=translated_clean,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    reviewer_api_key=reviewer_api_key,
+                    reviewer_model=reviewer_model,
+                    source_channel_name=source_channel_name,
+                    target_channel_name=target_channel_name,
+                )
+                if review_report["passed"]:
+                    return translated_clean, review_report
+                script_issues = list(review_report["issues"]) or ["LLM quality review rejected the translated script."]
+            else:
+                return translated_clean, None
+
+        repaired_script = await self._repair_full_script(
+            source_script=source_script,
+            translated_script=translated_clean,
+            issues=script_issues,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            provider=provider,
+            api_key=api_key,
+            model=model,
+            source_channel_name=source_channel_name,
+            target_channel_name=target_channel_name,
+        )
+        repaired_issues = collect_translation_quality_issues(
+            source_text=source_script,
+            translated_text=repaired_script,
+            language_code=target_lang,
+            words_in=words_in,
+            words_out=len(repaired_script.split()),
+            source_channel_name=source_channel_name,
+            target_channel_name=target_channel_name,
+        )
+        if repaired_issues:
+            raise TranslationError(
+                provider.title(),
+                200,
+                "Translation quality validation failed after script repair: " + "; ".join(repaired_issues),
+            )
+        if reviewer_required:
+            review_report = await self._review_script_quality(
+                source_script=source_script,
+                translated_script=repaired_script,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                reviewer_api_key=reviewer_api_key,
+                reviewer_model=reviewer_model,
+                source_channel_name=source_channel_name,
+                target_channel_name=target_channel_name,
+            )
+            if not review_report["passed"]:
+                issues = list(review_report["issues"]) or ["LLM quality review rejected the repaired script."]
+                raise TranslationError(
+                    "OpenAI",
+                    200,
+                    "Translation quality review failed after repair: " + "; ".join(issues),
+                )
+            return repaired_script, review_report
+        return repaired_script, None
 
     async def translate_script(
         self,
@@ -212,6 +363,9 @@ class TranslationService:
         channel_name: str = "",
         source_channel_name: str = "",
         target_channel_name: str = "",
+        reviewer_required: bool = False,
+        reviewer_api_key: str = "",
+        reviewer_model: str = "gpt-5.4-mini",
     ) -> TranslationResult:
         """Translate a full script, chunk by chunk.
 
@@ -221,8 +375,7 @@ class TranslationService:
         Context from the previous chunk (last *context_tail_words* words of the
         translated output) is passed to the next chunk for continuity.
 
-        Per-chunk errors do not abort the process — failed chunks produce empty
-        strings and the result is marked ``"partial"``.
+        Any unrepaired chunk or failed script-level QA fails the language.
         """
         # Build chunks
         if master_scenes:
@@ -281,7 +434,7 @@ class TranslationService:
                     total_chunks,
                     exc,
                 )
-                chunk_results.append(ChunkResult(
+                failed_chunk = ChunkResult(
                     chunk_index=chunk.index,
                     scene_ids=chunk.scene_ids,
                     translated_text="",
@@ -289,21 +442,43 @@ class TranslationService:
                     words_out=0,
                     status="error",
                     error=str(exc),
-                ))
-                translated_parts.append("")
+                )
+                chunk_results.append(failed_chunk)
+                return self._error_result(
+                    target_lang=target_lang,
+                    translated_parts=translated_parts,
+                    chunk_results=chunk_results,
+                    error_message=str(exc),
+                )
 
-        # Determine overall status
-        ok_count = sum(1 for r in chunk_results if r.status == "ok")
-        if ok_count == total_chunks:
-            status = "done"
-        elif ok_count > 0:
-            status = "partial"
-        else:
-            status = "error"
+        translated_script = "\n\n".join(translated_parts).strip()
+        try:
+            final_script, review_report = await self._apply_script_quality_gate(
+                source_script=source_script,
+                translated_script=translated_script,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                provider=provider,
+                api_key=api_key,
+                model=model,
+                source_channel_name=source_channel_name,
+                target_channel_name=target_channel_name,
+                reviewer_required=reviewer_required,
+                reviewer_api_key=reviewer_api_key,
+                reviewer_model=reviewer_model,
+            )
+        except Exception as exc:
+            return self._error_result(
+                target_lang=target_lang,
+                translated_parts=translated_parts,
+                chunk_results=chunk_results,
+                error_message=str(exc),
+            )
 
         return TranslationResult(
             language_code=target_lang,
-            translated_script="\n\n".join(translated_parts).strip(),
+            translated_script=final_script,
             chunk_results=chunk_results,
-            status=status,
+            status="done",
+            review_report=review_report,
         )

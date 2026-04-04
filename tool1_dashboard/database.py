@@ -115,6 +115,7 @@ class Tool1Database:
                 srt_status TEXT NOT NULL DEFAULT 'pending',
                 timeline_status TEXT NOT NULL DEFAULT 'pending',
                 script_path TEXT,
+                spoken_script_path TEXT,
                 tts_audio_path TEXT,
                 srt_path TEXT,
                 timeline_path TEXT,
@@ -249,6 +250,11 @@ class Tool1Database:
                     "channel_replace_prompt": "INTEGER NOT NULL DEFAULT 1",
                     "channel_replace_post": "INTEGER NOT NULL DEFAULT 1",
                 },
+            )
+            self._ensure_columns(
+                connection,
+                "episode_language_status",
+                {"spoken_script_path": "TEXT"},
             )
             # Create index after ensuring column exists
             connection.execute(

@@ -58,6 +58,11 @@ from .runtime import (
 )
 from .srt_chunker.srt_io import parse_srt_text
 from .templates import TemplateStore
+from .translation.language_rules import build_spoken_script
+from .translation.quality import (
+    apply_channel_cta_fallback,
+    collect_translation_quality_issues,
+)
 from .translation_profiles import (
     is_runnable_translation_profile_provider,
     mask_secret,
@@ -99,6 +104,12 @@ QUEUE_PROVIDER_TARGETS = (
     ("image_prompt_generation", "Image Prompt Generation", "image_prompt_provider", "image_prompt_model"),
 )
 PROVIDER_STRUCTURED_STAGES = {stage for stage, *_ in QUEUE_PROVIDER_TARGETS}
+QUEUE_STAGE_PROVIDER_BLOCKER_CODES = {
+    "missing_provider",
+    "provider_unavailable",
+    "provider_api_key_required",
+    "provider_login_required",
+}
 STAGE_PROVIDER_OPENAI_API_KEY_SETTING = "stage_provider_openai_api_key"
 STAGE_PROVIDER_OPENAI_MODELS_SETTING = "stage_provider_openai_models_json"
 STAGE_PROVIDER_OPENAI_RECOMMENDED_MODEL_SETTING = "stage_provider_openai_recommended_model"
@@ -395,7 +406,10 @@ class Tool1Service:
                 language_code
                 for language_code in configured_languages
                 if not self._path_exists(language_statuses.get(language_code, {}).get("tts_audio_path"))
-                or not self._path_has_non_empty_text(language_statuses.get(language_code, {}).get("script_path"))
+                or not self._path_has_non_empty_text(
+                    language_statuses.get(language_code, {}).get("spoken_script_path")
+                    or language_statuses.get(language_code, {}).get("script_path")
+                )
             ]
             if missing_alignment_inputs:
                 blockers.append(self._queue_issue(
@@ -472,6 +486,12 @@ class Tool1Service:
         script_original_path = workspace / "script_original.txt"
         if not script_original_path.exists():
             write_text(script_original_path, episode.get("script_text") or "")
+        script_original_spoken_path = workspace / "script_original_spoken.txt"
+        if not script_original_spoken_path.exists():
+            write_text(
+                script_original_spoken_path,
+                build_spoken_script(episode.get("script_text") or "", master_language),
+            )
 
         def reset_languages(*, include_languages: list[str], fields: dict[str, Any]) -> None:
             for language_code in include_languages:
@@ -509,6 +529,7 @@ class Tool1Service:
                 master_language,
                 translation_status="done",
                 script_path=str(script_original_path),
+                spoken_script_path=str(script_original_spoken_path),
                 error_message=None,
             )
             reset_languages(
@@ -516,6 +537,7 @@ class Tool1Service:
                 fields={
                     "translation_status": "pending",
                     "script_path": None,
+                    "spoken_script_path": None,
                     "tts_status": "pending",
                     "tts_audio_path": None,
                     "tts_job_id": None,
@@ -862,7 +884,8 @@ class Tool1Service:
                     model=model or None,
                 ))
                 continue
-            if provider == "openai" and not health.get("logged_in"):
+            provider_logged_in = health.get("logged_in")
+            if provider == "openai" and not provider_logged_in:
                 blockers.append(self._queue_issue(
                     "provider_api_key_required",
                     f"{stage_label} is set to 'openai', but no OpenAI API key is saved for workflow stages.",
@@ -872,7 +895,7 @@ class Tool1Service:
                     model=model or None,
                 ))
                 continue
-            if provider != "openai" and not health.get("logged_in"):
+            if provider not in {"openai", "codex"} and provider_logged_in is False:
                 blockers.append(self._queue_issue(
                     "provider_login_required",
                     f"{stage_label} is set to '{provider}', but the provider is not logged in.",
@@ -1608,20 +1631,11 @@ class Tool1Service:
         language_code: str,
         target_channel_name: str,
     ) -> str:
-        if not translated_script or not target_channel_name:
-            return translated_script
-        language = str(language_code or "").strip().lower().split("-", 1)[0]
-        replacements = {
-            "es": f"Suscríbete a {target_channel_name}",
-            "it": f"Iscriviti a {target_channel_name}",
-            "de": f"Abonniere {target_channel_name}",
-            "fr": f"Abonne-toi a {target_channel_name}",
-        }
-        replacement = replacements.get(language)
-        if not replacement:
-            return translated_script
-        pattern = re.compile(rf"\bSubscribe to\s+{re.escape(target_channel_name)}\b", re.IGNORECASE)
-        return pattern.sub(replacement, translated_script)
+        return apply_channel_cta_fallback(
+            translated_script,
+            language_code=language_code,
+            target_channel_name=target_channel_name,
+        )
 
     @classmethod
     def _translation_script_validation_issues(
@@ -1633,39 +1647,13 @@ class Tool1Service:
         source_channel_name: str = "",
         target_channel_name: str = "",
     ) -> list[str]:
-        issues: list[str] = []
-        translated_clean = str(translated_script or "").strip()
-        if not translated_clean:
-            return ["Translation returned empty text."]
-
-        translated_norm = cls._normalize_translation_compare_text(translated_clean)
-        leaked_source = [
-            paragraph
-            for paragraph in cls._translation_source_paragraphs(source_script)
-            if paragraph and paragraph in translated_norm
-        ]
-        if leaked_source:
-            issues.append("Translation still contains untranslated source paragraphs.")
-
-        if cls._translation_uses_non_english_target(language_code):
-            english_cta_patterns = (
-                re.compile(r"\bsubscribe to\b", re.IGNORECASE),
-                re.compile(r"\bshare this video\b", re.IGNORECASE),
-                re.compile(r"\blike this video\b", re.IGNORECASE),
-            )
-            if any(pattern.search(translated_clean) for pattern in english_cta_patterns):
-                issues.append("Translation still contains English CTA wording.")
-
-        if source_channel_name and target_channel_name:
-            if re.search(re.escape(source_channel_name), translated_clean, flags=re.IGNORECASE):
-                issues.append(f'Translation still contains the source channel name "{source_channel_name}".')
-            if re.search(re.escape(source_channel_name), source_script, flags=re.IGNORECASE) and not re.search(
-                re.escape(target_channel_name),
-                translated_clean,
-                flags=re.IGNORECASE,
-            ):
-                issues.append(f'Translation did not use the configured channel name "{target_channel_name}".')
-        return issues
+        return collect_translation_quality_issues(
+            source_text=source_script,
+            translated_text=translated_script,
+            language_code=language_code,
+            source_channel_name=source_channel_name,
+            target_channel_name=target_channel_name,
+        )
 
     @classmethod
     def _validated_translation_script(
@@ -1680,6 +1668,7 @@ class Tool1Service:
         translated_script = str(getattr(result, "translated_script", "") or "").strip()
         status = str(getattr(result, "status", "done") or "done").strip().lower()
         chunk_results = list(getattr(result, "chunk_results", []) or [])
+        result_error = str(getattr(result, "error_message", "") or "").strip()
 
         first_chunk_error = next(
             (
@@ -1690,7 +1679,8 @@ class Tool1Service:
             ),
             "",
         )
-        suffix = f" First chunk error: {first_chunk_error}" if first_chunk_error else ""
+        detail = result_error or first_chunk_error
+        suffix = f" First chunk error: {detail}" if detail else ""
         if not translated_script:
             raise ValueError(f"Translation returned empty text for {language_code}.{suffix}")
         if status == "partial":
@@ -1724,6 +1714,89 @@ class Tool1Service:
             issue_text = "; ".join(issues)
             raise ValueError(f"Translation quality validation failed for {language_code}: {issue_text}.{suffix}")
         return translated_script
+
+    @staticmethod
+    def _language_readable_script_filename(language_code: str, master_language: str) -> str:
+        return "script_original.txt" if language_code == master_language else f"script_{language_code}.txt"
+
+    @staticmethod
+    def _language_spoken_script_filename(language_code: str, master_language: str) -> str:
+        return "script_original_spoken.txt" if language_code == master_language else f"script_{language_code}_spoken.txt"
+
+    @classmethod
+    def _write_language_script_assets(
+        cls,
+        *,
+        workspace: Path,
+        language_code: str,
+        master_language: str,
+        readable_script: str,
+    ) -> tuple[Path, Path]:
+        readable_path = workspace / cls._language_readable_script_filename(language_code, master_language)
+        write_text(readable_path, readable_script)
+        spoken_path = workspace / cls._language_spoken_script_filename(language_code, master_language)
+        write_text(spoken_path, build_spoken_script(readable_script, language_code))
+        return readable_path, spoken_path
+
+    def _ensure_spoken_script_asset(
+        self,
+        *,
+        episode: dict[str, Any],
+        language_code: str,
+        language_status: dict[str, Any] | None,
+    ) -> Path | None:
+        status = language_status or {}
+        spoken_path_value = status.get("spoken_script_path")
+        if spoken_path_value and Path(str(spoken_path_value)).exists():
+            return Path(str(spoken_path_value))
+
+        master_language = str(episode.get("master_language") or "en").strip() or "en"
+        workspace = self._episode_workspace(episode)
+        readable_path_value = status.get("script_path")
+        readable_text = self._read_path_text(readable_path_value).strip()
+        readable_path: Path | None = Path(str(readable_path_value)) if readable_path_value else None
+
+        if language_code == master_language:
+            readable_text = readable_text or str(episode.get("script_text") or "").strip()
+            if not readable_text:
+                return None
+            if readable_path is None:
+                readable_path = workspace / self._language_readable_script_filename(language_code, master_language)
+            if not readable_path.exists():
+                write_text(readable_path, readable_text)
+        elif not readable_text:
+            return None
+
+        spoken_path = workspace / self._language_spoken_script_filename(language_code, master_language)
+        write_text(spoken_path, build_spoken_script(readable_text, language_code))
+        update_fields: dict[str, Any] = {"spoken_script_path": str(spoken_path)}
+        if readable_path is not None and not status.get("script_path"):
+            update_fields["script_path"] = str(readable_path)
+        self.db.update_episode_language_status(episode["id"], language_code, **update_fields)
+        return spoken_path
+
+    def _preferred_audio_script_path(
+        self,
+        *,
+        episode: dict[str, Any],
+        language_code: str,
+        language_status: dict[str, Any] | None,
+    ) -> Path | None:
+        status = language_status or {}
+        spoken_path = status.get("spoken_script_path")
+        if spoken_path and Path(str(spoken_path)).exists():
+            return Path(str(spoken_path))
+        generated_path = self._ensure_spoken_script_asset(
+            episode=episode,
+            language_code=language_code,
+            language_status=language_status,
+        )
+        if generated_path and generated_path.exists():
+            return generated_path
+        readable_path = status.get("script_path")
+        if readable_path and Path(str(readable_path)).exists():
+            return Path(str(readable_path))
+        return None
 
     # ── translation profile management ──────────────────────────────
 
@@ -2278,6 +2351,8 @@ class Tool1Service:
         # Save script to workspace
         script_path = workspace / "script_original.txt"
         write_text(script_path, script_text)
+        spoken_script_path = workspace / "script_original_spoken.txt"
+        write_text(spoken_script_path, build_spoken_script(script_text, master_lang))
 
         self.db.create_episode({
             "id": episode_id,
@@ -2306,6 +2381,8 @@ class Tool1Service:
                 "tts_status": "pending",
                 "srt_status": "pending",
                 "timeline_status": "pending",
+                "script_path": str(script_path) if lang == master_lang else None,
+                "spoken_script_path": str(spoken_script_path) if lang == master_lang else None,
                 "updated_at": now,
             })
 
@@ -2376,6 +2453,17 @@ class Tool1Service:
             project=project,
             episode=episode,
         )
+        filtered_blockers = [
+            blocker
+            for blocker in (queue_readiness.get("blockers") or [])
+            if blocker.get("code") not in QUEUE_STAGE_PROVIDER_BLOCKER_CODES
+            or blocker.get("stage") in {None, "", stage}
+        ]
+        queue_readiness = {
+            **queue_readiness,
+            "blockers": filtered_blockers,
+            "ok": not filtered_blockers,
+        }
         stage_blockers = self._build_start_stage_blockers(episode, stage)
         if stage_blockers:
             queue_readiness = {
@@ -2519,7 +2607,7 @@ class Tool1Service:
         if stage == "translation":
             self.db.update_episode_language_status(
                 episode_id, language_code,
-                translation_status="pending", script_path=None, error_message=None,
+                translation_status="pending", script_path=None, spoken_script_path=None, error_message=None,
             )
             self._episode_retry_single_translation(episode_id, language_code)
         elif stage == "tts":
@@ -2573,6 +2661,7 @@ class Tool1Service:
         enable_post = bool(int(project.get("channel_replace_post", 1) or 1))
         settings = self._global_settings()
         workspace = self._episode_workspace(episode)
+        reviewer_api_key = self._stage_provider_openai_api_key()
 
         profile_id = translation_profiles.get(lang)
         if not profile_id:
@@ -2611,6 +2700,9 @@ class Tool1Service:
                 context_tail_words=settings.get("translation_context_tail_words", 200),
                 source_channel_name=source_channel_name if enable_prompt else "",
                 target_channel_name=target_channel if enable_prompt else "",
+                reviewer_required=True,
+                reviewer_api_key=reviewer_api_key,
+                reviewer_model="gpt-5.4-mini",
             ))
             write_json(workspace / f"translation_log_{lang}.json", [
                 {
@@ -2630,18 +2722,29 @@ class Tool1Service:
                 source_channel_name=source_channel_name if enable_post else "",
                 target_channel_name=target_channel if enable_post else "",
             )
-            translated_path = workspace / f"script_{lang}.txt"
-            write_text(translated_path, translated_script)
+            translated_path, spoken_path = self._write_language_script_assets(
+                workspace=workspace,
+                language_code=lang,
+                master_language=str(episode.get("master_language") or "en").strip() or "en",
+                readable_script=translated_script,
+            )
+            review_report_raw = getattr(result, "review_report", None)
+            review_report = review_report_raw if isinstance(review_report_raw, dict) else None
+            if review_report:
+                write_json(workspace / f"translation_review_{lang}.json", review_report)
             self.db.update_episode_language_status(
                 episode_id, lang,
                 translation_status="done",
                 script_path=str(translated_path),
+                spoken_script_path=str(spoken_path),
+                error_message=None,
             )
         except Exception as exc:
             self.db.update_episode_language_status(
                 episode_id, lang,
                 translation_status="failed",
                 script_path=None,
+                spoken_script_path=None,
                 error_message=str(exc)[:500],
             )
 
@@ -2666,16 +2769,16 @@ class Tool1Service:
             )
             return
 
-        # Get script text
-        if lang == episode["master_language"]:
-            script_text = episode["script_text"]
+        lang_status = self.db.get_episode_language_status(episode_id, lang)
+        script_path = self._preferred_audio_script_path(
+            episode=episode,
+            language_code=lang,
+            language_status=lang_status,
+        )
+        if script_path and script_path.exists():
+            script_text = read_text(script_path)
         else:
-            lang_status = self.db.get_episode_language_status(episode_id, lang)
-            script_path = lang_status.get("script_path") if lang_status else None
-            if script_path and Path(script_path).exists():
-                script_text = read_text(Path(script_path))
-            else:
-                script_text = episode["script_text"]
+            script_text = str(episode.get("script_text") or "")
 
         tts_mgr = self.tts_manager
         tts_mgr.ensure_worker_ready(intent="pipeline")
@@ -2711,7 +2814,11 @@ class Tool1Service:
 
         workspace = self._episode_workspace(episode)
         audio_path = lang_status.get("tts_audio_path")
-        script_path = lang_status.get("script_path")
+        script_path = self._preferred_audio_script_path(
+            episode=episode,
+            language_code=lang,
+            language_status=lang_status,
+        )
         if not audio_path or not Path(audio_path).exists():
             self.db.update_episode_language_status(
                 episode_id,
@@ -2721,7 +2828,7 @@ class Tool1Service:
                 error_message="No TTS audio available",
             )
             return
-        if not script_path or not Path(script_path).exists():
+        if script_path is None or not script_path.exists():
             self.db.update_episode_language_status(
                 episode_id,
                 lang,
@@ -2736,7 +2843,7 @@ class Tool1Service:
             output_root = ensure_dir(workspace / "alignment" / lang)
             result = run_alignment_job(
                 audio_path=Path(audio_path),
-                script_path=Path(script_path),
+                script_path=script_path,
                 language_code=lang,
                 engine_config=None,
                 segmentation_config=None,
@@ -3105,6 +3212,8 @@ class Tool1Service:
                 # Script
                 if ls.get("script_path") and Path(ls["script_path"]).exists():
                     zf.write(ls["script_path"], f"{lang_dir}/script_{lang}.txt")
+                if ls.get("spoken_script_path") and Path(ls["spoken_script_path"]).exists():
+                    zf.write(ls["spoken_script_path"], f"{lang_dir}/script_{lang}_spoken.txt")
 
                 # SRT
                 if ls.get("srt_path") and Path(ls["srt_path"]).exists():
@@ -3348,16 +3457,22 @@ class Tool1Service:
         enable_prompt = bool(int(project.get("channel_replace_prompt", 1) or 1))
         enable_post = bool(int(project.get("channel_replace_post", 1) or 1))
         settings = self._global_settings()
+        reviewer_api_key = self._stage_provider_openai_api_key()
         source_script = episode["script_text"]
 
         # Set master language script path
-        master_script_path = workspace / "script_original.txt"
-        if not master_script_path.exists():
-            write_text(master_script_path, source_script)
+        master_script_path, master_spoken_path = self._write_language_script_assets(
+            workspace=workspace,
+            language_code=master_lang,
+            master_language=master_lang,
+            readable_script=source_script,
+        )
         self.db.update_episode_language_status(
             episode_id, master_lang,
             translation_status="done",
             script_path=str(master_script_path),
+            spoken_script_path=str(master_spoken_path),
+            error_message=None,
         )
 
         # Load master scenes if consistency guide exists (for context)
@@ -3403,6 +3518,9 @@ class Tool1Service:
                     context_tail_words=settings.get("translation_context_tail_words", 200),
                     source_channel_name=source_channel_name if enable_prompt else "",
                     target_channel_name=target_channel if enable_prompt else "",
+                    reviewer_required=True,
+                    reviewer_api_key=reviewer_api_key,
+                    reviewer_model="gpt-5.4-mini",
                 ))
                 chunk_log = [
                     {
@@ -3423,13 +3541,23 @@ class Tool1Service:
                     source_channel_name=source_channel_name if enable_post else "",
                     target_channel_name=target_channel if enable_post else "",
                 )
-                translated_path = workspace / f"script_{lang}.txt"
-                write_text(translated_path, translated_script)
+                translated_path, spoken_path = self._write_language_script_assets(
+                    workspace=workspace,
+                    language_code=lang,
+                    master_language=master_lang,
+                    readable_script=translated_script,
+                )
+                review_report_raw = getattr(result, "review_report", None)
+                review_report = review_report_raw if isinstance(review_report_raw, dict) else None
+                if review_report:
+                    write_json(workspace / f"translation_review_{lang}.json", review_report)
 
                 self.db.update_episode_language_status(
                     episode_id, lang,
                     translation_status="done",
                     script_path=str(translated_path),
+                    spoken_script_path=str(spoken_path),
+                    error_message=None,
                 )
             except Exception as exc:
                 failed_count += 1
@@ -3437,6 +3565,7 @@ class Tool1Service:
                     episode_id, lang,
                     translation_status="failed",
                     script_path=None,
+                    spoken_script_path=None,
                     error_message=str(exc)[:500],
                 )
 
@@ -3449,10 +3578,18 @@ class Tool1Service:
         language_code: str,
         language_status: dict[str, Any] | None,
     ) -> str:
+        script_path = self._preferred_audio_script_path(
+            episode=episode,
+            language_code=language_code,
+            language_status=language_status,
+        )
+        if script_path and script_path.exists():
+            return read_text(script_path).strip()
         master_language = str(episode.get("master_language") or "en").strip() or "en"
         if language_code == master_language:
             return str(episode.get("script_text") or "").strip()
-        return self._read_path_text((language_status or {}).get("script_path")).strip()
+        translated_text = self._read_path_text((language_status or {}).get("script_path")).strip()
+        return translated_text or str(episode.get("script_text") or "").strip()
 
     def _queue_episode_tts_jobs(
         self,
@@ -3590,6 +3727,24 @@ class Tool1Service:
             "unrecoverable": unrecoverable,
         }
 
+    def _mark_episode_tts_active_languages_running(self, episode_id: str) -> None:
+        for lang_status in self.db.get_episode_language_statuses(episode_id):
+            job_id = str(lang_status.get("tts_job_id") or "").strip()
+            if not job_id:
+                continue
+            job = self.db.get_tts_job(job_id)
+            job_status = str((job or {}).get("status") or "").strip().lower()
+            if job_status not in {"queued", "processing"}:
+                continue
+            if str(lang_status.get("tts_status") or "").strip().lower() == "running":
+                continue
+            self.db.update_episode_language_status(
+                episode_id,
+                str(lang_status.get("language_code") or ""),
+                tts_status="running",
+                error_message=None,
+            )
+
     @staticmethod
     def _paused_tts_failure_message(
         *,
@@ -3610,19 +3765,15 @@ class Tool1Service:
         """Requeue stale TTS jobs and wake the shared worker for paused episodes."""
         if not paused_episodes:
             return None
-
-        self.db.requeue_orphaned_processing_tts_jobs(STALE_PROCESSING_SECONDS)
-        active_jobs = self.db.list_active_tts_jobs()
-        if not active_jobs:
-            return None
-
         health = self.tts_manager.get_worker_health()
         if health.is_stale or not health.running:
             self.db.requeue_stale_tts_jobs(STALE_PROCESSING_SECONDS)
+        else:
             self.db.requeue_orphaned_processing_tts_jobs(STALE_PROCESSING_SECONDS)
-            active_jobs = self.db.list_active_tts_jobs()
-            if not active_jobs:
-                return None
+
+        active_jobs = self.db.list_active_tts_jobs()
+        if not active_jobs:
+            return None
 
         try:
             self.tts_manager.ensure_worker_ready(intent="pipeline")
@@ -3635,6 +3786,7 @@ class Tool1Service:
         tts_queue = self._queue_episode_tts_jobs(episode_id, allow_resubmit_failed=True)
         if tts_queue["active_jobs"] <= 0:
             return
+        self._mark_episode_tts_active_languages_running(episode_id)
         self.db.update_episode(
             episode_id,
             board_status="Running",
@@ -3658,14 +3810,18 @@ class Tool1Service:
             if not lang_status or lang_status.get("srt_status") == "done":
                 continue
             audio_path = lang_status.get("tts_audio_path")
-            script_path = lang_status.get("script_path")
+            script_path = self._preferred_audio_script_path(
+                episode=episode,
+                language_code=lang,
+                language_status=lang_status,
+            )
             if not audio_path or not Path(audio_path).exists():
                 self.db.update_episode_language_status(
                     episode_id, lang, srt_status="skipped",
                     error_message="No TTS audio available",
                 )
                 continue
-            if not script_path or not Path(script_path).exists():
+            if script_path is None or not script_path.exists():
                 self.db.update_episode_language_status(
                     episode_id, lang, srt_status="skipped",
                     error_message="No script available",
@@ -3678,7 +3834,7 @@ class Tool1Service:
                 output_root = ensure_dir(workspace / "alignment" / lang)
                 result = run_alignment_job(
                     audio_path=Path(audio_path),
-                    script_path=Path(script_path),
+                    script_path=script_path,
                     language_code=lang,
                     engine_config=None,
                     segmentation_config=None,
@@ -4183,6 +4339,7 @@ class Tool1Service:
                             updated_at=utc_now(),
                         )
                         continue
+                    self._mark_episode_tts_active_languages_running(episode_id)
                     if tts_queue["submitted_jobs"] > 0:
                         self.db.update_episode(
                             episode_id,

@@ -15,7 +15,13 @@ from tool1_dashboard.translation.chunker import (
     build_scene_aware_chunks,
     build_text_chunks,
 )
-from tool1_dashboard.translation.prompts import build_translation_prompt, build_translation_repair_prompt
+from tool1_dashboard.translation.language_rules import build_spoken_script
+from tool1_dashboard.translation.prompts import (
+    build_translation_prompt,
+    build_translation_repair_prompt,
+    build_translation_review_prompt,
+    build_translation_script_repair_prompt,
+)
 from tool1_dashboard.translation.service import TranslationService
 from tool1_dashboard.translation.adapter import TranslationAdapter, TranslationError
 from tool1_dashboard.translation_profiles import (
@@ -40,7 +46,7 @@ class FakeHttpxResponse:
 
 class FakeHttpxClient:
 
-    def __init__(self, response: FakeHttpxResponse, recorder: list[dict[str, Any]]) -> None:
+    def __init__(self, response: FakeHttpxResponse | list[FakeHttpxResponse], recorder: list[dict[str, Any]]) -> None:
         self.response = response
         self.recorder = recorder
 
@@ -56,6 +62,8 @@ class FakeHttpxClient:
             "headers": headers or {},
             "json": json or {},
         })
+        if isinstance(self.response, list):
+            return self.response.pop(0)
         return self.response
 
 
@@ -236,6 +244,10 @@ class PromptBuildingTests(unittest.TestCase):
         self.assertIn("Translate EVERYTHING into Spanish", prompt)
         self.assertIn("Do NOT output both the original text and the translation", prompt)
         self.assertIn("translate those calls to action fully into Spanish", prompt)
+        self.assertIn("Write like a native Spanish narrator", prompt)
+        self.assertIn("preferred style: \"Suscríbete a Biblo Viral\"", prompt)
+        self.assertIn("Haz clic en la campana", prompt)
+        self.assertIn("Juan capítulo 18 versículo 2", prompt)
         self.assertIn('"True Light"', prompt)
         self.assertIn('"Biblo Viral"', prompt)
 
@@ -254,6 +266,38 @@ class PromptBuildingTests(unittest.TestCase):
         self.assertIn("Output still contains English CTA wording.", prompt)
         self.assertIn("Subscribe to Biblo Viral", prompt)
         self.assertIn("ctx words", prompt)
+        self.assertIn("Haz clic en la campana", prompt)
+
+    def test_script_repair_prompt_includes_language_specific_feedback(self):
+        prompt = build_translation_script_repair_prompt(
+            source_text="He got up from the supper.",
+            invalid_output="Il se leva de la soupe.",
+            issues=["Output contains a literal French calque that sounds unnatural."],
+            source_lang="English",
+            target_lang="French",
+            source_channel_name="True Light",
+            target_channel_name="Orizzonte",
+        )
+        self.assertIn("Il se leva de la soupe.", prompt)
+        self.assertIn("Clique dessus", prompt)
+        self.assertIn("Avoid awkward literal phrasing such as: Cliquez-la, se leva de la soupe.", prompt)
+        self.assertIn("English", prompt)
+        self.assertIn("French", prompt)
+
+    def test_review_prompt_targets_only_supported_quality_criteria(self):
+        prompt = build_translation_review_prompt(
+            source_text="Subscribe to True Light.",
+            translated_text="Abonne-toi à Orizzonte.",
+            source_lang="English",
+            target_lang="French",
+            source_channel_name="True Light",
+            target_channel_name="Orizzonte",
+        )
+        self.assertIn("fluency", prompt)
+        self.assertIn("naturalness", prompt)
+        self.assertIn("faithfulness", prompt)
+        self.assertIn("channel-name compliance", prompt)
+        self.assertIn("\"passed\": true", prompt)
 
 
 class TranslationAdapterOpenAiTests(unittest.TestCase):
@@ -300,16 +344,55 @@ class TranslationAdapterOpenAiTests(unittest.TestCase):
         self.assertEqual(request_payload["reasoning"]["effort"], "low")
         self.assertEqual(request_payload["text"]["verbosity"], "low")
 
-    def test_incomplete_openai_response_raises_translation_error(self):
+    def test_incomplete_openai_response_retries_with_larger_token_budget(self):
         recorder: list[dict[str, Any]] = []
-        response = FakeHttpxResponse(200, {
-            "status": "incomplete",
-            "incomplete_details": {"reason": "max_output_tokens"},
-            "output": [{"type": "reasoning", "summary": []}],
-        })
+        responses = [
+            FakeHttpxResponse(200, {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [{"type": "reasoning", "summary": []}],
+            }),
+            FakeHttpxResponse(200, {
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "Hola mundo"}]},
+                ],
+            }),
+        ]
         with patch(
             "tool1_dashboard.translation.adapter.httpx.AsyncClient",
-            side_effect=lambda *args, **kwargs: FakeHttpxClient(response, recorder),
+            side_effect=lambda *args, **kwargs: FakeHttpxClient(list(responses), recorder),
+        ):
+            adapter = TranslationAdapter()
+            text = self._run_async(adapter.translate_chunk(
+                provider="openai",
+                api_key="sk-test",
+                model="gpt-5-nano",
+                prompt="Translate to Spanish.",
+            ))
+
+        self.assertEqual(text, "Hola mundo")
+        self.assertEqual(len(recorder), 2)
+        self.assertEqual(recorder[0]["json"]["max_output_tokens"], 8192)
+        self.assertEqual(recorder[1]["json"]["max_output_tokens"], 16384)
+
+    def test_incomplete_openai_response_still_raises_after_retry(self):
+        recorder: list[dict[str, Any]] = []
+        responses = [
+            FakeHttpxResponse(200, {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [{"type": "reasoning", "summary": []}],
+            }),
+            FakeHttpxResponse(200, {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [{"type": "reasoning", "summary": []}],
+            }),
+        ]
+        with patch(
+            "tool1_dashboard.translation.adapter.httpx.AsyncClient",
+            side_effect=lambda *args, **kwargs: FakeHttpxClient(list(responses), recorder),
         ):
             adapter = TranslationAdapter()
             with self.assertRaises(TranslationError) as ctx:
@@ -397,8 +480,7 @@ class TranslationServiceTests(unittest.TestCase):
         # Second prompt should contain context
         self.assertIn("CONTEXT from previous", prompts_seen[1])
 
-    def test_chunk_error_recovery(self):
-        """One chunk failing should not abort the entire translation."""
+    def test_chunk_error_fails_the_language(self):
         adapter = self._make_fake_adapter([
             TranslationError("Gemini", 429, "Rate limited"),
             "Chunk 2 translated ok",
@@ -418,9 +500,10 @@ class TranslationServiceTests(unittest.TestCase):
             master_scenes=scenes,
             max_words_per_chunk=600,
         ))
-        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.status, "error")
         self.assertEqual(result.chunk_results[0].status, "error")
-        self.assertEqual(result.chunk_results[1].status, "ok")
+        self.assertEqual(len(result.chunk_results), 1)
+        self.assertIn("rate limited", (result.error_message or "").lower())
 
     def test_empty_chunk_response_is_treated_as_error(self):
         adapter = self._make_fake_adapter([""])
@@ -499,7 +582,67 @@ class TranslationServiceTests(unittest.TestCase):
         ))
         self.assertEqual(result.status, "error")
         self.assertEqual(result.chunk_results[0].status, "error")
-        self.assertIn("quality check failed", (result.chunk_results[0].error or "").lower())
+        self.assertIn("quality check failed", (result.error_message or "").lower())
+
+    def test_hybrid_judge_accepts_good_output(self):
+        adapter = self._make_fake_adapter([
+            "Texto fluido y natural.",
+            '{"passed": true, "issues": [], "scores": {"fluency": 5, "naturalness": 5, "faithfulness": 5, "cta_quality": 5, "channel_name_compliance": 5}, "summary": "Looks good."}',
+        ])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="Natural translated text.",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+            reviewer_required=True,
+            reviewer_api_key="judge-key",
+        ))
+        self.assertEqual(result.status, "done")
+        assert result.review_report is not None
+        self.assertTrue(result.review_report["passed"])
+
+    def test_judge_triggered_script_repair_runs_once(self):
+        adapter = self._make_fake_adapter([
+            "Le texte est compréhensible.",
+            '{"passed": false, "issues": ["The narration sounds too literal."], "scores": {"fluency": 3, "naturalness": 2, "faithfulness": 4, "cta_quality": 5, "channel_name_compliance": 5}, "summary": "Too literal."}',
+            "Le texte sonne naturellement.",
+            '{"passed": true, "issues": [], "scores": {"fluency": 5, "naturalness": 5, "faithfulness": 4, "cta_quality": 5, "channel_name_compliance": 5}, "summary": "Fixed."}',
+        ])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="The text sounds natural.",
+            source_lang="English",
+            target_lang="French",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+            reviewer_required=True,
+            reviewer_api_key="judge-key",
+        ))
+        self.assertEqual(result.status, "done")
+        self.assertEqual(result.translated_script, "Le texte sonne naturellement.")
+
+    def test_judge_unavailable_fails_closed(self):
+        adapter = self._make_fake_adapter([
+            "Texto correcto.",
+            TranslationError("OpenAI", 500, "Judge unavailable"),
+        ])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="Correct text.",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+            reviewer_required=True,
+            reviewer_api_key="judge-key",
+        ))
+        self.assertEqual(result.status, "error")
+        self.assertIn("judge unavailable", (result.error_message or "").lower())
 
 
 class TranslationValidationTests(unittest.TestCase):
@@ -532,6 +675,38 @@ class TranslationValidationTests(unittest.TestCase):
                 source_script="This is a leaked English paragraph from the source.",
             )
         self.assertIn("source paragraphs", str(ctx.exception).lower())
+
+    def test_validated_translation_script_rejects_known_bad_literal_phrase(self):
+        result = SimpleNamespace(
+            translated_script="Il se leva de la soupe.",
+            status="done",
+            chunk_results=[],
+        )
+        with self.assertRaises(ValueError) as ctx:
+            Tool1Service._validated_translation_script(
+                result,
+                language_code="fr",
+                source_script="He got up from the supper.",
+            )
+        self.assertIn("literal french calque", str(ctx.exception).lower())
+
+
+class SpokenScriptTests(unittest.TestCase):
+
+    def test_master_spoken_script_expands_reference(self):
+        spoken = build_spoken_script("John 18:2 stayed in the narration.", "en")
+        self.assertEqual(spoken, "John chapter 18 verse 2 stayed in the narration.")
+
+    def test_localized_spoken_scripts_expand_reference_formats(self):
+        expectations = {
+            "es": ("Juan 18:2", "Juan capítulo 18 versículo 2"),
+            "fr": ("1 Jean 4:8", "Premier Jean chapitre 4 verset 8"),
+            "de": ("Johannes 3:16-17", "Johannes Kapitel 3 Verse 16 bis 17"),
+            "it": ("Giovanni 18:2", "Giovanni capitolo 18 versetto 2"),
+        }
+        for language_code, (source_text, expected) in expectations.items():
+            with self.subTest(language_code=language_code):
+                self.assertEqual(build_spoken_script(source_text, language_code), expected)
 
 
 class TranslationProfileCrudTests(unittest.TestCase):
@@ -650,6 +825,10 @@ class TranslationRetryFlowTests(unittest.TestCase):
             self.service._episode_retry_single_translation(episode["id"], "es")
 
         self.assertTrue(mocked_translate.await_args.kwargs["master_scenes"])
+        self.assertTrue(mocked_translate.await_args.kwargs["reviewer_required"])
+        status = self.service.db.get_episode_language_status(episode["id"], "es")
+        self.assertTrue(status["spoken_script_path"])
+        self.assertTrue(Path(status["spoken_script_path"]).exists())
 
 
 class TranslationProfilePresentationTests(unittest.TestCase):

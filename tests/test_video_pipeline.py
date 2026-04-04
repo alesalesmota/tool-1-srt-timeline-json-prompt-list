@@ -810,6 +810,8 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
 
                     translated_path = temp_path / "script_pt-BR.txt"
                     translated_path.write_text("Texto traduzido.", encoding="utf-8")
+                    spoken_path = temp_path / "script_pt-BR_spoken.txt"
+                    spoken_path.write_text("Texto falado.", encoding="utf-8")
                     audio_path = temp_path / "narration_pt-BR.wav"
                     audio_path.write_text("fake-audio", encoding="utf-8")
                     srt_path = temp_path / "final_pt-BR.srt"
@@ -822,6 +824,7 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                         "pt-BR",
                         translation_status="done",
                         script_path=str(translated_path),
+                        spoken_script_path=str(spoken_path),
                         tts_status="done",
                         tts_audio_path=str(audio_path),
                         srt_status="done",
@@ -840,6 +843,7 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     ptbr = service.db.get_episode_language_status(episode_id, "pt-BR")
                     self.assertEqual(ptbr["translation_status"], "pending")
                     self.assertIsNone(ptbr["script_path"])
+                    self.assertIsNone(ptbr["spoken_script_path"])
                     self.assertEqual(ptbr["tts_status"], "pending")
                     self.assertIsNone(ptbr["tts_audio_path"])
                     self.assertEqual(ptbr["srt_status"], "pending")
@@ -2107,6 +2111,8 @@ class EpisodePipelineServiceTests(unittest.TestCase):
 
                 it_script_path = workspace / "script_it.txt"
                 it_script_path.write_text("Ciao mondo", encoding="utf-8")
+                it_spoken_script_path = workspace / "script_it_spoken.txt"
+                it_spoken_script_path.write_text("Giovanni capitolo 18 versetto 2", encoding="utf-8")
                 it_audio_path = workspace / "narration_it.wav"
                 it_audio_path.write_bytes(b"fake-wav")
                 aligned_it_srt_path = workspace / "aligned_it.srt"
@@ -2121,6 +2127,7 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                     translation_status="done",
                     tts_status="done",
                     script_path=str(it_script_path),
+                    spoken_script_path=str(it_spoken_script_path),
                     tts_audio_path=str(it_audio_path),
                     srt_status="failed",
                     timeline_status="skipped",
@@ -2130,16 +2137,100 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 fake_result = SimpleNamespace(
                     artifacts=SimpleNamespace(final_srt=aligned_it_srt_path),
                 )
-                with patch("tool1_dashboard.service.run_alignment_job", return_value=fake_result):
+                with patch("tool1_dashboard.service.run_alignment_job", return_value=fake_result) as alignment_mock:
                     result = service.retry_episode_language(episode_id, "it", "alignment")
 
                 self.assertEqual(result["stage"], "alignment")
+                self.assertEqual(alignment_mock.call_args.kwargs["script_path"], it_spoken_script_path)
                 it_status = service.db.get_episode_language_status(episode_id, "it")
                 self.assertEqual(it_status["srt_status"], "done")
                 self.assertEqual(it_status["timeline_status"], "done")
                 self.assertTrue(Path(it_status["srt_path"]).exists())
                 self.assertTrue(Path(it_status["timeline_path"]).exists())
                 self.assertIsNone(it_status["error_message"])
+
+    def test_retry_single_language_tts_prefers_spoken_script_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                voice_profiles, _ = _build_profile_assignments(service, temp_path, ["en", "it"])
+                project = service.create_niche_project(
+                    name="Spoken TTS",
+                    master_language="en",
+                    configured_languages=["en", "it"],
+                    language_voice_profiles=voice_profiles,
+                )
+                episode = service.submit_episode(
+                    project["project"]["id"],
+                    title="Spoken TTS Episode",
+                    script_text="Master text.",
+                )["episode"]
+                episode_id = episode["id"]
+                workspace = Path(episode["workspace_dir"])
+
+                readable_path = workspace / "script_it.txt"
+                readable_path.write_text("Testo leggibile.", encoding="utf-8")
+                spoken_path = workspace / "script_it_spoken.txt"
+                spoken_path.write_text("Giovanni capitolo 18 versetto 2.", encoding="utf-8")
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "it",
+                    translation_status="done",
+                    script_path=str(readable_path),
+                    spoken_script_path=str(spoken_path),
+                )
+
+                with patch("tool1_dashboard.tts.manager.TTSManager.ensure_worker_ready"), patch(
+                    "tool1_dashboard.tts.manager.TTSManager.submit_tts_job",
+                    return_value="tts-job-it",
+                ) as submit_mock:
+                    service._episode_retry_single_tts(episode_id, "it")
+
+                payload = submit_mock.call_args.kwargs["payload"]
+                combined_text = " ".join(payload["texts"])
+                self.assertIn("Giovanni capitolo 18 versetto 2.", combined_text)
+                self.assertNotIn("Testo leggibile.", combined_text)
+
+    def test_finalize_export_includes_readable_and_spoken_scripts(self) -> None:
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                project = service.create_niche_project(
+                    name="Export Spoken",
+                    master_language="en",
+                    configured_languages=["en", "it"],
+                )
+                episode = service.submit_episode(
+                    project["project"]["id"],
+                    title="Export Spoken Episode",
+                    script_text="John 18:2 stays readable.",
+                )["episode"]
+                episode_id = episode["id"]
+                workspace = Path(episode["workspace_dir"])
+
+                readable_path = workspace / "script_it.txt"
+                readable_path.write_text("Testo leggibile.", encoding="utf-8")
+                spoken_path = workspace / "script_it_spoken.txt"
+                spoken_path.write_text("Giovanni capitolo 18 versetto 2.", encoding="utf-8")
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "it",
+                    translation_status="done",
+                    script_path=str(readable_path),
+                    spoken_script_path=str(spoken_path),
+                )
+
+                export = service.finalize_export(episode_id)
+                with zipfile.ZipFile(export["zip_path"]) as archive:
+                    names = set(archive.namelist())
+                self.assertIn("languages/en/script_en.txt", names)
+                self.assertIn("languages/en/script_en_spoken.txt", names)
+                self.assertIn("languages/it/script_it.txt", names)
+                self.assertIn("languages/it/script_it_spoken.txt", names)
 
     def test_niche_project_auto_includes_master_language(self) -> None:
         """Master language is always included in configured_languages."""

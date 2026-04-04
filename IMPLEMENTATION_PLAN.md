@@ -27,8 +27,16 @@ Tool 1 is the multilingual video planning pipeline for Creator Studio. The user 
 - Scene-planning now requires absolute episode seconds, rebases late chunk-local timestamps when they slip through, and fails fast when merged coverage stops materially before the final master cue.
 - Translation retries now preserve the original source script text instead of relying only on lossy `master_scenes` text, so CTA/opening paragraphs are not dropped during single-language repairs.
 - Translation audits now explicitly reject mixed-language CTA leakage while preserving configured per-language channel names such as `Biblo Viral` and `Orizzonte`.
-- Episode `205` was reprocessed through shared scene planning plus localized ES/FR/IT regeneration. Shared review assets now cover `378` scenes through `3361.6s`; ES/FR/IT scripts, TTS, SRT, and timeline files were regenerated on the repaired code.
-- Residual risk: French still has a much noisier alignment report than the other languages even after the script repair, so Tool 2 handoff should include a human review of the French subtitles rather than assuming the warning-heavy pass is production-clean.
+- Episode `205` was reprocessed through shared scene planning plus localized ES/IT regeneration. Shared review assets now cover `378` scenes through `3361.6s`.
+- French-specific outcome changed after the multilingual QA upgrade: a fresh French rerun is now rejected by the stricter deterministic + reviewer gate under the current `openai / gpt-5-nano` profile, so the previous French review artifacts were preserved and backfilled with a spoken-script sidecar instead of being overwritten by low-quality output.
+
+### Multilingual Translation Quality Upgrade (2026-04-04)
+- Translation now uses shared language rulepacks to carry per-language CTA/channel/reference guidance, protected terms, and known bad literal patterns.
+- Deterministic translation QA now runs at chunk level and script level before output is accepted.
+- Script-level quality review now uses a fixed OpenAI reviewer model (`gpt-5.4-mini`) and fails the language after one repair attempt if the script is still weak.
+- Readable and spoken scripts are now distinct artifacts. TTS/alignment prefer the spoken script; review/export keep the readable script primary.
+- OpenAI translation calls now retry once with a larger output budget when `Responses API` returns `status = incomplete` because of `max_output_tokens`.
+- Operational implication: lower-quality translation profiles that previously slipped through can now fail closed. Episode `205` French is the first confirmed case.
 
 ### What works (backend)
 - FastAPI app with ~50+ endpoints, SQLite database, service layer with worker loop

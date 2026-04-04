@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
+from .language_rules import display_language_name, prompt_guidance_lines, resolve_language_rulepack
+
 DEFAULT_TRANSLATION_PROMPT = (
     "You are a professional translator specializing in natural, fluent "
     "translations that preserve the original author's voice, tone, rhythm, "
@@ -21,6 +25,7 @@ DEFAULT_TRANSLATION_PROMPT = (
     "8. Translate EVERYTHING into {target_lang}; do not leave any sentence, paragraph, or CTA in the source language\n"
     "9. Do NOT output both the original text and the translation; never duplicate source paragraphs\n"
     "10. If the text contains calls to action like subscribe, share, or tell someone, translate those calls to action fully into {target_lang}\n"
+    "{language_guidance}"
     "{channel_name_instruction}"
     "{chunk_note}"
     "{context_section}\n"
@@ -40,6 +45,8 @@ DEFAULT_TRANSLATION_REPAIR_PROMPT = (
     "3. Keep the same paragraph structure and line breaks as the source text\n"
     "4. Fully translate all CTA lines and action phrases into {target_lang}\n"
     "5. Preserve names, brands, and technical terms unless a channel replacement instruction says otherwise\n"
+    "6. If a rejected line sounded literal or awkward, rewrite it idiomatically instead of reusing the same wording\n"
+    "{language_guidance}"
     "{channel_name_instruction}"
     "{context_section}\n"
     "\n"
@@ -52,6 +59,65 @@ DEFAULT_TRANSLATION_REPAIR_PROMPT = (
     "[REJECTED OUTPUT FOR REFERENCE ONLY — DO NOT REUSE VERBATIM]:\n"
     "{invalid_output}"
 )
+
+DEFAULT_TRANSLATION_SCRIPT_REPAIR_PROMPT = (
+    "The full translated script was rejected during quality review.\n"
+    "\n"
+    "Repair the full translation from {source_lang} to {target_lang}.\n"
+    "\n"
+    "STRICT SCRIPT REPAIR RULES:\n"
+    "1. Output ONLY the corrected full translation in {target_lang}\n"
+    "2. Keep the same paragraph structure and line breaks as the source script\n"
+    "3. Remove all leaked source-language text and all duplicated original text\n"
+    "4. Fix awkward literal phrasing so the narration sounds native in {target_lang}\n"
+    "5. Fully translate CTA lines and action phrases into natural {target_lang}\n"
+    "6. Replace any flagged literal CTA line with an idiomatic local phrase instead of reusing the rejected wording\n"
+    "{language_guidance}"
+    "{channel_name_instruction}"
+    "\n"
+    "[WHY THE SCRIPT WAS REJECTED]:\n"
+    "{issues}\n"
+    "\n"
+    "[SOURCE SCRIPT]:\n"
+    "{text}\n"
+    "\n"
+    "[REJECTED TRANSLATION FOR REFERENCE ONLY — DO NOT REUSE VERBATIM]:\n"
+    "{invalid_output}"
+)
+
+DEFAULT_TRANSLATION_REVIEW_PROMPT = (
+    "You are a translation quality reviewer.\n"
+    "\n"
+    "Review the translated script only for these criteria:\n"
+    "- fluency\n"
+    "- naturalness\n"
+    "- faithfulness\n"
+    "- CTA quality\n"
+    "- channel-name compliance\n"
+    "\n"
+    "Do not judge style differences outside those criteria. Protected terms may stay untranslated when appropriate.\n"
+    "{language_guidance}"
+    "{channel_name_instruction}"
+    "\n"
+    "Return ONLY strict JSON with this shape:\n"
+    '{{"passed": true, "issues": [], "scores": {{"fluency": 5, "naturalness": 5, "faithfulness": 5, "cta_quality": 5, "channel_name_compliance": 5}}, "summary": "short summary"}}'
+    "\n"
+    "Set \"passed\" to false if any criterion is materially weak.\n"
+    "Keep issues short and concrete.\n"
+    "\n"
+    "[SOURCE SCRIPT — {source_lang}]:\n"
+    "{source_text}\n"
+    "\n"
+    "[TRANSLATED SCRIPT — {target_lang}]:\n"
+    "{translated_text}"
+)
+
+
+def _guidance_block(target_lang: str, target_channel_name: str = "") -> str:
+    lines = prompt_guidance_lines(target_lang, target_channel_name=target_channel_name)
+    if not lines:
+        return ""
+    return "LANGUAGE-SPECIFIC GUIDANCE:\n" + "\n".join(f"- {line}" for line in lines) + "\n"
 
 
 def build_translation_prompt(
@@ -71,6 +137,8 @@ def build_translation_prompt(
     Mirrors TRADUTOR's buildTranslationPrompt (app.js lines 1046-1065).
     """
     tpl = template or DEFAULT_TRANSLATION_PROMPT
+    source_label = display_language_name(source_lang)
+    target_label = display_language_name(target_lang)
 
     if context:
         context_section = (
@@ -80,29 +148,28 @@ def build_translation_prompt(
     else:
         context_section = ""
 
-    rule_offset = 0
+    language_guidance = _guidance_block(target_lang, target_channel_name=target_channel_name)
     if source_channel_name and target_channel_name:
         channel_name_instruction = (
-            f'11. IMPORTANT: Whenever the text mentions the channel name '
+            f'IMPORTANT: Whenever the text mentions the channel name '
             f'"{source_channel_name}", replace it with "{target_channel_name}" '
-            f'in your translation\n'
+            f'in your translation.\n'
         )
-        rule_offset = 1
     else:
         channel_name_instruction = ""
 
     if total_chunks > 1:
         chunk_note = (
-            f"{11 + rule_offset}. This is chunk {chunk_index + 1} of {total_chunks} "
-            "— maintain consistency with the context provided\n"
+            f"This is chunk {chunk_index + 1} of {total_chunks}. Maintain consistency with the context provided.\n"
         )
     else:
         chunk_note = ""
 
     return tpl.format(
-        source_lang=source_lang,
-        target_lang=target_lang,
+        source_lang=source_label,
+        target_lang=target_label,
         channel_name=channel_name,
+        language_guidance=language_guidance,
         channel_name_instruction=channel_name_instruction,
         chunk_note=chunk_note,
         context_section=context_section,
@@ -123,6 +190,8 @@ def build_translation_repair_prompt(
     template: str | None = None,
 ) -> str:
     tpl = template or DEFAULT_TRANSLATION_REPAIR_PROMPT
+    source_label = display_language_name(source_lang)
+    target_label = display_language_name(target_lang)
     if context:
         context_section = (
             "\n[CONTEXT from previous section — do NOT translate this, "
@@ -131,22 +200,91 @@ def build_translation_repair_prompt(
     else:
         context_section = ""
 
+    language_guidance = _guidance_block(target_lang, target_channel_name=target_channel_name)
     if source_channel_name and target_channel_name:
         channel_name_instruction = (
-            f'6. IMPORTANT: Whenever the text mentions the channel name '
+            f'IMPORTANT: Whenever the text mentions the channel name '
             f'"{source_channel_name}", replace it with "{target_channel_name}" '
-            f'in your translation\n'
+            f'in your translation.\n'
         )
     else:
         channel_name_instruction = ""
 
     issue_text = "\n".join(f"- {issue}" for issue in issues) if issues else "- Invalid translation output"
     return tpl.format(
-        source_lang=source_lang,
-        target_lang=target_lang,
+        source_lang=source_label,
+        target_lang=target_label,
+        language_guidance=language_guidance,
         channel_name_instruction=channel_name_instruction,
         context_section=context_section,
         issues=issue_text,
         text=chunk,
         invalid_output=invalid_output,
+    )
+
+
+def build_translation_script_repair_prompt(
+    *,
+    source_text: str,
+    invalid_output: str,
+    issues: list[str],
+    source_lang: str,
+    target_lang: str,
+    source_channel_name: str = "",
+    target_channel_name: str = "",
+    template: str | None = None,
+) -> str:
+    tpl = template or DEFAULT_TRANSLATION_SCRIPT_REPAIR_PROMPT
+    source_label = display_language_name(source_lang)
+    target_label = display_language_name(target_lang)
+    language_guidance = _guidance_block(target_lang, target_channel_name=target_channel_name)
+    if source_channel_name and target_channel_name:
+        channel_name_instruction = (
+            f'IMPORTANT: Whenever the text mentions the channel name "{source_channel_name}", '
+            f'replace it with "{target_channel_name}" in your translation.\n'
+        )
+    else:
+        channel_name_instruction = ""
+    issue_text = "\n".join(f"- {issue}" for issue in issues) if issues else "- Quality review rejected the script."
+    return tpl.format(
+        source_lang=source_label,
+        target_lang=target_label,
+        language_guidance=language_guidance,
+        channel_name_instruction=channel_name_instruction,
+        issues=issue_text,
+        text=source_text,
+        invalid_output=invalid_output,
+    )
+
+
+def build_translation_review_prompt(
+    *,
+    source_text: str,
+    translated_text: str,
+    source_lang: str,
+    target_lang: str,
+    target_channel_name: str = "",
+    source_channel_name: str = "",
+    template: str | None = None,
+) -> str:
+    tpl = template or DEFAULT_TRANSLATION_REVIEW_PROMPT
+    source_label = display_language_name(source_lang)
+    target_label = display_language_name(target_lang)
+    pack = resolve_language_rulepack(target_lang)
+    language_guidance = _guidance_block(target_lang, target_channel_name=target_channel_name)
+    if source_channel_name and target_channel_name:
+        channel_name_instruction = (
+            f'Configured localized channel name: "{target_channel_name}". '
+            f'Reject the script if it keeps "{source_channel_name}" instead.\n'
+        )
+    else:
+        channel_name_instruction = ""
+    return tpl.format(
+        source_lang=source_label,
+        target_lang=target_label,
+        source_text=source_text,
+        translated_text=translated_text,
+        language_guidance=language_guidance,
+        channel_name_instruction=channel_name_instruction,
+        protected_terms=json.dumps(list(pack.protected_terms), ensure_ascii=False),
     )
