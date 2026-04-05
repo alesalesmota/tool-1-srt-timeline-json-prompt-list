@@ -26,8 +26,8 @@
 - [x] 3.6 `[EASY][CODEX]` GET asset preview endpoint
 
 ## PHASE 4: Assembly Validation (per-language)
-- [ ] 4.1 `[MEDIUM][CODEX]` POST validate — shared assets + per-language prerequisites
-- [ ] 4.2 `[MEDIUM][CODEX]` Stage transition methods + endpoints
+- [x] 4.1 `[MEDIUM][CODEX]` POST validate — shared assets + per-language prerequisites
+- [x] 4.2 `[MEDIUM][CODEX]` Stage transition methods + endpoints
 
 ## PHASE 5: Render Pipeline (per-language, sequential)
 - [ ] 5.1 `[HARD][CLAUDE]` DashboardRenderObserver (PipelineObserver → SQLite)

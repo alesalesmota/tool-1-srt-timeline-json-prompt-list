@@ -785,6 +785,213 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                 finally:
                     self.app_module.service = original
 
+    def test_assembly_validate_reports_shared_and_language_requirements(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en", "pt-BR"])
+                    episode_id = episode["id"]
+                    _write_master_timeline(
+                        service,
+                        episode_id,
+                        [
+                            {
+                                "scene_id": "scene_001",
+                                "start": 0.0,
+                                "end": 2.0,
+                                "duration": 2.0,
+                                "text": "Scene one.",
+                                "asset_type": "image",
+                            },
+                            {
+                                "scene_id": "scene_002",
+                                "start": 2.0,
+                                "end": 5.0,
+                                "duration": 3.0,
+                                "text": "Scene two.",
+                                "asset_type": "image",
+                            },
+                        ],
+                    )
+                    upload_resp = client.post(
+                        f"/api/episodes/{episode_id}/scenes/scene_001/asset",
+                        files={"file": ("prompt1.png", b"\x89PNG\r\n\x1a\nscene1", "image/png")},
+                    )
+                    self.assertEqual(upload_resp.status_code, 200)
+
+                    workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+                    en_timeline = workspace / "timeline_en.json"
+                    en_timeline.write_text(
+                        json.dumps(
+                            [
+                                {"scene_id": "scene_001", "start": 0.0, "end": 2.0, "duration": 2.0},
+                                {"scene_id": "scene_002", "start": 2.0, "end": 5.0, "duration": 3.0},
+                            ]
+                        ),
+                        encoding="utf-8",
+                    )
+                    en_audio = workspace / "narration_en.wav"
+                    en_audio.write_bytes(b"RIFF....WAVEfmt ")
+                    service.db.update_episode_language_status(
+                        episode_id,
+                        "en",
+                        timeline_status="done",
+                        timeline_path=str(en_timeline),
+                        tts_status="done",
+                        tts_audio_path=str(en_audio),
+                    )
+
+                    resp = client.post(f"/api/episodes/{episode_id}/assembly/validate")
+                    self.assertEqual(resp.status_code, 200)
+                    payload = resp.json()
+                    self.assertFalse(payload["shared"]["all_assets_uploaded"])
+                    self.assertEqual(payload["shared"]["missing_scenes"], ["scene_002"])
+
+                    en_result = payload["languages"]["en"]
+                    self.assertFalse(en_result["passed"])
+                    self.assertEqual(en_result["scene_count"], 2)
+                    self.assertEqual(en_result["total_duration"], 5.0)
+                    self.assertEqual(en_result["errors"], [])
+                    self.assertIn("SRT missing for en (optional)", en_result["warnings"])
+
+                    pt_result = payload["languages"]["pt-BR"]
+                    self.assertFalse(pt_result["passed"])
+                    self.assertIn("Timeline mapping not completed for pt-BR", pt_result["errors"])
+                    self.assertIn("TTS not completed for pt-BR", pt_result["errors"])
+
+                    single_resp = client.post(
+                        f"/api/episodes/{episode_id}/assembly/validate",
+                        params={"language_code": "en"},
+                    )
+                    self.assertEqual(single_resp.status_code, 200)
+                    self.assertEqual(set(single_resp.json()["languages"].keys()), {"en"})
+                finally:
+                    self.app_module.service = original
+
+    def test_assembly_stage_transitions_enforce_prerequisites(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en"])
+                    episode_id = episode["id"]
+                    _write_master_timeline(
+                        service,
+                        episode_id,
+                        [
+                            {
+                                "scene_id": "scene_001",
+                                "start": 0.0,
+                                "end": 2.0,
+                                "duration": 2.0,
+                                "text": "Single scene.",
+                                "asset_type": "image",
+                            }
+                        ],
+                    )
+
+                    start_before_export = client.post(f"/api/episodes/{episode_id}/assembly/start")
+                    self.assertEqual(start_before_export.status_code, 400)
+
+                    service.db.update_episode(
+                        episode_id,
+                        board_status="Done",
+                        pipeline_status="done",
+                        current_stage="export",
+                        updated_at=utc_now(),
+                    )
+
+                    start_resp = client.post(f"/api/episodes/{episode_id}/assembly/start")
+                    self.assertEqual(start_resp.status_code, 200)
+                    self.assertEqual(start_resp.json()["current_stage"], "asset_upload")
+
+                    blocked_validation = client.post(
+                        f"/api/episodes/{episode_id}/assembly/advance",
+                        json={"target_stage": "assembly_validation"},
+                    )
+                    self.assertEqual(blocked_validation.status_code, 400)
+
+                    upload_resp = client.post(
+                        f"/api/episodes/{episode_id}/scenes/scene_001/asset",
+                        files={"file": ("prompt1.png", b"\x89PNG\r\n\x1a\nscene1", "image/png")},
+                    )
+                    self.assertEqual(upload_resp.status_code, 200)
+
+                    validation_resp = client.post(
+                        f"/api/episodes/{episode_id}/assembly/advance",
+                        json={"target_stage": "assembly_validation"},
+                    )
+                    self.assertEqual(validation_resp.status_code, 200)
+                    self.assertEqual(validation_resp.json()["current_stage"], "assembly_validation")
+
+                    blocked_render = client.post(
+                        f"/api/episodes/{episode_id}/assembly/advance",
+                        json={"target_stage": "video_render"},
+                    )
+                    self.assertEqual(blocked_render.status_code, 400)
+
+                    workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+                    en_timeline = workspace / "timeline_en.json"
+                    en_timeline.write_text(
+                        json.dumps([{"scene_id": "scene_001", "start": 0.0, "end": 2.0, "duration": 2.0}]),
+                        encoding="utf-8",
+                    )
+                    en_audio = workspace / "narration_en.wav"
+                    en_audio.write_bytes(b"RIFF....WAVEfmt ")
+                    service.db.update_episode_language_status(
+                        episode_id,
+                        "en",
+                        timeline_status="done",
+                        timeline_path=str(en_timeline),
+                        tts_status="done",
+                        tts_audio_path=str(en_audio),
+                    )
+
+                    render_resp = client.post(
+                        f"/api/episodes/{episode_id}/assembly/advance",
+                        json={"target_stage": "video_render"},
+                    )
+                    self.assertEqual(render_resp.status_code, 200)
+                    self.assertEqual(render_resp.json()["current_stage"], "video_render")
+
+                    blocked_review = client.post(
+                        f"/api/episodes/{episode_id}/assembly/advance",
+                        json={"target_stage": "final_review"},
+                    )
+                    self.assertEqual(blocked_review.status_code, 400)
+
+                    now = utc_now()
+                    service.db.create_render_job(
+                        {
+                            "id": "render-job-1",
+                            "episode_id": episode_id,
+                            "language_code": "en",
+                            "state": "completed",
+                            "stage": "complete",
+                            "outputs_json": "{}",
+                            "created_at": now,
+                            "updated_at": now,
+                        }
+                    )
+
+                    final_review_resp = client.post(
+                        f"/api/episodes/{episode_id}/assembly/advance",
+                        json={"target_stage": "final_review"},
+                    )
+                    self.assertEqual(final_review_resp.status_code, 200)
+                    self.assertEqual(final_review_resp.json()["current_stage"], "final_review")
+
+                    episode_row = service.db.get_episode(episode_id)
+                    self.assertEqual(episode_row["current_stage"], "final_review")
+                    self.assertEqual(episode_row["pipeline_status"], "paused")
+                finally:
+                    self.app_module.service = original
+
     def test_submit_episode_to_nonexistent_project(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

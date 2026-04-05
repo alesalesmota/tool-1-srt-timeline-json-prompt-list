@@ -28,6 +28,7 @@ from .config import (
     DEFAULT_ALIGNMENT_OPTIONS,
     DEFAULT_SETTINGS,
     EPISODE_PIPELINE_STAGES,
+    VIDEO_ASSEMBLY_STAGES,
     EPISODE_RUNNABLE_STAGES,
     EPISODE_PER_LANGUAGE_STAGES,
     EPISODES_ROOT,
@@ -2784,6 +2785,207 @@ class Tool1Service:
         except ValueError as exc:
             raise ValueError("Scene asset file is outside the episode workspace.") from exc
         return resolved
+
+    @staticmethod
+    def _assembly_stage_sequence() -> tuple[str, ...]:
+        return (*VIDEO_ASSEMBLY_STAGES, "final_review")
+
+    def _assembly_target_languages(self, episode: dict[str, Any]) -> list[str]:
+        configured = [
+            str(language_code or "").strip()
+            for language_code in self._parse_json_list(episode.get("configured_languages"))
+            if str(language_code or "").strip()
+        ]
+        if configured:
+            return configured
+        language_statuses = self.db.get_episode_language_statuses(episode["id"])
+        discovered = [
+            str(status.get("language_code") or "").strip()
+            for status in language_statuses
+            if str(status.get("language_code") or "").strip()
+        ]
+        if discovered:
+            return discovered
+        master_language = str(episode.get("master_language") or "en").strip() or "en"
+        return [master_language]
+
+    def _assembly_shared_validation(
+        self,
+        episode_id: str,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        _, scenes = self._load_master_timeline_scenes(episode_id)
+        assets = {
+            asset["scene_id"]: asset
+            for asset in self.db.list_scene_assets(episode_id)
+        }
+        missing_scenes: list[str] = []
+        for scene in scenes:
+            asset = assets.get(scene["scene_id"])
+            file_path = Path(str(asset.get("file_path") or "")) if asset else None
+            if asset is None or not file_path or not file_path.exists():
+                missing_scenes.append(scene["scene_id"])
+        return (
+            {
+                "all_assets_uploaded": not missing_scenes,
+                "missing_scenes": missing_scenes,
+            },
+            scenes,
+        )
+
+    def _load_timeline_summary(self, timeline_path: str | None) -> tuple[int, float]:
+        if not timeline_path:
+            return 0, 0.0
+        path = Path(str(timeline_path))
+        if not path.exists():
+            return 0, 0.0
+        raw_scenes = read_json(path, default=[])
+        if not isinstance(raw_scenes, list) or not raw_scenes:
+            return 0, 0.0
+        scenes = [
+            self._normalize_scene_payload_for_assets(scene, index)
+            for index, scene in enumerate(raw_scenes)
+        ]
+        total_duration = max((float(scene["end"]) for scene in scenes), default=0.0)
+        return len(scenes), round(total_duration, 3)
+
+    def validate_assembly(
+        self,
+        episode_id: str,
+        language_code: str | None = None,
+    ) -> dict[str, Any]:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+
+        shared, _ = self._assembly_shared_validation(episode_id)
+        requested_languages = self._assembly_target_languages(episode)
+        if language_code:
+            normalized_language = str(language_code).strip()
+            if normalized_language not in requested_languages:
+                raise FileNotFoundError(f"Language status not found for {normalized_language}.")
+            requested_languages = [normalized_language]
+
+        results: dict[str, Any] = {}
+        for lang in requested_languages:
+            status = self.db.get_episode_language_status(episode_id, lang)
+            errors: list[str] = []
+            warnings: list[str] = []
+            scene_count = 0
+            total_duration = 0.0
+
+            if status is None:
+                errors.append(f"Language status not found for {lang}")
+            else:
+                timeline_status = str(status.get("timeline_status") or "pending").strip().lower()
+                timeline_path = str(status.get("timeline_path") or "").strip()
+                scene_count, total_duration = self._load_timeline_summary(timeline_path)
+                if timeline_status != "done":
+                    errors.append(f"Timeline mapping not completed for {lang}")
+                if not timeline_path or not Path(timeline_path).exists():
+                    errors.append(f"Timeline file missing for {lang}")
+                elif scene_count <= 0:
+                    errors.append(f"Timeline file is empty for {lang}")
+
+                tts_status = str(status.get("tts_status") or "pending").strip().lower()
+                tts_audio_path = str(status.get("tts_audio_path") or "").strip()
+                if tts_status != "done":
+                    errors.append(f"TTS not completed for {lang}")
+                if not tts_audio_path or not Path(tts_audio_path).exists():
+                    errors.append(f"TTS audio missing for {lang}")
+
+                srt_path = str(status.get("srt_path") or "").strip()
+                if not srt_path or not Path(srt_path).exists():
+                    warnings.append(f"SRT missing for {lang} (optional)")
+
+            results[lang] = {
+                "passed": shared["all_assets_uploaded"] and not errors,
+                "errors": errors,
+                "warnings": warnings,
+                "scene_count": scene_count,
+                "total_duration": round(total_duration, 3),
+            }
+
+        return {
+            "languages": results,
+            "shared": shared,
+        }
+
+    def start_assembly(self, episode_id: str) -> dict[str, Any]:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        current_stage = str(episode.get("current_stage") or "").strip()
+        pipeline_status = str(episode.get("pipeline_status") or "").strip().lower()
+        if current_stage != "export" or pipeline_status != "done":
+            raise ValueError("Video assembly can only start after export is complete.")
+        self.db.update_episode(
+            episode_id,
+            board_status="Paused",
+            pipeline_status="paused",
+            current_stage="asset_upload",
+            queued_from_stage="asset_upload",
+            last_error=None,
+            updated_at=utc_now(),
+        )
+        return {
+            "started": True,
+            "current_stage": "asset_upload",
+        }
+
+    def advance_assembly_stage(self, episode_id: str, target_stage: str) -> dict[str, Any]:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+
+        sequence = self._assembly_stage_sequence()
+        if target_stage not in sequence[1:]:
+            raise ValueError(f"Invalid assembly target stage: {target_stage}")
+
+        current_stage = str(episode.get("current_stage") or "").strip()
+        expected_previous = sequence[sequence.index(target_stage) - 1]
+        if current_stage != expected_previous:
+            raise ValueError(f"Cannot move to {target_stage} from {current_stage or 'unknown stage'}.")
+
+        if target_stage == "assembly_validation":
+            shared, _ = self._assembly_shared_validation(episode_id)
+            if not shared["all_assets_uploaded"]:
+                missing = ", ".join(shared["missing_scenes"][:5])
+                remainder = len(shared["missing_scenes"]) - 5
+                if remainder > 0:
+                    missing = f"{missing} (+{remainder} more)"
+                raise ValueError(f"Upload assets for all scenes before validation. Missing: {missing}")
+        elif target_stage == "video_render":
+            report = self.validate_assembly(episode_id)
+            if not report["shared"]["all_assets_uploaded"]:
+                raise ValueError("Assembly validation failed: some scenes are still missing assets.")
+            passing_languages = [
+                lang
+                for lang, result in report["languages"].items()
+                if result.get("passed")
+            ]
+            if not passing_languages:
+                raise ValueError("Assembly validation must pass for at least one language before video render.")
+        elif target_stage == "final_review":
+            completed_renders = [
+                job for job in self.db.list_render_jobs(episode_id)
+                if str(job.get("state") or "").strip().lower() == "completed"
+            ]
+            if not completed_renders:
+                raise ValueError("At least one completed render is required before final review.")
+
+        self.db.update_episode(
+            episode_id,
+            board_status="Paused",
+            pipeline_status="paused",
+            current_stage=target_stage,
+            queued_from_stage=target_stage,
+            last_error=None,
+            updated_at=utc_now(),
+        )
+        return {
+            "advanced": True,
+            "current_stage": target_stage,
+        }
 
     def queue_episode(
         self,
