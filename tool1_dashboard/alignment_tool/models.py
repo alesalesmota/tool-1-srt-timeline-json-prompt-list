@@ -78,6 +78,32 @@ class SubtitleSegment:
 
 
 @dataclass
+class SegmentationDiagnostics:
+    segment_profile: dict[str, int] = field(default_factory=dict)
+    segments_over_18_cps: int = 0
+    segments_over_24_cps: int = 0
+    segments_over_30_cps: int = 0
+    short_fast_segment_count: int = 0
+    long_text_fast_segment_count: int = 0
+    average_chars_per_segment: float = 0.0
+    average_words_per_segment: float = 0.0
+    optimization_passes: int = 1
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(self)
+
+
+@dataclass
+class SegmentationResult:
+    segments: list[SubtitleSegment]
+    warnings: list[str]
+    diagnostics: SegmentationDiagnostics
+
+    def to_dict(self) -> dict[str, Any]:
+        return _serialize(self)
+
+
+@dataclass
 class SegmentationConfig:
     min_duration: float = 0.9
     preferred_duration: float = 3.0
@@ -135,6 +161,15 @@ class AlignmentReport:
     p95_reading_cps: float = 0.0
     candidate_metrics: list[dict[str, Any]] = field(default_factory=list)
     chunk_count: int = 0
+    segment_profile: dict[str, int] = field(default_factory=dict)
+    segments_over_18_cps: int = 0
+    segments_over_24_cps: int = 0
+    segments_over_30_cps: int = 0
+    short_fast_segment_count: int = 0
+    long_text_fast_segment_count: int = 0
+    average_chars_per_segment: float = 0.0
+    average_words_per_segment: float = 0.0
+    optimization_passes: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(self)

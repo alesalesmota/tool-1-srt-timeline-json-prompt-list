@@ -16,6 +16,16 @@ Tool 1 is the multilingual video planning pipeline for Creator Studio. The user 
 
 ## Current State Summary
 
+### Subtitle Density Hardening (2026-04-04)
+- Subtitle segmentation is no longer a greedy splitter. The tool now uses a deterministic DP segmenter that optimizes readability first, then runs a repair pass for remaining dense cues.
+- Subtitle break behavior now comes from the shared language rulepacks (`de/es/fr/it`) instead of hardcoded punctuation-only logic.
+- Alignment reports now expose subtitle-density diagnostics (`segment_profile`, `segments_over_18/24/30_cps`, fast-segment buckets, averages, optimization passes) so regressions are visible without manual SRT inspection.
+- Validation on 2026-04-04:
+  - `python -m pytest tests -q` -> `214` passing, `4` subtests passing
+  - non-destructive benchmark written to `workspace/benchmarks/alignment-20260404-density-v2/summary.json`
+  - latest benchmark metrics: `de` `2` reading-speed warnings, `es` `2`, `fr` `23`, `it` `12`
+- Acceptance note: the code-side subtitle hardening is implemented, but the strict French benchmark gate is not fully cleared yet (`fr segments_over_24_cps = 5`, `segments_over_30_cps = 1`), so live French promotion for episode `205` remains intentionally blocked.
+
 ### Drawbridge Live-Activity Follow-Up (2026-03-28)
 - Stage-run payloads now expose preview-file timestamps and sizes for both stdout and stderr.
 - The episode live-activity surface now distinguishes real preview-file output from fallback execution snapshots using separate `Run age`, `Output source`, and `Last preview write` cards plus dedicated preview blocks.

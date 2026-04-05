@@ -14,7 +14,15 @@ from .extract_script import extract_script_text
 from .guided_chunking import run_guided_chunked_mfa
 from .load_inputs import validate_audio_file, validate_script_file
 from .mfa_resources import ensure_mfa_language_resources
-from .models import AlignmentArtifacts, AlignmentResult, EngineConfig, SegmentationConfig, SubtitleSegment, WordTiming
+from .models import (
+    AlignmentArtifacts,
+    AlignmentResult,
+    EngineConfig,
+    SegmentationConfig,
+    SegmentationDiagnostics,
+    SubtitleSegment,
+    WordTiming,
+)
 from .normalize_audio import normalize_audio_file
 from .normalize_script import normalize_script
 from .parse_alignment import RawAlignedWord, map_raw_words_to_script
@@ -34,6 +42,7 @@ class _AlignmentCandidate:
     approximate_word_count: int
     dropped_word_count: int
     mapping_diagnostics: dict[str, int]
+    segmentation_diagnostics: SegmentationDiagnostics
     raw_words: list[RawAlignedWord] | None = None
     chunk_count: int = 0
 
@@ -80,6 +89,8 @@ def _candidate_metrics(candidate: _AlignmentCandidate, max_reading_cps: float) -
         "reading_speed_warning_count": _reading_speed_warning_count(candidate, max_reading_cps),
         "max_reading_cps": _max_reading_cps(candidate),
         "p95_reading_cps": sorted_cps[p95_index] if sorted_cps else 0.0,
+        "segments_over_24_cps": candidate.segmentation_diagnostics.segments_over_24_cps,
+        "segments_over_30_cps": candidate.segmentation_diagnostics.segments_over_30_cps,
     }
 
 
@@ -109,17 +120,18 @@ def _build_candidate_from_raw_words(
         audio_duration=audio_duration,
         language_code=language_code,
     )
-    segments, segmentation_warnings = segment_words(script_document, mapped_words, segmentation_config)
+    segmentation_result = segment_words(script_document, mapped_words, segmentation_config)
     return _AlignmentCandidate(
         strategy=strategy,
         engine=engine,
         mapped_words=mapped_words,
-        segments=segments,
-        warnings=[*raw_warnings, *mapping_warnings, *segmentation_warnings],
+        segments=segmentation_result.segments,
+        warnings=[*raw_warnings, *mapping_warnings, *segmentation_result.warnings],
         mismatch_count=mismatch_count,
         approximate_word_count=approximate_word_count,
         dropped_word_count=dropped_word_count,
         mapping_diagnostics=mapping_diagnostics,
+        segmentation_diagnostics=segmentation_result.diagnostics,
         raw_words=raw_words,
         chunk_count=1,
     )
@@ -314,18 +326,19 @@ def run_alignment_job(
                     guidance_raw_words=whisperx_candidate.raw_words,
                     logger=_log,
                 )
-                guided_segments, segmentation_warnings = segment_words(script_document, mapped_words, segmentation_config)
+                segmentation_result = segment_words(script_document, mapped_words, segmentation_config)
                 candidates.append(
                     _AlignmentCandidate(
                         strategy="guided_chunked_mfa",
                         engine="mfa",
                         mapped_words=mapped_words,
-                        segments=guided_segments,
-                        warnings=[*guided_warnings, *segmentation_warnings],
+                        segments=segmentation_result.segments,
+                        warnings=[*guided_warnings, *segmentation_result.warnings],
                         mismatch_count=int(guided_summary["mismatch_count"]),
                         approximate_word_count=int(guided_summary["approximate_word_count"]),
                         dropped_word_count=int(guided_summary["dropped_word_count"]),
                         mapping_diagnostics=mapping_diagnostics,
+                        segmentation_diagnostics=segmentation_result.diagnostics,
                         raw_words=None,
                         chunk_count=chunk_count,
                     )
@@ -405,6 +418,7 @@ def run_alignment_job(
         chunk_count=best_candidate.chunk_count,
         max_reading_cps_target=segmentation_config.max_reading_cps,
         mapping_diagnostics=best_candidate.mapping_diagnostics,
+        segmentation_diagnostics=best_candidate.segmentation_diagnostics,
         candidate_metrics=[
             _candidate_metrics(candidate, segmentation_config.max_reading_cps)
             for candidate in candidates

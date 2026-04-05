@@ -4,6 +4,17 @@
 > [!IMPORTANT]
 > Historical completed checklist. Keep this for audit/history, but use `README.md` and `PROJECT_REGISTRY.md` for the current app behavior.
 
+## Subtitle Density Hardening (2026-04-04)
+- [x] Replace the greedy subtitle splitter with a deterministic DP readability-first segmenter
+- [x] Add shared subtitle-profile rules to the language rulepacks for `de/es/fr/it`
+- [x] Add post-segmentation repair with timing-gap redistribution, boundary shifts, split attempts, and safe merge rejection
+- [x] Extend `alignment_report.json` with subtitle-density diagnostics (`segment_profile`, `segments_over_*_cps`, fast-segment buckets, averages, optimization passes)
+- [x] Add regression coverage for line limits, abbreviation handling, non-breaking tokens, punctuation-friendly splitting, repair behavior, and report serialization
+- [x] Run full backend verification with `python -m pytest tests -q` (`214` passing, `4` subtests passing)
+- [x] Run non-destructive episode `205` subtitle-density benchmarks with spoken-script inputs for `de/es/fr/it`
+- [ ] Live-rerun episode `205` French after benchmark gate
+  Blocked on current benchmark: latest `workspace/benchmarks/alignment-20260404-density-v2/summary.json` still reports French `reading_speed_warning_count = 23`, `segments_over_24_cps = 5`, and `segments_over_30_cps = 1`, so the strict French acceptance gate is not cleared yet.
+
 ## Multilingual Translation Quality Upgrade (2026-04-04)
 - [x] Add shared per-language translation rulepacks for CTA/channel/reference guidance and known bad literal patterns
 - [x] Add deterministic translation QA that runs at chunk level and script level

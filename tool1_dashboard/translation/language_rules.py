@@ -25,6 +25,10 @@ class LanguageRulepack:
     spoken_replacements: tuple[tuple[str, str], ...] = ()
     alignment_join_aliases: tuple[tuple[str, tuple[str, ...]], ...] = ()
     elision_prefixes: tuple[str, ...] = ()
+    subtitle_non_breaking_abbreviations: tuple[str, ...] = ()
+    subtitle_no_leading_tokens: tuple[str, ...] = ()
+    subtitle_no_trailing_tokens: tuple[str, ...] = ()
+    subtitle_preferred_break_tokens: tuple[str, ...] = ()
 
 
 _GENERIC_PROTECTED_TERMS = ("Amen", "Hallelujah", "Yahweh", "Messiah")
@@ -51,6 +55,10 @@ _RULEPACKS: dict[str, LanguageRulepack] = {
             (r"\bSt\.", "Saint"),
             (r"\bMt\.", "Mount"),
         ),
+        subtitle_non_breaking_abbreviations=("mr.", "mrs.", "ms.", "dr.", "st.", "jr.", "sr.", "vs."),
+        subtitle_no_leading_tokens=("and", "or", "but", "to", "of", "the", "a", "an", "for", "with", "in", "on", "at"),
+        subtitle_no_trailing_tokens=("a", "an", "the", "and", "or", "but", "to", "of", "for", "with", "in", "on", "at"),
+        subtitle_preferred_break_tokens=("chapter", "verse", "verses", "through"),
     ),
     "de": LanguageRulepack(
         code="de",
@@ -81,6 +89,18 @@ _RULEPACKS: dict[str, LanguageRulepack] = {
             ("im", ("in", "dem")),
             ("am", ("an", "dem")),
         ),
+        subtitle_non_breaking_abbreviations=("z.b.", "bzw.", "usw.", "dr.", "hl."),
+        subtitle_no_leading_tokens=(
+            "und", "oder", "aber", "der", "die", "das", "dem", "den", "des",
+            "ein", "eine", "einer", "einem", "einen", "zu", "zur", "zum",
+            "im", "am", "von", "vom", "mit", "auf", "an", "in",
+        ),
+        subtitle_no_trailing_tokens=(
+            "der", "die", "das", "dem", "den", "des", "ein", "eine", "einer",
+            "einem", "einen", "zu", "zur", "zum", "im", "am", "von", "vom",
+            "mit", "auf", "an", "in",
+        ),
+        subtitle_preferred_break_tokens=("kapitel", "vers", "verse", "bis"),
     ),
     "es": LanguageRulepack(
         code="es",
@@ -110,6 +130,16 @@ _RULEPACKS: dict[str, LanguageRulepack] = {
             ("del", ("de", "el")),
             ("al", ("a", "el")),
         ),
+        subtitle_non_breaking_abbreviations=("sr.", "sra.", "dr.", "dra.", "sta.", "sto."),
+        subtitle_no_leading_tokens=(
+            "el", "la", "los", "las", "un", "una", "unos", "unas", "de",
+            "del", "al", "a", "y", "o", "que", "en", "con", "por", "para",
+        ),
+        subtitle_no_trailing_tokens=(
+            "el", "la", "los", "las", "un", "una", "unos", "unas", "de",
+            "del", "al", "a", "y", "o", "que", "en", "con", "por", "para",
+        ),
+        subtitle_preferred_break_tokens=("capítulo", "versículo", "versículos", "al"),
     ),
     "fr": LanguageRulepack(
         code="fr",
@@ -138,6 +168,19 @@ _RULEPACKS: dict[str, LanguageRulepack] = {
             (r"\bSte\.", "Sainte"),
         ),
         elision_prefixes=("c", "d", "j", "l", "m", "n", "qu", "s", "t"),
+        subtitle_non_breaking_abbreviations=("m.", "mme.", "dr.", "st.", "ste."),
+        subtitle_no_leading_tokens=(
+            "de", "du", "des", "à", "au", "aux", "et", "ou", "que", "qui",
+            "le", "la", "les", "un", "une", "en", "dans", "sur", "pour",
+            "ce", "cet", "cette", "ces", "se", "l'", "d'", "qu'", "s'",
+            "c'", "j'", "n'", "t'",
+        ),
+        subtitle_no_trailing_tokens=(
+            "de", "du", "des", "à", "au", "aux", "et", "ou", "que", "qui",
+            "le", "la", "les", "un", "une", "en", "dans", "sur", "pour",
+            "ce", "cet", "cette", "ces",
+        ),
+        subtitle_preferred_break_tokens=("chapitre", "verset", "versets", "à"),
     ),
     "it": LanguageRulepack(
         code="it",
@@ -170,6 +213,19 @@ _RULEPACKS: dict[str, LanguageRulepack] = {
             ("sull", ("su", "il")),
         ),
         elision_prefixes=("l", "d", "all", "dall", "dell", "nell", "sull", "un"),
+        subtitle_non_breaking_abbreviations=("sig.", "sig.ra", "dott.", "s.", "s.ta"),
+        subtitle_no_leading_tokens=(
+            "e", "o", "ma", "che", "di", "del", "della", "dell'", "a", "al",
+            "alla", "all'", "da", "dal", "dalla", "dall'", "in", "nel",
+            "nell'", "con", "per", "il", "lo", "la", "i", "gli", "le",
+            "un", "una", "uno", "si",
+        ),
+        subtitle_no_trailing_tokens=(
+            "e", "o", "ma", "che", "di", "del", "della", "a", "al", "alla",
+            "da", "dal", "dalla", "in", "nel", "con", "per", "il", "lo",
+            "la", "i", "gli", "le", "un", "una", "uno",
+        ),
+        subtitle_preferred_break_tokens=("capitolo", "versetto", "versetti", "a"),
     ),
 }
 

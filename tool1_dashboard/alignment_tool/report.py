@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import math
 
-from .models import AlignmentReport, NormalizedAudioInfo, ScriptDocument, SubtitleSegment, WordTiming
+from .models import (
+    AlignmentReport,
+    NormalizedAudioInfo,
+    ScriptDocument,
+    SegmentationDiagnostics,
+    SubtitleSegment,
+    WordTiming,
+)
 
 
 def _percentile(values: list[float], percentile: float) -> float:
@@ -32,6 +39,7 @@ def build_alignment_report(
     chunk_count: int,
     max_reading_cps_target: float,
     mapping_diagnostics: dict[str, int] | None = None,
+    segmentation_diagnostics: SegmentationDiagnostics | None = None,
     candidate_metrics: list[dict[str, object]] | None = None,
 ) -> AlignmentReport:
     average_segment_duration = 0.0
@@ -52,6 +60,16 @@ def build_alignment_report(
     }
     if mapping_diagnostics:
         warning_summary.update(mapping_diagnostics)
+    diagnostics = segmentation_diagnostics or SegmentationDiagnostics()
+    warning_summary.update(
+        {
+            "segments_over_18_cps": diagnostics.segments_over_18_cps,
+            "segments_over_24_cps": diagnostics.segments_over_24_cps,
+            "segments_over_30_cps": diagnostics.segments_over_30_cps,
+            "short_fast_segments": diagnostics.short_fast_segment_count,
+            "long_text_fast_segments": diagnostics.long_text_fast_segment_count,
+        }
+    )
     return AlignmentReport(
         engine=engine,
         fallback_used=fallback_used,
@@ -77,4 +95,13 @@ def build_alignment_report(
         p95_reading_cps=p95_reading_cps,
         candidate_metrics=list(candidate_metrics or []),
         chunk_count=chunk_count,
+        segment_profile=dict(diagnostics.segment_profile),
+        segments_over_18_cps=diagnostics.segments_over_18_cps,
+        segments_over_24_cps=diagnostics.segments_over_24_cps,
+        segments_over_30_cps=diagnostics.segments_over_30_cps,
+        short_fast_segment_count=diagnostics.short_fast_segment_count,
+        long_text_fast_segment_count=diagnostics.long_text_fast_segment_count,
+        average_chars_per_segment=diagnostics.average_chars_per_segment,
+        average_words_per_segment=diagnostics.average_words_per_segment,
+        optimization_passes=diagnostics.optimization_passes,
     )
