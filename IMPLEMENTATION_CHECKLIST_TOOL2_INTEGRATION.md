@@ -63,7 +63,7 @@
 
 ## PHASE 11: Testing
 - [ ] 11.1 `[HARD][CLAUDE]` Integration test (multilingual render)
-- [ ] 11.2 `[MEDIUM][CODEX]` Unit tests for video_assembly
+- [x] 11.2 `[MEDIUM][CODEX]` Unit tests for video_assembly
 
 ---
 

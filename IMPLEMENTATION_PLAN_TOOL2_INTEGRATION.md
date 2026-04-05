@@ -271,6 +271,8 @@ Status (2026-04-05): Codex tasks `10.1`, `10.2`, and `10.4` are complete. Task `
 
 ### PHASE 11: Testing
 
+Status (2026-04-05): Codex task `11.2` is complete. The remaining testing task is `11.1` integration coverage.
+
 | # | Task | Diff | Agent | Files |
 |---|------|------|-------|-------|
 | 11.1 | Integration test. Create episode with mock export artifacts (master timeline, 2 per-language timelines with different durations, 2 voiceovers, 2 SRTs). Upload small test PNGs as assets. Validate both languages. Render both. Verify 2 final_video files exist with different durations. | HARD | CLAUDE | `tests/test_video_assembly_integration.py` |
