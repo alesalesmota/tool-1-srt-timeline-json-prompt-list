@@ -22,6 +22,9 @@ class LanguageRulepack:
     range_word: str
     ordinal_books: dict[int, str]
     reference_example: str
+    spoken_replacements: tuple[tuple[str, str], ...] = ()
+    alignment_join_aliases: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    elision_prefixes: tuple[str, ...] = ()
 
 
 _GENERIC_PROTECTED_TERMS = ("Amen", "Hallelujah", "Yahweh", "Messiah")
@@ -44,6 +47,10 @@ _RULEPACKS: dict[str, LanguageRulepack] = {
         range_word="through",
         ordinal_books={1: "First", 2: "Second", 3: "Third"},
         reference_example="John chapter 18 verse 2",
+        spoken_replacements=(
+            (r"\bSt\.", "Saint"),
+            (r"\bMt\.", "Mount"),
+        ),
     ),
     "de": LanguageRulepack(
         code="de",
@@ -65,6 +72,15 @@ _RULEPACKS: dict[str, LanguageRulepack] = {
         range_word="bis",
         ordinal_books={1: "Erster", 2: "Zweiter", 3: "Dritter"},
         reference_example="Johannes Kapitel 18 Vers 2",
+        spoken_replacements=(
+            (r"\bHl\.", "Heilig"),
+        ),
+        alignment_join_aliases=(
+            ("zum", ("zu", "dem")),
+            ("zur", ("zu", "der")),
+            ("im", ("in", "dem")),
+            ("am", ("an", "dem")),
+        ),
     ),
     "es": LanguageRulepack(
         code="es",
@@ -86,6 +102,14 @@ _RULEPACKS: dict[str, LanguageRulepack] = {
         range_word="al",
         ordinal_books={1: "Primera", 2: "Segunda", 3: "Tercera"},
         reference_example="Juan capítulo 18 versículo 2",
+        spoken_replacements=(
+            (r"\bSta\.", "Santa"),
+            (r"\bSto\.", "Santo"),
+        ),
+        alignment_join_aliases=(
+            ("del", ("de", "el")),
+            ("al", ("a", "el")),
+        ),
     ),
     "fr": LanguageRulepack(
         code="fr",
@@ -109,6 +133,11 @@ _RULEPACKS: dict[str, LanguageRulepack] = {
         range_word="à",
         ordinal_books={1: "Premier", 2: "Deuxième", 3: "Troisième"},
         reference_example="Jean chapitre 18 verset 2",
+        spoken_replacements=(
+            (r"\bSt\.", "Saint"),
+            (r"\bSte\.", "Sainte"),
+        ),
+        elision_prefixes=("c", "d", "j", "l", "m", "n", "qu", "s", "t"),
     ),
     "it": LanguageRulepack(
         code="it",
@@ -130,6 +159,17 @@ _RULEPACKS: dict[str, LanguageRulepack] = {
         range_word="a",
         ordinal_books={1: "Primo", 2: "Secondo", 3: "Terzo"},
         reference_example="Giovanni capitolo 18 versetto 2",
+        spoken_replacements=(
+            (r"\bS\.", "San"),
+            (r"\bS\.ta", "Santa"),
+        ),
+        alignment_join_aliases=(
+            ("dell", ("di", "il")),
+            ("all", ("a", "il")),
+            ("nell", ("in", "il")),
+            ("sull", ("su", "il")),
+        ),
+        elision_prefixes=("l", "d", "all", "dall", "dell", "nell", "sull", "un"),
     ),
 }
 
@@ -213,11 +253,51 @@ def _normalize_reference_book_name(book_name: str, pack: LanguageRulepack) -> st
     return f"{ordinal} {rest}"
 
 
+def normalize_alignment_token(value: str) -> str:
+    cleaned = str(value or "").strip().lower()
+    cleaned = re.sub(r"[^\w]+", "", cleaned, flags=re.UNICODE)
+    return cleaned
+
+
+def component_aliases_for_token(value: str, language_code: str) -> list[tuple[str, ...]]:
+    token = normalize_alignment_token(value)
+    if not token:
+        return []
+    pack = resolve_language_rulepack(language_code)
+    aliases: list[tuple[str, ...]] = []
+    for joined, components in pack.alignment_join_aliases:
+        if token == joined:
+            aliases.append(tuple(components))
+    for prefix in sorted(pack.elision_prefixes, key=len, reverse=True):
+        if token.startswith(prefix) and len(token) > len(prefix) + 1:
+            remainder = token[len(prefix):]
+            if remainder:
+                aliases.append((prefix, remainder))
+    return aliases
+
+
+def joined_alias_for_components(values: tuple[str, ...], language_code: str) -> str | None:
+    normalized_values = tuple(normalize_alignment_token(value) for value in values if normalize_alignment_token(value))
+    if not normalized_values:
+        return None
+    pack = resolve_language_rulepack(language_code)
+    for joined, components in pack.alignment_join_aliases:
+        if normalized_values == tuple(components):
+            return joined
+    joined = "".join(normalized_values)
+    for prefix in sorted(pack.elision_prefixes, key=len, reverse=True):
+        if len(normalized_values) == 2 and normalized_values[0] == prefix and joined.startswith(prefix):
+            return joined
+    return None
+
+
 def build_spoken_script(text: str, language_code: str) -> str:
     pack = resolve_language_rulepack(language_code)
     source_text = str(text or "")
     if not source_text.strip():
         return ""
+    for pattern, replacement in pack.spoken_replacements:
+        source_text = re.sub(pattern, replacement, source_text)
 
     def replace_reference(match: re.Match[str]) -> str:
         book = _normalize_reference_book_name(match.group(1), pack)

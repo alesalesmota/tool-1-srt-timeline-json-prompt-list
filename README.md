@@ -86,7 +86,7 @@ Windows note: installing `TTS` may also require Microsoft C++ Build Tools.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v
+python -m pytest tests -q
 ```
 
-Current baseline: `141` passing tests.
+Current baseline: `208` passing tests and `4` passing subtests.

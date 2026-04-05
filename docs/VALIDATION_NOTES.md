@@ -3,13 +3,13 @@
 ## Automated Checks
 
 - `python -m compileall tool1_dashboard run_tool1_dashboard.py`
-- `python -m unittest discover -s tests -v`
+- `python -m pytest tests -q`
 
 ## Current Result
 
 - backend modules compile
 - API smoke checks pass
-- unit and integration tests pass
+- pytest suite passes (`208` passing tests, `4` passing subtests as of 2026-04-04)
 
 ## Remaining Manual Validation
 

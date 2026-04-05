@@ -1,6 +1,9 @@
 # Tool 1 Creator Studio — Reconstruction Plan
 > Last updated: 2026-04-04
 
+> [!IMPORTANT]
+> Historical migration record. This plan is complete and intentionally preserves the old cleanup context from the transition period. Do not treat the phase narrative below as the current architecture source of truth; use `README.md` and `PROJECT_REGISTRY.md` for the live product shape.
+
 ## Context
 
 Tool 1 is the multilingual video planning pipeline for Creator Studio. The user (Blue) creates niche-based YouTube content (e.g., Religion) and produces the **same episode in multiple languages** for different YouTube channels.
@@ -491,3 +494,54 @@ This addendum captures the follow-up Drawbridge pass that made the project board
 | CLI runner | `tool1_dashboard/providers.py` | Complete, keep as-is |
 | Agent prompts | `config/agents/` | Complete, keep as-is |
 | Template store | `tool1_dashboard/templates.py` | Complete, keep as-is |
+
+---
+
+## Alignment Hardening Addendum (2026-04-04)
+
+### Goal
+
+Improve alignment quality as a tool capability without adding a new engine, changing routes, or mutating episode-specific logic.
+
+### Implemented
+
+- Keep `MFA` as the default alignment engine and `WhisperX` as fallback/guidance only.
+- Add language-aware spoken/token normalization through shared rulepacks:
+  - spoken abbreviation expansion
+  - elision-aware token splitting
+  - joined-token aliases such as `del -> de el` and `zum -> zu dem`
+- Replace the previous exact-token-only mismatch recovery with staged rescue:
+  - exact normalized-token pass
+  - local merge rescue
+  - local split rescue
+  - bounded fuzzy token rescue
+  - approximation only after rescue failure
+- Add structured report metrics to `alignment_report.json`:
+  - `strategy`
+  - `warning_summary`
+  - `reading_speed_warning_count`
+  - `max_reading_cps`
+  - `p95_reading_cps`
+  - `candidate_metrics`
+  - `chunk_count`
+- Add deterministic candidate scoring across alignment strategies using:
+  - `(dropped_word_count, approximate_word_count, mismatch_count, reading_speed_warning_count, max_reading_cps)`
+- Add guided chunk-planning helpers and chunk stitching so chunked MFA can be used safely when single-pass MFA exceeds integrity thresholds.
+- Add subtitle post-optimization that:
+  - breaks earlier when predicted CPS is too high
+  - extends segments into safe silence gaps
+  - merges very short neighboring segments when that improves readability
+- Keep integrity failures strict:
+  - fail alignment if `dropped_word_count > 0`
+  - fail alignment if `approximate_word_count > max(25, ceil(script_word_count * 0.003))`
+
+### Verification
+
+- `python -m pytest tests -q`
+  - `208 passed`
+  - `4 subtests passed`
+- Non-destructive benchmark on episode `205` using current narration assets written to `workspace/benchmarks/alignment-20260404/`
+  - `de`: approximate `15 -> 1`, reading warnings `161 -> 105`
+  - `es`: approximate `2 -> 0`, reading warnings `39 -> 12`
+  - `fr`: approximate `100 -> 4`, reading warnings `311 -> 139`
+  - `it`: approximate `8 -> 0`, reading warnings `71 -> 57`

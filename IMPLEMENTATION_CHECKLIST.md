@@ -1,6 +1,9 @@
 # Implementation Checklist
 > Track progress across conversations. Update after each task.
 
+> [!IMPORTANT]
+> Historical completed checklist. Keep this for audit/history, but use `README.md` and `PROJECT_REGISTRY.md` for the current app behavior.
+
 ## Multilingual Translation Quality Upgrade (2026-04-04)
 - [x] Add shared per-language translation rulepacks for CTA/channel/reference guidance and known bad literal patterns
 - [x] Add deterministic translation QA that runs at chunk level and script level
@@ -284,3 +287,14 @@
 - [x] Verify with `python -m pytest tests/test_tts.py -q` (`57` passing)
 - [x] Verify runtime metadata shows `device = cuda`, `torch_build = cu121`, and `gpu_name = NVIDIA GeForce RTX 3050 Laptop GPU`
 - [x] Verify a temporary-db XTTS smoke run completes one `test_voice` job and one multi-chunk `generate` job on CUDA
+
+## Alignment Hardening (2026-04-04)
+- [x] Extend alignment reports with structured strategy and quality metrics
+- [x] Add language-aware spoken/token normalization on top of the shared translation rulepacks
+- [x] Replace exact-token-only mismatch recovery with merge/split/fuzzy rescue before approximation
+- [x] Add guided chunk planning, chunk stitching, and chunked-MFA retry plumbing
+- [x] Add subtitle post-optimization for early breaks, safe-gap extension, and short-segment merging
+- [x] Keep hard-fail alignment gates tied only to timing-integrity thresholds
+- [x] Add focused alignment unit tests and orchestrator selection coverage
+- [x] Verify with `python -m pytest tests -q` (`208` passing, `4` subtests passing)
+- [x] Run a non-destructive episode `205` benchmark and record before/after metrics under `workspace/benchmarks/alignment-20260404/`

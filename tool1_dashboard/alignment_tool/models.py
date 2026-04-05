@@ -37,6 +37,8 @@ class ScriptDocument:
     alignment_text: str
     words: list[ScriptWord]
     paragraphs: list[str] = field(default_factory=list)
+    paragraph_word_ranges: list[tuple[int, int]] = field(default_factory=list)
+    language_code: str = "en"
 
 
 @dataclass
@@ -126,6 +128,13 @@ class AlignmentReport:
     average_segment_duration: float
     warnings: list[str]
     status: str
+    strategy: str = "single_pass"
+    warning_summary: dict[str, Any] = field(default_factory=dict)
+    reading_speed_warning_count: int = 0
+    max_reading_cps: float = 0.0
+    p95_reading_cps: float = 0.0
+    candidate_metrics: list[dict[str, Any]] = field(default_factory=list)
+    chunk_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(self)
@@ -162,4 +171,3 @@ class AlignmentResult:
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(self)
-

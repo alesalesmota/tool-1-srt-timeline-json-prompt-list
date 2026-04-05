@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from .models import ScriptDocument, ScriptWord
+from ..translation.language_rules import normalize_alignment_token
 
 WORD_PATTERN = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*", re.UNICODE)
 OPEN_PUNCTUATION = "\"'([{«“‘"
@@ -19,11 +20,9 @@ TRANSLATION_TABLE = str.maketrans(
     }
 )
 
-
-def normalize_word(value: str) -> str:
+def normalize_word(value: str, language_code: str = "en") -> str:
     cleaned = value.translate(TRANSLATION_TABLE).lower()
-    cleaned = re.sub(r"[^\w]+", "", cleaned, flags=re.UNICODE)
-    return cleaned
+    return normalize_alignment_token(cleaned)
 
 
 def _normalize_text(raw_text: str) -> str:
@@ -54,7 +53,26 @@ def _trailing_text(gap: str) -> str:
     return ""
 
 
-def normalize_script(raw_text: str) -> ScriptDocument:
+def _build_paragraph_word_ranges(canonical_text: str, words: list[ScriptWord]) -> list[tuple[int, int]]:
+    if not canonical_text or not words:
+        return []
+    boundaries = [0]
+    boundaries.extend(match.end() for match in re.finditer(r"\n\s*\n", canonical_text))
+    boundaries.append(len(canonical_text))
+    ranges: list[tuple[int, int]] = []
+    word_cursor = 0
+    for start, end in zip(boundaries, boundaries[1:]):
+        while word_cursor < len(words) and words[word_cursor].text_end <= start:
+            word_cursor += 1
+        range_start = word_cursor
+        while word_cursor < len(words) and words[word_cursor].text_start < end:
+            word_cursor += 1
+        if word_cursor > range_start:
+            ranges.append((range_start, word_cursor))
+    return ranges
+
+
+def normalize_script(raw_text: str, language_code: str = "en") -> ScriptDocument:
     canonical_text = _normalize_text(raw_text)
     if not canonical_text:
         raise ValueError("Script is empty after normalization.")
@@ -74,7 +92,7 @@ def normalize_script(raw_text: str) -> ScriptDocument:
             ScriptWord(
                 index=index,
                 word=match.group(0),
-                normalized=normalize_word(match.group(0)),
+                normalized=normalize_word(match.group(0), language_code),
                 text_start=match.start(),
                 text_end=match.end(),
                 render_start=match.start() - len(leading_text),
@@ -86,11 +104,13 @@ def normalize_script(raw_text: str) -> ScriptDocument:
 
     alignment_text = " ".join(word.word for word in words)
     paragraphs = [paragraph for paragraph in canonical_text.split("\n\n") if paragraph.strip()]
+    paragraph_word_ranges = _build_paragraph_word_ranges(canonical_text, words)
     return ScriptDocument(
         source_text=raw_text,
         canonical_text=canonical_text,
         alignment_text=alignment_text,
         words=words,
         paragraphs=paragraphs,
+        paragraph_word_ranges=paragraph_word_ranges,
+        language_code=language_code,
     )
-
