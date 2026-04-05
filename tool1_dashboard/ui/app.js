@@ -3739,6 +3739,24 @@ function renderEpisodeDetailOverlay() {
     const hasTranslation = ls.translation_status === "done" && ls.language_code !== (episode.master_language || "en");
     const ttsProgressLabel = languageTtsJobCopy(ls);
     const ttsProgress = ttsProgressLabel ? ' <span class="helper" style="font-size:0.7rem;">(' + esc(ttsProgressLabel) + ')</span>' : '';
+
+    const renderJob = detail.render_jobs ? detail.render_jobs[ls.language_code]?.latest : null;
+    let renderBadgeHtml = '<span class="badge badge-idle">Idle</span>';
+    let renderActionHtml = '';
+    if (renderJob) {
+      if (renderJob.state === "completed") {
+        renderBadgeHtml = '<span class="badge badge-success">Done</span>';
+        renderActionHtml = ` <a href="/api/episodes/${encodeURIComponent(episode.id)}/assembly/render/${encodeURIComponent(renderJob.id || renderJob.job_id)}/video" target="_blank" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;">Play</a>`;
+      } else if (renderJob.state === "failed") {
+        renderBadgeHtml = '<span class="badge badge-error">Failed</span>';
+        renderActionHtml = ` <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-render-lang="${esc(episode.id)}" data-lang="${esc(ls.language_code)}">Retry</button>`;
+      } else if (renderJob.state === "rendering" || renderJob.state === "queued") {
+        renderBadgeHtml = '<span class="badge badge-running pulse" style="background:#3b82f6;color:white;border-color:#3b82f6;">Render</span>';
+      } else {
+        renderBadgeHtml = `<span class="badge badge-idle">${esc(renderJob.state || "Idle")}</span>`;
+      }
+    }
+
     return '<tr>' +
       '<td><strong>' + esc(ls.language_code) + '</strong></td>' +
       '<td>' + langStatusBadge(ls.translation_status) +
@@ -3754,6 +3772,7 @@ function renderEpisodeDetailOverlay() {
       '<td>' + langStatusBadge(ls.timeline_status) +
         (canRetryTimeline ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="timeline_mapping">Retry</button>' : '') +
       '</td>' +
+      '<td>' + renderBadgeHtml + renderActionHtml + '</td>' +
       '<td class="helper" style="font-size:0.75rem;">' + esc(ls.error_message || "") + '</td>' +
     '</tr>';
   }).join("");
@@ -3808,8 +3827,8 @@ function renderEpisodeDetailOverlay() {
               ${activeTtsMarkup}
               ${workerIssueMarkup}
               <table class="lang-table">
-                <thead><tr><th>Lang</th><th>Translation</th><th>TTS</th><th>SRT</th><th>Timeline</th><th>Error</th></tr></thead>
-                <tbody>${langRows || '<tr><td colspan="6" class="helper">No language data.</td></tr>'}</tbody>
+                <thead><tr><th>Lang</th><th>Translation</th><th>TTS</th><th>SRT</th><th>Timeline</th><th>Render</th><th>Error</th></tr></thead>
+                <tbody>${langRows || '<tr><td colspan="7" class="helper">No language data.</td></tr>'}</tbody>
               </table>
             </div>
             <div id="episode-assembly-section" class="board-modal-section"></div>
@@ -3899,13 +3918,14 @@ function renderEpisodeDetail() {
       '<td>' + langStatusBadge(ls.timeline_status) +
         (canRetryTimeline ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="timeline_mapping">Retry</button>' : '') +
       '</td>' +
+      '<td>' + renderBadgeHtml + renderActionHtml + '</td>' +
       '<td class="helper" style="font-size:0.75rem;">' + esc(ls.error_message || "") + '</td>' +
     '</tr>';
   }).join("");
 
   const langTable = langStatuses.length ? `
     <table class="lang-table">
-      <thead><tr><th>Lang</th><th>Translation</th><th>TTS</th><th>SRT</th><th>Timeline</th><th>Error</th></tr></thead>
+      <thead><tr><th>Lang</th><th>Translation</th><th>TTS</th><th>SRT</th><th>Timeline</th><th>Render</th><th>Error</th></tr></thead>
       <tbody>${langRows}</tbody>
     </table>` : '<p class="helper">No language data.</p>';
 
@@ -6119,6 +6139,7 @@ async function renderAssemblySection(episodeId, { readOnly = false } = {}) {
             ${iconContent("add", "Bulk Upload")}
           </button>
           <input type="file" id="bulk-upload-input-${esc(episodeId)}" multiple style="display:none;" data-bulk-upload-input="${esc(episodeId)}" />
+          <span class="helper hint-text">Tip: Select all images in Windows, rename to "img" &rarr; files become img (1), img (2)... Same for videos with "video". Auto-match by number.</span>
           `}
         </div>
       </div>

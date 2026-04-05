@@ -3460,6 +3460,8 @@ details.editor-card summary::-webkit-details-marker {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: 12px 16px;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -3469,6 +3471,13 @@ details.editor-card summary::-webkit-details-marker {
 .asset-upload-progress {
   font-weight: 600;
   font-size: 14px;
+}
+.hint-text {
+  display: block;
+  width: 100%;
+  font-size: 12px;
+  color: var(--ink-faint);
+  margin-top: 4px;
 }
 
 /* ── Video Assembly (Validation & Render) ───────────────────────── */

@@ -10,12 +10,13 @@ ALL_ASSET_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 _PROMPT_NUMBER_RE = re.compile(r"prompt\s*(\d+)", re.IGNORECASE)
 _SCENE_NUMBER_RE = re.compile(r"scene[_\s]*(\d+)", re.IGNORECASE)
 _ASSET_NUMBER_RE = re.compile(r"asset[_\s]*(\d+)", re.IGNORECASE)
+_PAREN_NUMBER_RE = re.compile(r"\((\d+)\)")
 _LEADING_NUMBER_RE = re.compile(r"^(\d+)")
 
 
 def _extract_number(filename: str) -> int | None:
     """Extract a scene/prompt number from a filename using multiple patterns."""
-    for pattern in (_PROMPT_NUMBER_RE, _SCENE_NUMBER_RE, _ASSET_NUMBER_RE):
+    for pattern in (_PROMPT_NUMBER_RE, _SCENE_NUMBER_RE, _ASSET_NUMBER_RE, _PAREN_NUMBER_RE):
         match = pattern.search(filename)
         if match:
             return int(match.group(1))
