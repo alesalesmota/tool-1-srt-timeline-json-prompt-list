@@ -49,7 +49,7 @@
 ## PHASE 8: Workflow Integration
 - [x] 8.1 `[EASY][GEMINI]` "Start Video Assembly" button
 - [x] 8.2 `[EASY][GEMINI]` Stage strip for 16 stages
-- [ ] 8.3 `[MEDIUM][CODEX]` Conditional assembly UI loader
+- [x] 8.3 `[MEDIUM][CODEX]` Conditional assembly UI loader
 
 ## PHASE 9: Asset Staging
 - [x] 9.1 `[MEDIUM][CODEX]` _stage_assets_for_render() — copy shared → per-lang

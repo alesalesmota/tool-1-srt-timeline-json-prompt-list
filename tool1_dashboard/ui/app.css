@@ -3389,3 +3389,192 @@ details.editor-card summary::-webkit-details-marker {
   background: transparent;
   cursor: default;
 }
+
+/* ── Video Assembly (Asset Upload) ───────────────────────── */
+.scene-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+.scene-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  position: relative;
+}
+.scene-card-header {
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+.scene-card-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+.scene-card-time {
+  font-size: 11px;
+  color: var(--muted);
+}
+.scene-card-body {
+  padding: 12px;
+  font-size: 13px;
+  color: var(--muted);
+  flex-grow: 1;
+}
+.scene-card-dropzone {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 24px 12px;
+  border-top: 1px dashed var(--line-strong);
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+  transition: all 160ms ease;
+  min-height: 120px;
+}
+.scene-card-dropzone:hover, .scene-card-dropzone.dragover {
+  background: rgba(144, 179, 255, 0.08);
+  border-color: var(--brand);
+}
+.scene-card-thumbnail {
+  width: 100%;
+  aspect-ratio: 16/9;
+  object-fit: cover;
+  display: block;
+}
+.asset-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--panel-soft);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+.assembly-stats-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  margin-bottom: 16px;
+}
+.asset-upload-progress {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+/* ── Video Assembly (Validation & Render) ───────────────────────── */
+.validation-panel, .render-progress-panel, .final-review-panel {
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  margin-top: 16px;
+}
+.validation-result {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.validation-result:last-child {
+  border-bottom: none;
+}
+.validation-error-item {
+  color: var(--error);
+  font-size: 13px;
+  margin-top: 4px;
+}
+.validation-success-item {
+  color: var(--success);
+  font-size: 13px;
+  margin-top: 4px;
+}
+.validation-warning-item {
+  color: var(--warn);
+  font-size: 13px;
+  margin-top: 4px;
+}
+.render-progress-bar {
+  height: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+.render-progress-fill {
+  height: 100%;
+  background: var(--brand);
+  transition: width 300ms ease;
+}
+.render-log-output {
+  margin-top: 12px;
+  padding: 12px;
+  background: #000;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #ccc;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+.render-stage-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--panel-soft);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  margin-left: 8px;
+}
+.video-player-container {
+  width: 100%;
+  aspect-ratio: 16/9;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.video-player-container video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.language-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+.language-tab {
+  padding: 8px 16px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 12px;
+  font-weight: 600;
+}
+.language-tab-active {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--ink);
+}
+.render-queue-badge {
+  font-size: 11px;
+  margin-left: 6px;
+  color: var(--warn);
+}
+

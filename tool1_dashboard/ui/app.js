@@ -20,6 +20,7 @@ const EPISODE_PIPELINE_COLUMNS = [
 ];
 const EPISODE_STAGE_LABELS = Object.fromEntries(EPISODE_PIPELINE_COLUMNS.map((c) => [c.id, c.label]));
 const EPISODE_PER_LANG_STAGES = ["translation", "tts", "alignment", "timeline_mapping"];
+const ASSEMBLY_STAGE_IDS = ["asset_upload", "assembly_validation", "video_render", "final_review"];
 const EPISODE_RUNNABLE_STAGE_IDS = EPISODE_PIPELINE_COLUMNS
   .map((column) => column.id)
   .filter((columnId) => !["draft", "review", "export", "asset_upload", "assembly_validation", "video_render", "final_review", "needs_attention"].includes(columnId));
@@ -141,6 +142,7 @@ const state = {
   isRefreshingData: false,
   lastEpisodeFilesLoadedFor: null,
   lastEpisodeReviewLoadedFor: null,
+  episodeAssemblyActiveRenderLanguage: {},
   cachedReviewData: null,
   cachedReviewEpisodeId: null,
   projectConfigDisclosures: {
@@ -975,6 +977,9 @@ function ensureEpisodeSupplementalDataLoaded(episodeId, { force = false } = {}) 
     state.lastEpisodeReviewLoadedFor = episodeId;
     loadReviewData(episodeId);
   }
+  loadAssemblyUI(episodeId).catch((error) => {
+    console.error("Failed to load assembly UI", error);
+  });
 }
 
 function renderLoadingSurface(title, copy) {
@@ -3701,17 +3706,26 @@ function renderEpisodeDetailOverlay() {
   const activeTtsMarkup = renderActiveTtsProgress(episode);
   const allStages = EPISODE_PIPELINE_COLUMNS.filter((c) => c.id !== "needs_attention");
   const currentIdx = allStages.findIndex((c) => c.id === currentStage);
-  const progressPct = allStages.length ? Math.max(0, Math.round(((currentIdx < 0 ? 0 : currentIdx + (episode.pipeline_status === "review" || episode.pipeline_status === "done" ? 1 : 0)) / allStages.length) * 100)) : 0;
+  const isAssembly = ["asset_upload", "assembly_validation", "video_render", "final_review"].includes(currentStage);
+  const doneCount = allStages.filter((s, i) => {
+    if (i < currentIdx) return true;
+    if (i === currentIdx && !isAssembly && (episode.pipeline_status === "review" || episode.pipeline_status === "done")) return true;
+    return false;
+  }).length;
+  const progressPct = allStages.length ? Math.round((doneCount / allStages.length) * 100) : 0;
   const queueActionButton = renderEpisodeWorkflowActionButton(episode, { className: "episode-detail-action", readiness });
   const deleteActionButton = renderEpisodeDeleteActionButton(episode.id, { className: "episode-detail-action" });
   const stageStrip = allStages.map((s, i) => {
     let st = "pending";
-    if (episode.pipeline_status === "done") st = "done";
-    else if (i < currentIdx) st = "done";
-    else if (i === currentIdx && episode.pipeline_status === "running") st = "active";
-    else if (i === currentIdx && episode.pipeline_status === "paused_for_tts" && liveTtsJob?.worker_active) st = "active";
-    else if (i === currentIdx && (episode.pipeline_status === "review" || episode.pipeline_status === "done")) st = "done";
-    else if (i === currentIdx && episode.pipeline_status === "failed") st = "failed";
+    if (i < currentIdx) st = "done";
+    else if (i === currentIdx) {
+      if (["asset_upload", "assembly_validation", "video_render", "final_review"].includes(s.id)) st = "active";
+      else if (episode.pipeline_status === "running") st = "active";
+      else if (episode.pipeline_status === "paused_for_tts" && liveTtsJob?.worker_active) st = "active";
+      else if (episode.pipeline_status === "review" || episode.pipeline_status === "done") st = "done";
+      else if (episode.pipeline_status === "failed") st = "failed";
+      else st = "active";
+    }
     return '<div class="stage-strip-item" data-state="' + st + '" title="' + esc(s.label) + '">' + esc(s.short) + '</div>';
   }).join("");
   const workerIssueMarkup = renderWorkerHealthBanner(detail.worker_health || {}, {
@@ -3798,6 +3812,7 @@ function renderEpisodeDetailOverlay() {
                 <tbody>${langRows || '<tr><td colspan="6" class="helper">No language data.</td></tr>'}</tbody>
               </table>
             </div>
+            <div id="episode-assembly-section" class="board-modal-section"></div>
             <div id="episode-review-section" class="board-modal-section"></div>
             <div class="board-modal-section">
               <div id="episode-files-shell">${renderEpisodeFilesSection(episode.id)}</div>
@@ -3830,22 +3845,25 @@ function renderEpisodeDetail() {
   // Pipeline progress bar
   const allStages = EPISODE_PIPELINE_COLUMNS.filter((c) => c.id !== "needs_attention");
   const currentIdx = allStages.findIndex((c) => c.id === currentStage);
+  const isAssembly = ["asset_upload", "assembly_validation", "video_render", "final_review"].includes(currentStage);
   const doneCount = allStages.filter((s, i) => {
-    if (episode.pipeline_status === "done") return true;
     if (i < currentIdx) return true;
-    if (i === currentIdx && (episode.pipeline_status === "review" || episode.pipeline_status === "done")) return true;
+    if (i === currentIdx && !isAssembly && (episode.pipeline_status === "review" || episode.pipeline_status === "done")) return true;
     return false;
   }).length;
   const progressPct = allStages.length ? Math.round((doneCount / allStages.length) * 100) : 0;
 
   const stageStrip = allStages.map((s, i) => {
     let st = "pending";
-    if (episode.pipeline_status === "done") st = "done";
-    else if (i < currentIdx) st = "done";
-    else if (i === currentIdx && episode.pipeline_status === "running") st = "active";
-    else if (i === currentIdx && episode.pipeline_status === "paused_for_tts" && liveTtsJob?.worker_active) st = "active";
-    else if (i === currentIdx && (episode.pipeline_status === "review" || episode.pipeline_status === "done")) st = "done";
-    else if (i === currentIdx && episode.pipeline_status === "failed") st = "failed";
+    if (i < currentIdx) st = "done";
+    else if (i === currentIdx) {
+      if (["asset_upload", "assembly_validation", "video_render", "final_review"].includes(s.id)) st = "active";
+      else if (episode.pipeline_status === "running") st = "active";
+      else if (episode.pipeline_status === "paused_for_tts" && liveTtsJob?.worker_active) st = "active";
+      else if (episode.pipeline_status === "review" || episode.pipeline_status === "done") st = "done";
+      else if (episode.pipeline_status === "failed") st = "failed";
+      else st = "active";
+    }
     return '<div class="stage-strip-item" data-state="' + st + '" title="' + esc(s.label) + '">' + esc(s.short) + '</div>';
   }).join("");
 
@@ -3905,6 +3923,7 @@ function renderEpisodeDetail() {
       <div id="episode-files-shell">${renderEpisodeFilesSection(episode.id)}</div>
     </div>`;
 
+  const assemblySection = '<div id="episode-assembly-section" class="detail-section"></div>';
   const reviewSection = '<div id="episode-review-section" class="detail-section"></div>';
 
   $("view").innerHTML = `
@@ -3950,6 +3969,7 @@ function renderEpisodeDetail() {
         ${langTable}
       </div>
 
+      ${assemblySection}
       ${reviewSection}
 
       ${filesSection.replace('class="detail-section"', 'class="surface" style="padding:16px;"')}
@@ -4252,6 +4272,7 @@ function renderReviewSectionContent(container, episodeId, ep, data) {
         ${canEdit ? '<button type="button" class="button button-primary button-small has-icon" data-save-review="' + esc(episodeId) + '">' + iconContent("save", "Save Edits") + '</button>' : ''}
         ${canEdit ? '<button type="button" class="button button-primary button-small has-icon" style="background:var(--success);color:var(--bg)" data-finalize-export="' + esc(episodeId) + '">' + iconContent("finalize", "Finalize & Export") + '</button>' : ''}
         ${ep.pipeline_status === "done" || ep.current_stage === "export" ? '<button type="button" class="button button-primary button-small has-icon" data-download-export="' + esc(episodeId) + '">' + iconContent("download", "Download ZIP") + '</button>' : ''}
+        ${ep.current_stage === "export" && ep.pipeline_status === "done" ? '<button type="button" class="button button-primary button-small has-icon" style="background:var(--brand);color:var(--bg)" data-start-video-assembly="' + esc(episodeId) + '">' + iconContent("play", "Start Video Assembly") + '</button>' : ''}
       </div>
     </div>
 
@@ -5964,3 +5985,650 @@ window.addEventListener("DOMContentLoaded", () => {
   }
   syncRouteAndRender().catch((error) => setNotice(error.message, "error"));
 });
+
+// ── Video Assembly (Phase 6) ─────────────────────────
+
+function normalizeAssemblyValidationPayload(validationData) {
+  const shared = validationData?.shared || {};
+  const rawLanguages = Array.isArray(validationData?.languages)
+    ? validationData.languages.map((payload) => [payload.lang || payload.language_code || "unknown", payload])
+    : Object.entries(validationData?.languages || {});
+  const languageEntries = rawLanguages.map(([languageCode, payload]) => {
+    const errors = Array.isArray(payload?.errors) ? payload.errors : [];
+    const warnings = Array.isArray(payload?.warnings) ? payload.warnings : [];
+    const hasTimelineError = errors.some((item) => String(item || "").toLowerCase().includes("timeline"));
+    const hasTtsError = errors.some((item) => String(item || "").toLowerCase().includes("tts"));
+    const hasSrtWarning = warnings.some((item) => String(item || "").toLowerCase().includes("srt"));
+    return {
+      lang: languageCode,
+      ok: Boolean(payload?.passed),
+      errors,
+      warnings,
+      timeline_ok: !hasTimelineError,
+      tts_ok: !hasTtsError,
+      srt_ok: !hasSrtWarning,
+      scene_count: payload?.scene_count || 0,
+      total_duration: payload?.total_duration || 0,
+    };
+  });
+  return {
+    shared: {
+      ok: Boolean(shared.all_assets_uploaded ?? shared.ok),
+      missing_scenes: Array.isArray(shared.missing_scenes) ? shared.missing_scenes : [],
+    },
+    languages: languageEntries,
+  };
+}
+
+function normalizeAssemblyRenderJob(job) {
+  if (!job) return null;
+  return {
+    ...job,
+    job_id: job.job_id || job.id,
+    id: job.id || job.job_id,
+    language_code: job.language_code || job.lang,
+    outputs: job.outputs || {},
+    validation: job.validation || {},
+  };
+}
+
+function normalizeAssemblyRenderJobs(payload) {
+  if (Array.isArray(payload)) {
+    return payload.map(normalizeAssemblyRenderJob).filter(Boolean);
+  }
+  if (Array.isArray(payload?.render_jobs)) {
+    return payload.render_jobs.map(normalizeAssemblyRenderJob).filter(Boolean);
+  }
+  if (payload?.languages && typeof payload.languages === "object") {
+    return Object.values(payload.languages)
+      .map((entry) => normalizeAssemblyRenderJob(entry?.latest))
+      .filter(Boolean);
+  }
+  return [];
+}
+
+async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
+  const container = $("episode-assembly-section");
+  const episode = state.episodeDetail?.episode;
+  if (!container || !episode || episode.id !== episodeId) return;
+
+  const currentStage = episode.current_stage || "";
+  if (!ASSEMBLY_STAGE_IDS.includes(currentStage)) {
+    container.innerHTML = "";
+    container.style.display = "none";
+    return;
+  }
+
+  container.style.display = "";
+  if (activeRenderLanguage) {
+    state.episodeAssemblyActiveRenderLanguage[episodeId] = activeRenderLanguage;
+  }
+
+  try {
+    if (currentStage === "asset_upload") {
+      await renderAssemblySection(episodeId);
+      return;
+    }
+
+    if (currentStage === "assembly_validation") {
+      await renderAssemblySection(episodeId, { readOnly: true });
+      const validationData = await api(`/api/episodes/${encodeURIComponent(episodeId)}/assembly/validate`, { method: "POST" });
+      container.insertAdjacentHTML("beforeend", renderAssemblyValidationPanel(episodeId, validationData));
+      return;
+    }
+
+    if (currentStage === "video_render") {
+      container.innerHTML = renderLoadingSurface("Loading renders", "Fetching per-language render progress.");
+      const renderStatus = await api(`/api/episodes/${encodeURIComponent(episodeId)}/assembly/render-status`);
+      const renderJobs = normalizeAssemblyRenderJobs(renderStatus);
+      const preferredTab = activeRenderLanguage || state.episodeAssemblyActiveRenderLanguage[episodeId] || renderJobs[0]?.language_code || null;
+      if (preferredTab) {
+        state.episodeAssemblyActiveRenderLanguage[episodeId] = preferredTab;
+      }
+      container.innerHTML = renderAssemblyRenderPanel(episodeId, renderJobs, preferredTab);
+      return;
+    }
+
+    if (currentStage === "final_review") {
+      container.innerHTML = renderLoadingSurface("Loading final videos", "Fetching completed render outputs.");
+      const renderJobsPayload = await api(`/api/episodes/${encodeURIComponent(episodeId)}/assembly/render-jobs`);
+      const completedVideos = normalizeAssemblyRenderJobs(renderJobsPayload).filter((job) => job.state === "completed");
+      container.innerHTML = renderAssemblyReviewPanel(episodeId, completedVideos);
+    }
+  } catch (error) {
+    container.innerHTML = `<div class="notice" data-tone="error">Failed to load assembly UI: ${esc(error.message)}</div>`;
+  }
+}
+
+async function renderAssemblySection(episodeId, { readOnly = false } = {}) {
+  const container = $("episode-assembly-section");
+  if (!container) return;
+  container.innerHTML = renderLoadingSurface("Loading scenes", "Fetching timeline scenes and uploaded assets.");
+  try {
+    const data = await api(`/api/episodes/${encodeURIComponent(episodeId)}/scenes`);
+    const scenes = data.scenes || [];
+    const totalScenes = data.total_scenes || 0;
+    const uploadedCount = data.uploaded_count || 0;
+
+    const statsBar = `
+      <div class="assembly-stats-bar">
+        <div class="asset-upload-progress">${uploadedCount}/${totalScenes} assets uploaded</div>
+        <div>
+          ${readOnly ? '<span class="helper">Read-only at this stage</span>' : `
+          <button type="button" class="button button-inline" data-bulk-upload="${esc(episodeId)}">
+            ${iconContent("add", "Bulk Upload")}
+          </button>
+          <input type="file" id="bulk-upload-input-${esc(episodeId)}" multiple style="display:none;" data-bulk-upload-input="${esc(episodeId)}" />
+          `}
+        </div>
+      </div>
+    `;
+
+    const gridLayout = scenes.map(scene => {
+      const isUploaded = scene.asset !== null;
+      const assetMarkup = isUploaded 
+        ? `<div style="position:relative">
+             ${scene.asset.asset_type === "video" 
+               ? `<video src="/api/episodes/${encodeURIComponent(episodeId)}/scenes/${encodeURIComponent(scene.scene_id)}/asset/preview" class="scene-card-thumbnail" controls controlsList="nodownload"></video>`
+               : `<img src="/api/episodes/${encodeURIComponent(episodeId)}/scenes/${encodeURIComponent(scene.scene_id)}/asset/preview" class="scene-card-thumbnail" />`
+             }
+             ${readOnly ? "" : `<div style="padding: 12px; display: flex; justify-content: flex-end; gap: 8px;">
+               <button class="button button-ghost button-small" data-upload-asset="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">Replace</button>
+               <button class="button button-ghost button-small button-danger" data-remove-asset="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">Remove</button>
+               <input type="file" id="single-upload-input-${esc(scene.scene_id)}" style="display:none;" data-single-upload-input="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}" />
+             </div>`}
+           </div>`
+        : readOnly
+          ? `<div class="scene-card-dropzone"><div class="helper">No asset uploaded</div></div>`
+          : `<div class="scene-card-dropzone" data-dropzone="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">
+               <div class="helper">Drag & drop or</div>
+               <button class="button button-ghost button-small" style="margin-top:8px;" data-upload-asset="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">Browse File</button>
+               <input type="file" id="single-upload-input-${esc(scene.scene_id)}" style="display:none;" data-single-upload-input="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}" />
+             </div>`;
+      
+      const timeRange = `${voiceTtsNumberValue(scene.start, 1)}s - ${voiceTtsNumberValue(scene.end, 1)}s`;
+      
+      return `
+        <div class="scene-card">
+          <div class="scene-card-header">
+            <div>
+              <div class="scene-card-title">Scene ${esc(scene.scene_id)}</div>
+              <div class="scene-card-time">${esc(timeRange)}</div>
+            </div>
+            <div class="asset-badge">${esc(scene.asset_type || "image")}</div>
+          </div>
+          <div class="scene-card-body">
+            ${esc(shortText(scene.text, 60))}
+          </div>
+          ${assetMarkup}
+        </div>
+      `;
+    }).join("");
+
+    container.innerHTML = `
+      <div class="section-header" style="margin-bottom:12px;">
+        <div class="eyebrow" style="margin:0;">Video Assembly Assets</div>
+      </div>
+      ${statsBar}
+      <div class="scene-grid">${gridLayout}</div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<div class="notice" data-tone="error">Failed to load scenes: ${esc(err.message)}</div>`;
+  }
+}
+
+async function handleAssetUpload(episodeId, sceneId, file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  try {
+    const res = await fetch(`/api/episodes/${encodeURIComponent(episodeId)}/scenes/${encodeURIComponent(sceneId)}/asset`, {
+      method: "POST",
+      body: formData
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || "Upload failed");
+    }
+    await renderAssemblySection(episodeId);
+  } catch (err) {
+    setNotice(err.message, "error");
+  }
+}
+
+async function handleBulkUpload(episodeId, files) {
+  if (!files || files.length === 0) return;
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append("files", file);
+  }
+  setNotice("Uploading assets...", "neutral");
+  try {
+    const res = await fetch(`/api/episodes/${encodeURIComponent(episodeId)}/scenes/bulk-upload`, {
+      method: "POST",
+      body: formData
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || "Bulk upload failed");
+    
+    if (data.unmatched && data.unmatched.length > 0) {
+      setNotice(`${data.matched.length} uploaded, ${data.unmatched.length} skipped (unmatched filenames)`, "warn");
+    } else {
+      setNotice(`Bulk uploaded ${data.matched?.length || 0} assets`, "success");
+    }
+    await renderAssemblySection(episodeId);
+  } catch (err) {
+    setNotice(err.message, "error");
+  }
+}
+
+// Global Event Delegation for Video Assembly
+document.addEventListener("click", async (event) => {
+  const bulkBtn = event.target.closest("[data-bulk-upload]");
+  if (bulkBtn) {
+    const epId = bulkBtn.dataset.bulkUpload;
+    const input = $(`bulk-upload-input-${epId}`);
+    if (input) input.click();
+    return;
+  }
+
+  const uploadBtn = event.target.closest("[data-upload-asset]");
+  if (uploadBtn) {
+    const sceneId = uploadBtn.dataset.scene;
+    const input = $(`single-upload-input-${sceneId}`);
+    if (input) input.click();
+    return;
+  }
+
+  const removeBtn = event.target.closest("[data-remove-asset]");
+  if (removeBtn) {
+    const epId = removeBtn.dataset.removeAsset;
+    const sceneId = removeBtn.dataset.scene;
+    try {
+      const res = await fetch(`/api/episodes/${encodeURIComponent(epId)}/scenes/${encodeURIComponent(sceneId)}/asset`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete asset");
+      await renderAssemblySection(epId);
+    } catch (err) {
+      setNotice(err.message, "error");
+    }
+    return;
+  }
+});
+
+document.addEventListener("change", (event) => {
+  if (event.target.dataset.bulkUploadInput) {
+    const epId = event.target.dataset.bulkUploadInput;
+    handleBulkUpload(epId, event.target.files);
+    event.target.value = ""; // reset
+    return;
+  }
+  if (event.target.dataset.singleUploadInput) {
+    const epId = event.target.dataset.singleUploadInput;
+    const sceneId = event.target.dataset.scene;
+    if (event.target.files.length > 0) {
+      handleAssetUpload(epId, sceneId, event.target.files[0]);
+    }
+    event.target.value = ""; // reset
+    return;
+  }
+});
+
+document.addEventListener("dragover", (event) => {
+  const dropzone = event.target.closest("[data-dropzone]");
+  if (dropzone) {
+    event.preventDefault();
+    dropzone.classList.add("dragover");
+  }
+});
+
+document.addEventListener("dragleave", (event) => {
+  const dropzone = event.target.closest("[data-dropzone]");
+  if (dropzone) {
+    event.preventDefault();
+    dropzone.classList.remove("dragover");
+  }
+});
+
+document.addEventListener("drop", (event) => {
+  const dropzone = event.target.closest("[data-dropzone]");
+  if (dropzone) {
+    event.preventDefault();
+    dropzone.classList.remove("dragover");
+    if (event.dataTransfer.files.length > 0) {
+      const epId = dropzone.dataset.dropzone;
+      const sceneId = dropzone.dataset.scene;
+      handleAssetUpload(epId, sceneId, event.dataTransfer.files[0]);
+    }
+  }
+});
+
+// ── Video Assembly (Phase 7: Validation & Render) ─────────────────────────
+
+function renderAssemblyValidationPanel(episodeId, validationData) {
+  const normalized = normalizeAssemblyValidationPayload(validationData);
+  let inner = "";
+  if (!validationData) {
+    inner = `
+      <p class="helper">Ready to validate assets and languages.</p>
+      <button type="button" class="button button-primary" data-validate-assembly="${esc(episodeId)}">
+        Validate All Languages
+      </button>
+    `;
+  } else {
+    const sharedOk = normalized.shared?.ok !== false;
+    let rows = `<div class="validation-result">
+      <div>Shared Assets (All Scenes Have Assets)</div>
+      <div>${sharedOk ? '<span class="validation-success-item">Yes</span>' : '<span class="validation-error-item">No</span>'}</div>
+    </div>`;
+    if (!sharedOk && normalized.shared?.missing_scenes?.length) {
+      rows += `<div class="validation-result">
+        <div class="validation-error-item">Missing scenes: ${esc(normalized.shared.missing_scenes.join(", "))}</div>
+        <div></div>
+      </div>`;
+    }
+
+    let canRenderAny = false;
+    if (normalized.languages) {
+      normalized.languages.forEach(l => {
+        if (l.ok) canRenderAny = true;
+        const timeline = l.timeline_ok === false ? "Error" : "OK";
+        const tts = l.tts_ok === false ? "Error" : "OK";
+        const srt = l.srt_ok === false ? "Missing" : "OK";
+        const color = l.ok ? "success" : "error";
+        const issues = (l.errors || []).map(err => `<div class="validation-error-item">• ${esc(err)}</div>`).join("");
+        const warnings = (l.warnings || []).map(warn => `<div class="helper">• ${esc(warn)}</div>`).join("");
+        rows += `<div class="validation-result">
+          <div>
+            <strong>${esc(l.lang)}</strong>
+            <span class="helper" style="margin-left:8px;">Timeline: ${timeline}, Voiceover: ${tts}, SRT: ${srt}</span>
+            ${issues}
+            ${warnings}
+          </div>
+          <div>
+            <span class="validation-${color}-item">${l.ok ? "Passed" : "Failed"}</span>
+            ${l.ok ? `<button type="button" class="button button-small" style="margin-left:8px;" data-render-lang="${esc(episodeId)}" data-lang="${esc(l.lang)}">Render</button>` : ""}
+          </div>
+        </div>`;
+      });
+    }
+
+    inner = `
+      <div style="margin-bottom:12px;">
+        <button type="button" class="button" data-validate-assembly="${esc(episodeId)}">Re-validate</button>
+        ${canRenderAny ? `<button type="button" class="button button-primary" style="margin-left:8px;" data-render-all="${esc(episodeId)}">Render All Valid</button>` : ""}
+      </div>
+      <div class="surface" style="padding:0; border-radius:var(--radius-sm); border:1px solid var(--line);">
+        ${rows}
+      </div>
+    `;
+  }
+  
+  return `
+    <div class="validation-panel" id="assembly-validation-target-${esc(episodeId)}">
+      <div class="section-header" style="margin-bottom:12px;">
+        <div class="eyebrow" style="margin:0;">Assembly Validation</div>
+      </div>
+      <div>
+        ${inner}
+      </div>
+    </div>
+  `;
+}
+
+let renderEventSources = {};
+
+function startRenderSSE(episodeId, jobId, lang) {
+  if (renderEventSources[jobId]) return;
+  const es = new EventSource(`/api/episodes/${encodeURIComponent(episodeId)}/assembly/render/${encodeURIComponent(jobId)}/events`);
+  renderEventSources[jobId] = es;
+  const handleUpdate = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      let bar = $(`render-progress-fill-${lang}`);
+      let logOut = $(`render-log-output-${lang}`);
+      let statusBadge = $(`render-status-badge-${lang}`);
+      let currSceneNode = $(`render-current-scene-${lang}`);
+      
+      if (bar && data.job) {
+        let pct = 0;
+        if (data.job.total_scenes > 0) pct = Math.round((data.job.completed_scenes / data.job.total_scenes) * 100);
+        bar.style.width = pct + "%";
+        if (statusBadge) statusBadge.textContent = data.job.stage || data.job.state;
+        if (currSceneNode) currSceneNode.textContent = data.job.current_scene_id || "-";
+      }
+      if (logOut && data.new_logs) {
+        data.new_logs.forEach(msg => {
+           logOut.appendChild(document.createTextNode(msg.message + "\\n"));
+        });
+        logOut.scrollTop = logOut.scrollHeight;
+      }
+      if (data.job && (data.job.state === "completed" || data.job.state === "failed")) {
+        es.close();
+        delete renderEventSources[jobId];
+        loadAssemblyUI(episodeId, { activeRenderLanguage: lang }).catch((error) => console.error(error));
+      }
+    } catch(err) {
+      console.error(err);
+    }
+  };
+  es.addEventListener("update", handleUpdate);
+  es.onmessage = handleUpdate;
+  es.onerror = () => {
+    es.close();
+    delete renderEventSources[jobId];
+  };
+}
+
+function renderAssemblyRenderPanel(episodeId, renderJobs = [], activeTab = null) {
+  const normalizedJobs = normalizeAssemblyRenderJobs(renderJobs);
+  if (!normalizedJobs || normalizedJobs.length === 0) {
+    return `<div class="render-progress-panel"><p class="helper">No render jobs found yet. Start a render from the validation panel.</p></div>`;
+  }
+  
+  if (!activeTab) activeTab = normalizedJobs[0].language_code;
+  
+  const tabs = normalizedJobs.map(job => {
+    const isActive = job.language_code === activeTab;
+    const isFailed = job.state === "failed";
+    const isCompleted = job.state === "completed";
+    let badgeText = "Idle";
+    if (isCompleted) badgeText = "Done";
+    else if (isFailed) badgeText = "Failed";
+    else badgeText = titleCase(job.stage || job.state || "Idle");
+
+    return `<button type="button" class="language-tab ${isActive ? "language-tab-active" : ""}" data-render-tab="${esc(job.language_code)}" data-render-episode="${esc(episodeId)}">
+      ${esc(job.language_code)} <span class="render-queue-badge" style="color:inherit">${badgeText}</span>
+    </button>`;
+  }).join("");
+
+  const activeJob = normalizedJobs.find(j => j.language_code === activeTab);
+  let jobContent = "";
+  if (activeJob) {
+    if (activeJob.state === "completed") {
+      jobContent = `
+        <div class="notice" data-tone="success">Render completed successfully!</div>
+        <div class="button-row" style="margin-top:12px;">
+          <a href="/api/episodes/${encodeURIComponent(episodeId)}/assembly/render/${encodeURIComponent(activeJob.job_id)}/video" class="button button-small" target="_blank">Play</a>
+          <button type="button" class="button button-small button-ghost" data-render-lang="${esc(episodeId)}" data-lang="${esc(activeJob.language_code)}">Re-render</button>
+        </div>
+      `;
+    } else if (activeJob.state === "failed") {
+      jobContent = `
+        <div class="notice" data-tone="error">Render failed: ${esc(activeJob.error_message || "Unknown error")}</div>
+        <button type="button" class="button" data-render-lang="${esc(episodeId)}" data-lang="${esc(activeJob.language_code)}">Retry Render</button>
+      `;
+    } else {
+      let pct = 0;
+      if (activeJob.total_scenes > 0) pct = Math.round((activeJob.completed_scenes / activeJob.total_scenes) * 100);
+      jobContent = `
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div>
+            <strong>Rendering: ${pct}%</strong>
+            <span class="render-stage-badge" id="render-status-badge-${esc(activeJob.language_code)}">${esc(activeJob.stage || activeJob.state || "Waiting")}</span>
+          </div>
+          <div class="helper">Scene <span id="render-current-scene-${esc(activeJob.language_code)}">${esc(activeJob.current_scene_id || "-")}</span></div>
+        </div>
+        <div class="render-progress-bar">
+          <div class="render-progress-fill" id="render-progress-fill-${esc(activeJob.language_code)}" style="width:${pct}%"></div>
+        </div>
+        <div class="render-log-output" id="render-log-output-${esc(activeJob.language_code)}">Waiting for logs...</div>
+      `;
+      // Initiate SSE automatically
+      if (!["completed", "failed"].includes(activeJob.state || "")) {
+        setTimeout(() => startRenderSSE(episodeId, activeJob.job_id, activeJob.language_code), 500);
+      }
+    }
+  }
+
+  return `
+    <div class="render-progress-panel">
+      <div class="section-header" style="margin-bottom:12px;">
+        <div class="eyebrow" style="margin:0;">Render Progress</div>
+        <button class="button button-small" data-render-all="${esc(episodeId)}" style="position:absolute; right:16px; top:16px;">Render All</button>
+      </div>
+      <div class="language-tabs">${tabs}</div>
+      <div id="render-tab-content-${esc(episodeId)}">${jobContent}</div>
+    </div>
+  `;
+}
+
+function renderAssemblyReviewPanel(episodeId, videos = []) {
+  if (!videos || videos.length === 0) {
+    return `<div class="final-review-panel"><p class="helper">No rendered videos available yet.</p></div>`;
+  }
+  
+  const videoCards = videos.map(vid => {
+    const jobId = vid.job_id || vid.id;
+    const languageCode = vid.lang || vid.language_code || "unknown";
+    const metaParts = [];
+    if (Number.isFinite(Number(vid.file_size)) && Number(vid.file_size) > 0) {
+      metaParts.push(`${(Number(vid.file_size) / 1024 / 1024).toFixed(2)} MB`);
+    }
+    if (Number.isFinite(Number(vid.duration)) && Number(vid.duration) > 0) {
+      metaParts.push(`${(Number(vid.duration) / 60).toFixed(1)} mins`);
+    }
+    const metaCopy = metaParts.length ? metaParts.join(" • ") : "Ready for playback and download";
+    return `
+      <div class="shell-card">
+        <h3 style="margin-bottom:8px;">${esc(languageCode)}</h3>
+        <div class="video-player-container">
+          <video controls controlsList="nodownload" src="/api/episodes/${encodeURIComponent(episodeId)}/assembly/render/${encodeURIComponent(jobId)}/video"></video>
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px;">
+          <span class="helper">${esc(metaCopy)}</span>
+          <div>
+            <a href="/api/episodes/${encodeURIComponent(episodeId)}/assembly/render/${encodeURIComponent(jobId)}/video?download=true" class="button button-small" target="_blank">Download</a>
+            <button type="button" class="button button-small button-ghost" data-render-lang="${esc(episodeId)}" data-lang="${esc(languageCode)}">Re-render</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  return `
+    <div class="final-review-panel">
+      <div class="section-header" style="margin-bottom:16px;">
+        <div class="eyebrow" style="margin:0;">Final Review (${videos.length} languages rendered)</div>
+      </div>
+      <div class="hero-grid" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
+        ${videoCards}
+      </div>
+    </div>
+  `;
+}
+
+document.addEventListener("click", async (event) => {
+  const renderTabBtn = event.target.closest("[data-render-tab]");
+  if (renderTabBtn) {
+    const epId = renderTabBtn.dataset.renderEpisode;
+    const lang = renderTabBtn.dataset.renderTab;
+    if (epId && lang) {
+      state.episodeAssemblyActiveRenderLanguage[epId] = lang;
+      await loadAssemblyUI(epId, { activeRenderLanguage: lang });
+    }
+    return;
+  }
+
+  const validateBtn = event.target.closest("[data-validate-assembly]");
+  if (validateBtn) {
+    const epId = validateBtn.dataset.validateAssembly;
+    setNotice("Validating assembly...", "neutral");
+    try {
+      const res = await fetch(`/api/episodes/${encodeURIComponent(epId)}/assembly/validate`, { method: "POST" });
+      const data = await res.json().catch(()=>({}));
+      if (!res.ok) throw new Error(data.detail || "Validation failed");
+      
+      const panel = $(`assembly-validation-target-${epId}`);
+      if (panel) {
+        panel.outerHTML = renderAssemblyValidationPanel(epId, data);
+      }
+      setNotice("Validation complete", "success");
+    } catch (err) {
+      setNotice(err.message, "error");
+    }
+    return;
+  }
+
+  const renderLangBtn = event.target.closest("[data-render-lang]");
+  if (renderLangBtn) {
+    const epId = renderLangBtn.dataset.renderLang;
+    const lang = renderLangBtn.dataset.lang;
+    try {
+      const res = await fetch(`/api/episodes/${encodeURIComponent(epId)}/assembly/render`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ language_code: lang })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to queue render");
+      state.episodeAssemblyActiveRenderLanguage[epId] = lang;
+      setNotice(`Render queued for ${lang}`, "success");
+      await loadAssemblyUI(epId, { activeRenderLanguage: lang });
+    } catch (err) {
+      setNotice(err.message, "error");
+    }
+    return;
+  }
+
+  const renderAllBtn = event.target.closest("[data-render-all]");
+  if (renderAllBtn) {
+    const epId = renderAllBtn.dataset.renderAll;
+    try {
+      const res = await fetch(`/api/episodes/${encodeURIComponent(epId)}/assembly/render`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ language_code: "all" })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to queue all renders");
+      const firstLanguage = Array.isArray(data.languages) && data.languages.length ? data.languages[0] : null;
+      if (firstLanguage) {
+        state.episodeAssemblyActiveRenderLanguage[epId] = firstLanguage;
+      }
+      setNotice(`All renders queued`, "success");
+      await loadAssemblyUI(epId, { activeRenderLanguage: firstLanguage });
+    } catch (err) {
+      setNotice(err.message, "error");
+    }
+    return;
+  }
+
+  const startAssemblyBtn = event.target.closest("[data-start-video-assembly]");
+  if (startAssemblyBtn) {
+    const epId = startAssemblyBtn.dataset.startVideoAssembly;
+    setNotice("Starting Video Assembly phase...", "neutral");
+    try {
+      const res = await fetch(`/api/episodes/${encodeURIComponent(epId)}/assembly/start`, { method: "POST" });
+      if (!res.ok) {
+        const d = await res.json().catch(()=>({}));
+        throw new Error(d.detail || "Failed to start assembly");
+      }
+      setNotice("Video Assembly started", "success");
+      await syncRouteAndRender(); 
+      // This will completely re-fetch the episode state and trigger loadAssemblyUI (in Phase 8 codebase)
+    } catch (err) {
+      setNotice(err.message, "error");
+    }
+    return;
+  }
+});
+
