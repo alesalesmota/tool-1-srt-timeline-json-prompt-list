@@ -30,6 +30,7 @@ class _SegmentCandidate:
     ends_without_punctuation: int
     short_duration: int
     overflow_amount: float
+    dense_penalty: float
     boundary_penalty: int
 
 
@@ -89,9 +90,13 @@ def _segment_ends_cleanly(word: WordTiming, pack) -> bool:
 def _boundary_penalty(left_token: str, right_token: str, pack) -> int:
     penalty = 0
     if _matches_rule_token(left_token, pack.subtitle_no_trailing_tokens):
-        penalty += 2
+        penalty += 3
+        if "'" in left_token:
+            penalty += 2
     if _matches_rule_token(right_token, pack.subtitle_no_leading_tokens):
-        penalty += 2
+        penalty += 3
+        if "'" in right_token:
+            penalty += 2
     return penalty
 
 
@@ -153,6 +158,26 @@ def _line_break_penalty(text: str, pack) -> int:
     )
 
 
+def _dense_block_penalty(segment: SubtitleSegment, config: SegmentationConfig, pack) -> float:
+    if segment.line_count < 2:
+        return 0.0
+    line_lengths = [len(line.strip()) for line in segment.text.split("\n") if line.strip()]
+    if not line_lengths:
+        return 0.0
+    max_line_fill = max(line_lengths) / max(config.max_chars_per_line, 1)
+    block_fill = segment.char_count / max(config.max_chars_per_block, 1)
+    penalty = 0.0
+    if max_line_fill >= 0.88:
+        penalty += max_line_fill - 0.87
+    if block_fill >= 0.84:
+        penalty += block_fill - 0.83
+    if segment.word_count >= 12:
+        penalty += min(0.5, (segment.word_count - 11) * 0.05)
+    if pack.code in {"fr", "it"} and segment.char_count >= 70:
+        penalty += 0.20
+    return round(penalty, 6)
+
+
 def _segment_bounds(words: list[WordTiming], start_index: int, end_index: int, extension_cap: float = 0.75) -> tuple[float, float]:
     start_word = words[start_index]
     end_word = words[end_index]
@@ -203,16 +228,118 @@ def _allocate_gap(gap: float, left_need: float, right_need: float, cap: float = 
     return left_share, right_share
 
 
+def _gap_repair_score(
+    left_char_count: int,
+    right_char_count: int,
+    left_duration: float,
+    right_duration: float,
+    max_reading_cps: float,
+) -> tuple[float, ...]:
+    left_cps = left_char_count / max(left_duration, 0.01)
+    right_cps = right_char_count / max(right_duration, 0.01)
+    return (
+        float(left_cps > 18.0) + float(right_cps > 18.0),
+        float(left_cps > 24.0) + float(right_cps > 24.0),
+        float(left_cps > 30.0) + float(right_cps > 30.0),
+        max(left_cps, right_cps),
+        max(0.0, left_cps - max_reading_cps) + max(0.0, right_cps - max_reading_cps),
+    )
+
+
+def _optimize_gap_distribution(
+    drafts: list[dict[str, object]],
+    starts: list[float],
+    ends: list[float],
+    config: SegmentationConfig,
+) -> None:
+    for _ in range(2):
+        changed = False
+        for index in range(len(drafts) - 1):
+            raw_end = float(drafts[index]["raw_end"])
+            next_raw_start = float(drafts[index + 1]["raw_start"])
+            gap = max(0.0, next_raw_start - raw_end)
+            if gap <= 0.0:
+                continue
+            max_left = min(0.75, gap)
+            max_right = min(0.75, gap)
+            total_share = min(gap, max_left + max_right)
+            current_left = max(0.0, ends[index] - raw_end)
+            current_right = max(0.0, next_raw_start - starts[index + 1])
+            base_left_duration = max(0.01, (ends[index] - starts[index]) - current_left)
+            base_right_duration = max(0.01, (ends[index + 1] - starts[index + 1]) - current_right)
+            current_score = _gap_repair_score(
+                int(drafts[index]["char_count"]),
+                int(drafts[index + 1]["char_count"]),
+                base_left_duration + current_left,
+                base_right_duration + current_right,
+                config.max_reading_cps,
+            )
+            best_score = current_score
+            best_pair = (current_left, current_right)
+
+            lower_left = max(0.0, total_share - max_right)
+            upper_left = min(max_left, total_share)
+            candidate_lefts = {round(current_left, 3), round(lower_left, 3), round(upper_left, 3)}
+            step = 0.05
+            probe = lower_left
+            while probe <= upper_left + 1e-9:
+                candidate_lefts.add(round(probe, 3))
+                probe += step
+
+            for left_share in sorted(candidate_lefts):
+                right_share = max(0.0, min(max_right, total_share - left_share))
+                if left_share < lower_left - 1e-9 or right_share > max_right + 1e-9:
+                    continue
+                left_duration = base_left_duration + left_share
+                right_duration = base_right_duration + right_share
+                candidate_score = _gap_repair_score(
+                    int(drafts[index]["char_count"]),
+                    int(drafts[index + 1]["char_count"]),
+                    left_duration,
+                    right_duration,
+                    config.max_reading_cps,
+                )
+                if candidate_score < best_score:
+                    best_score = candidate_score
+                    best_pair = (left_share, right_share)
+
+            if best_pair != (current_left, current_right):
+                ends[index] = raw_end + best_pair[0]
+                starts[index + 1] = next_raw_start - best_pair[1]
+                changed = True
+        if not changed:
+            break
+
+
+def _gap_priority(
+    *,
+    char_count: int,
+    word_count: int,
+    line_count: int,
+    raw_duration: float,
+    config: SegmentationConfig,
+    pack,
+) -> float:
+    target_duration = _target_duration(char_count, config.max_reading_cps)
+    return round(max(0.0, target_duration - max(raw_duration, 0.01)), 6)
+
+
 def _build_segment_candidate(
     script_document: ScriptDocument,
     words: list[WordTiming],
     span: _SegmentSpan,
     config: SegmentationConfig,
     pack,
+    *,
+    raw_text: str | None = None,
+    formatted_text: str | None = None,
+    format_penalty: int | None = None,
 ) -> _SegmentCandidate:
     selected_words = words[span.start_index : span.end_index + 1]
-    raw_text = _render_text(script_document, selected_words)
-    formatted_text, _, format_penalty = _format_lines(raw_text, config, pack)
+    if raw_text is None:
+        raw_text = _render_text(script_document, selected_words)
+    if formatted_text is None or format_penalty is None:
+        formatted_text, _, format_penalty = _format_lines(raw_text, config, pack)
     start, end = _segment_bounds(words, span.start_index, span.end_index)
     duration = max(end - start, 0.01)
     segment = SubtitleSegment(
@@ -233,6 +360,7 @@ def _build_segment_candidate(
         ends_without_punctuation=0 if _segment_ends_cleanly(words[span.end_index], pack) else 1,
         short_duration=1 if duration < 1.2 else 0,
         overflow_amount=max(0.0, segment.reading_cps - config.max_reading_cps),
+        dense_penalty=_dense_block_penalty(segment, config, pack),
         boundary_penalty=boundary_penalty,
     )
 
@@ -256,16 +384,28 @@ def _build_candidates_for_start(
     start_index: int,
     config: SegmentationConfig,
     pack,
+    *,
+    max_end_index: int | None = None,
 ) -> list[_SegmentCandidate]:
     candidates: list[_SegmentCandidate] = []
     fallback: _SegmentCandidate | None = None
-    hard_end = min(len(words), start_index + 24)
+    absolute_max_end = len(words) - 1 if max_end_index is None else min(len(words) - 1, max_end_index)
+    hard_end = min(absolute_max_end + 1, start_index + 24)
     for end_index in range(start_index, hard_end):
         span = _SegmentSpan(start_index, end_index)
         selected_words = words[start_index : end_index + 1]
         raw_text = _render_text(script_document, selected_words)
-        formatted_text, clean_format, _ = _format_lines(raw_text, config, pack)
-        candidate = _build_segment_candidate(script_document, words, span, config, pack)
+        formatted_text, clean_format, format_penalty = _format_lines(raw_text, config, pack)
+        candidate = _build_segment_candidate(
+            script_document,
+            words,
+            span,
+            config,
+            pack,
+            raw_text=raw_text,
+            formatted_text=formatted_text,
+            format_penalty=format_penalty,
+        )
         if fallback is None:
             fallback = candidate
         if _candidate_generation_limit_reached(candidate, config, clean_format):
@@ -291,6 +431,21 @@ def _combine_score(candidate: _SegmentCandidate, suffix: tuple[float, ...]) -> t
         float(candidate.short_duration) + suffix[4],
         1.0 + suffix[5],
         float(candidate.boundary_penalty) + suffix[6],
+    )
+
+
+def _combine_repair_candidate_score(candidate: _SegmentCandidate, suffix: tuple[float, ...]) -> tuple[float, ...]:
+    tiny_segment = 1 if candidate.segment.word_count < 2 or candidate.segment.char_count < 10 else 0
+    return (
+        float(1 if candidate.segment.reading_cps > 30.0 else 0) + suffix[0],
+        float(1 if candidate.segment.reading_cps > 24.0 else 0) + suffix[1],
+        float(tiny_segment) + suffix[2],
+        float(candidate.short_duration) + suffix[3],
+        max(max(candidate.segment.reading_cps, 18.0), suffix[4]),
+        float(1 if candidate.segment.reading_cps > 18.0 else 0) + suffix[5],
+        candidate.overflow_amount + suffix[6],
+        float(candidate.boundary_penalty) + suffix[7],
+        1.0 + suffix[8],
     )
 
 
@@ -338,6 +493,71 @@ def _choose_initial_spans(
     return spans
 
 
+def _choose_spans_for_range(
+    script_document: ScriptDocument,
+    words: list[WordTiming],
+    start_index: int,
+    end_index: int,
+    config: SegmentationConfig,
+    pack,
+    *,
+    repair_mode: bool = False,
+) -> list[_SegmentSpan]:
+    if start_index > end_index:
+        return []
+    candidate_map = {
+        cursor: _build_candidates_for_start(
+            script_document,
+            words,
+            cursor,
+            config,
+            pack,
+            max_end_index=end_index,
+        )
+        for cursor in range(start_index, end_index + 1)
+    }
+    if repair_mode:
+        best_scores: dict[int, tuple[float, ...]] = {
+            end_index + 1: (0.0, 0.0, 0.0, 0.0, 18.0, 0.0, 0.0, 0.0, 0.0)
+        }
+    else:
+        best_scores = {
+            end_index + 1: (0.0, 18.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        }
+    best_choices: dict[int, _SegmentSpan] = {}
+    for cursor in range(end_index, start_index - 1, -1):
+        best_score: tuple[float, ...] | None = None
+        best_choice: _SegmentSpan | None = None
+        for candidate in candidate_map[cursor]:
+            suffix = best_scores.get(candidate.span.end_index + 1)
+            if suffix is None:
+                continue
+            score = _combine_repair_candidate_score(candidate, suffix) if repair_mode else _combine_score(candidate, suffix)
+            if best_score is None or score < best_score:
+                best_score = score
+                best_choice = candidate.span
+        if best_score is None or best_choice is None:
+            fallback = _SegmentSpan(cursor, cursor)
+            candidate = _build_segment_candidate(script_document, words, fallback, config, pack)
+            if repair_mode:
+                best_score = _combine_repair_candidate_score(
+                    candidate,
+                    best_scores.get(cursor + 1, (0.0, 0.0, 0.0, 0.0, 18.0, 0.0, 0.0, 0.0, 0.0)),
+                )
+            else:
+                best_score = _combine_score(candidate, best_scores.get(cursor + 1, (0.0, 18.0, 0.0, 0.0, 0.0, 0.0, 0.0)))
+            best_choice = fallback
+        best_scores[cursor] = best_score
+        best_choices[cursor] = best_choice
+    spans: list[_SegmentSpan] = []
+    cursor = start_index
+    while cursor <= end_index:
+        choice = best_choices.get(cursor, _SegmentSpan(cursor, cursor))
+        spans.append(choice)
+        cursor = choice.end_index + 1
+    return spans
+
+
 def _materialize_segments(
     script_document: ScriptDocument,
     words: list[WordTiming],
@@ -366,18 +586,41 @@ def _materialize_segments(
     ends = [float(draft["raw_end"]) for draft in drafts]
     first_target = _target_duration(int(drafts[0]["char_count"]), config.max_reading_cps)
     first_duration = max(ends[0] - starts[0], 0.01)
-    first_need = max(0.0, first_target - first_duration)
+    first_need = _gap_priority(
+        char_count=int(drafts[0]["char_count"]),
+        word_count=int(drafts[0]["word_count"]),
+        line_count=int(drafts[0]["line_count"]),
+        raw_duration=first_duration,
+        config=config,
+        pack=pack,
+    )
     starts[0] = max(0.0, starts[0] - min(starts[0], 0.75, first_need))
 
     for index in range(len(drafts) - 1):
         gap = max(0.0, float(drafts[index + 1]["raw_start"]) - float(drafts[index]["raw_end"]))
         left_duration = max(float(drafts[index]["raw_end"]) - float(drafts[index]["raw_start"]), 0.01)
         right_duration = max(float(drafts[index + 1]["raw_end"]) - float(drafts[index + 1]["raw_start"]), 0.01)
-        left_need = max(0.0, _target_duration(int(drafts[index]["char_count"]), config.max_reading_cps) - left_duration)
-        right_need = max(0.0, _target_duration(int(drafts[index + 1]["char_count"]), config.max_reading_cps) - right_duration)
+        left_need = _gap_priority(
+            char_count=int(drafts[index]["char_count"]),
+            word_count=int(drafts[index]["word_count"]),
+            line_count=int(drafts[index]["line_count"]),
+            raw_duration=left_duration,
+            config=config,
+            pack=pack,
+        )
+        right_need = _gap_priority(
+            char_count=int(drafts[index + 1]["char_count"]),
+            word_count=int(drafts[index + 1]["word_count"]),
+            line_count=int(drafts[index + 1]["line_count"]),
+            raw_duration=right_duration,
+            config=config,
+            pack=pack,
+        )
         left_share, right_share = _allocate_gap(gap, left_need, right_need)
         ends[index] = float(drafts[index]["raw_end"]) + left_share
         starts[index + 1] = float(drafts[index + 1]["raw_start"]) - right_share
+
+    _optimize_gap_distribution(drafts, starts, ends, config)
 
     segments: list[SubtitleSegment] = []
     for segment_id, draft in enumerate(drafts, start=1):
@@ -450,8 +693,162 @@ def _segmentation_score(
     )
 
 
+def _repair_score(
+    script_document: ScriptDocument,
+    words: list[WordTiming],
+    spans: list[_SegmentSpan],
+    config: SegmentationConfig,
+    pack,
+) -> tuple[float, ...]:
+    segments = _materialize_segments(script_document, words, spans, config, pack)
+    hard_limit_violations = 0.0
+    over_30 = 0.0
+    over_24 = 0.0
+    over_18 = 0.0
+    tiny_segments = 0.0
+    max_cps = 18.0
+    overflow = 0.0
+    boundary_penalty = 0.0
+    short_duration = 0.0
+    for index, segment in enumerate(segments):
+        if not _segment_within_limits(segment, config):
+            hard_limit_violations += 1.0
+        if segment.reading_cps > 30.0:
+            over_30 += 1.0
+        if segment.reading_cps > 24.0:
+            over_24 += 1.0
+        if segment.reading_cps > config.max_reading_cps:
+            over_18 += 1.0
+        if segment.word_count < 2 or segment.char_count < 10:
+            tiny_segments += 1.0
+        max_cps = max(max_cps, segment.reading_cps)
+        overflow += max(0.0, segment.reading_cps - config.max_reading_cps)
+        if (segment.end - segment.start) < 1.2:
+            short_duration += 1.0
+        boundary_penalty += _line_break_penalty(segment.text, pack)
+        span = spans[index]
+        if index + 1 < len(spans):
+            boundary_penalty += _boundary_penalty(words[span.end_index].word, words[spans[index + 1].start_index].word, pack)
+    return (
+        hard_limit_violations,
+        over_30,
+        over_24,
+        tiny_segments,
+        short_duration,
+        round(max_cps, 6),
+        over_18,
+        round(overflow, 6),
+        boundary_penalty,
+        float(len(segments)),
+    )
+
+
 def _clone_spans(spans: list[_SegmentSpan]) -> list[_SegmentSpan]:
-    return [ _SegmentSpan(span.start_index, span.end_index) for span in spans ]
+    return [_SegmentSpan(span.start_index, span.end_index) for span in spans]
+
+
+def _apply_three_block_moves(
+    spans: list[_SegmentSpan],
+    index: int,
+    left_move: int,
+    right_move: int,
+) -> list[_SegmentSpan] | None:
+    if index <= 0 or index >= len(spans) - 1:
+        return None
+    previous = spans[index - 1]
+    current = spans[index]
+    following = spans[index + 1]
+
+    prev_start = previous.start_index
+    prev_end = previous.end_index
+    current_start = current.start_index
+    current_end = current.end_index
+    next_start = following.start_index
+    next_end = following.end_index
+
+    if left_move == 1:
+        if current_start >= current_end:
+            return None
+        prev_end += 1
+        current_start += 1
+    elif left_move == -1:
+        if prev_start >= prev_end:
+            return None
+        prev_end -= 1
+        current_start -= 1
+
+    if right_move == 1:
+        if current_start >= current_end:
+            return None
+        current_end -= 1
+        next_start -= 1
+    elif right_move == -1:
+        if next_start >= next_end:
+            return None
+        current_end += 1
+        next_start += 1
+
+    if not (prev_start <= prev_end < current_start <= current_end < next_start <= next_end):
+        return None
+
+    variant = _clone_spans(spans)
+    variant[index - 1] = _SegmentSpan(prev_start, prev_end)
+    variant[index] = _SegmentSpan(current_start, current_end)
+    variant[index + 1] = _SegmentSpan(next_start, next_end)
+    return variant
+
+
+def _three_block_rebalance_variants(spans: list[_SegmentSpan], index: int) -> list[list[_SegmentSpan]]:
+    variants: list[list[_SegmentSpan]] = []
+    if index <= 0 or index >= len(spans) - 1:
+        return variants
+    for left_move in (-1, 0, 1):
+        for right_move in (-1, 0, 1):
+            if left_move == 0 and right_move == 0:
+                continue
+            variant = _apply_three_block_moves(spans, index, left_move, right_move)
+            if variant is not None:
+                variants.append(variant)
+    return variants
+
+
+def _dense_focus_indices(segments: list[SubtitleSegment], config: SegmentationConfig) -> list[int]:
+    ranked: list[tuple[float, float, int, int]] = []
+    threshold = max(config.max_reading_cps * 0.92, config.max_reading_cps - 1.0)
+    for index, segment in enumerate(segments):
+        if segment.reading_cps < threshold and not (segment.line_count >= 2 and segment.char_count >= 74):
+            continue
+        score = segment.reading_cps + (0.3 if segment.line_count >= 2 else 0.0) + (segment.char_count / 500.0)
+        ranked.append((score, float(segment.char_count), segment.word_count, index))
+    ranked.sort(reverse=True)
+    return [index for _, _, _, index in ranked]
+
+
+def _resegment_neighborhood_variant(
+    script_document: ScriptDocument,
+    words: list[WordTiming],
+    spans: list[_SegmentSpan],
+    index: int,
+    config: SegmentationConfig,
+    pack,
+) -> list[_SegmentSpan] | None:
+    window_start = max(0, index - 1)
+    window_end = min(len(spans) - 1, index + 1)
+    range_start = spans[window_start].start_index
+    range_end = spans[window_end].end_index
+    local_spans = _choose_spans_for_range(
+        script_document,
+        words,
+        range_start,
+        range_end,
+        config,
+        pack,
+        repair_mode=True,
+    )
+    variant = _clone_spans(spans[:window_start]) + local_spans + _clone_spans(spans[window_end + 1 :])
+    if variant == spans:
+        return None
+    return variant
 
 
 def _shift_variants(spans: list[_SegmentSpan], index: int) -> list[list[_SegmentSpan]]:
@@ -484,12 +881,37 @@ def _shift_variants(spans: list[_SegmentSpan], index: int) -> list[list[_Segment
     return variants
 
 
-def _split_variants(spans: list[_SegmentSpan], index: int) -> list[list[_SegmentSpan]]:
+def _prioritized_split_positions(words: list[WordTiming], span: _SegmentSpan, pack) -> list[int]:
+    if span.start_index >= span.end_index:
+        return []
+    midpoint = (span.start_index + span.end_index) / 2.0
+    scored: list[tuple[tuple[float, ...], int]] = []
+    for split_index in range(span.start_index + 1, span.end_index + 1):
+        left_word = words[split_index - 1]
+        right_word = words[split_index]
+        score = (
+            _preferred_break_penalty(left_word.word, left_word.trailing_text, pack),
+            _boundary_penalty(left_word.word, right_word.word, pack),
+            abs(split_index - midpoint),
+            float(split_index - span.start_index),
+        )
+        scored.append((score, split_index))
+    scored.sort(key=lambda item: item[0])
+    chosen: list[int] = []
+    for _, split_index in scored:
+        if split_index not in chosen:
+            chosen.append(split_index)
+        if len(chosen) >= 6:
+            break
+    return chosen
+
+
+def _split_variants(spans: list[_SegmentSpan], index: int, words: list[WordTiming], pack) -> list[list[_SegmentSpan]]:
     current = spans[index]
     if current.start_index >= current.end_index:
         return []
     variants: list[list[_SegmentSpan]] = []
-    for split_index in range(current.start_index + 1, current.end_index + 1):
+    for split_index in _prioritized_split_positions(words, current, pack):
         variant = _clone_spans(spans)
         replacement = [
             _SegmentSpan(current.start_index, split_index - 1),
@@ -522,38 +944,55 @@ def _repair_spans(
     current_spans = spans
     if not current_spans:
         return current_spans, 1
-    if not any(segment.reading_cps > config.max_reading_cps for segment in _materialize_segments(script_document, words, current_spans, config, pack)):
+    current_segments = _materialize_segments(script_document, words, current_spans, config, pack)
+    if not any(segment.reading_cps > config.max_reading_cps for segment in current_segments):
         return current_spans, 1
 
-    optimization_passes = 2
-    for _ in range(2):
-        cursor = 0
+    optimization_passes = 1
+    for _ in range(4):
+        current_segments = _materialize_segments(script_document, words, current_spans, config, pack)
+        dense_indices = _dense_focus_indices(current_segments, config)
+        if not dense_indices:
+            break
         changed = False
-        while cursor < len(current_spans):
-            current_segments = _materialize_segments(script_document, words, current_spans, config, pack)
-            if cursor >= len(current_segments):
-                break
-            if current_segments[cursor].reading_cps <= config.max_reading_cps:
-                cursor += 1
+        for focus_index in dense_indices[:12]:
+            if focus_index >= len(current_spans):
                 continue
-            current_score = _segmentation_score(script_document, words, current_spans, config, pack)
+            current_score = _repair_score(script_document, words, current_spans, config, pack)
             best_spans = current_spans
             best_score = current_score
 
-            for variant in _shift_variants(current_spans, cursor):
-                variant_score = _segmentation_score(script_document, words, variant, config, pack)
+            neighborhood_variant = _resegment_neighborhood_variant(
+                script_document,
+                words,
+                current_spans,
+                focus_index,
+                config,
+                pack,
+            )
+            if neighborhood_variant is not None:
+                variant_score = _repair_score(script_document, words, neighborhood_variant, config, pack)
+                if variant_score < best_score:
+                    best_spans = neighborhood_variant
+                    best_score = variant_score
+            for variant in _shift_variants(current_spans, focus_index):
+                variant_score = _repair_score(script_document, words, variant, config, pack)
+                if variant_score < best_score:
+                    best_spans = variant
+                    best_score = variant_score
+            for variant in _three_block_rebalance_variants(current_spans, focus_index):
+                variant_score = _repair_score(script_document, words, variant, config, pack)
+                if variant_score < best_score:
+                    best_spans = variant
+                    best_score = variant_score
+            for variant in _split_variants(current_spans, focus_index, words, pack):
+                variant_score = _repair_score(script_document, words, variant, config, pack)
                 if variant_score < best_score:
                     best_spans = variant
                     best_score = variant_score
             if best_spans is current_spans:
-                for variant in _split_variants(current_spans, cursor):
-                    variant_score = _segmentation_score(script_document, words, variant, config, pack)
-                    if variant_score < best_score:
-                        best_spans = variant
-                        best_score = variant_score
-            if best_spans is current_spans:
-                for variant in _merge_variants(current_spans, cursor):
-                    variant_score = _segmentation_score(script_document, words, variant, config, pack)
+                for variant in _merge_variants(current_spans, focus_index):
+                    variant_score = _repair_score(script_document, words, variant, config, pack)
                     if variant_score < best_score:
                         best_spans = variant
                         best_score = variant_score
@@ -561,11 +1000,27 @@ def _repair_spans(
             if best_spans is not current_spans:
                 current_spans = best_spans
                 changed = True
-                continue
-            cursor += 1
+                optimization_passes += 1
+                break
         if not changed:
             break
     return current_spans, optimization_passes
+
+
+def _spans_from_seed_segments(seed_segments: list[SubtitleSegment], word_count: int) -> list[_SegmentSpan] | None:
+    if not seed_segments:
+        return None
+    spans: list[_SegmentSpan] = []
+    cursor = 0
+    for segment in seed_segments:
+        if segment.word_count <= 0:
+            return None
+        end_index = cursor + segment.word_count - 1
+        spans.append(_SegmentSpan(cursor, end_index))
+        cursor = end_index + 1
+    if cursor != word_count:
+        return None
+    return spans
 
 
 def _build_diagnostics(
@@ -615,12 +1070,15 @@ def segment_words(
     script_document: ScriptDocument,
     words: list[WordTiming],
     config: SegmentationConfig,
+    seed_segments: list[SubtitleSegment] | None = None,
 ) -> SegmentationResult:
     if not words:
         return SegmentationResult(segments=[], warnings=[], diagnostics=SegmentationDiagnostics())
 
     pack = resolve_language_rulepack(script_document.language_code)
-    spans = _choose_initial_spans(script_document, words, config, pack)
+    spans = _spans_from_seed_segments(seed_segments or [], len(words))
+    if spans is None:
+        spans = _choose_initial_spans(script_document, words, config, pack)
     spans, optimization_passes = _repair_spans(script_document, words, spans, config, pack)
     segments = _materialize_segments(script_document, words, spans, config, pack)
     warnings: list[str] = []

@@ -15,6 +15,16 @@
 - [ ] Live-rerun episode `205` French after benchmark gate
   Blocked on current benchmark: latest `workspace/benchmarks/alignment-20260404-density-v2/summary.json` still reports French `reading_speed_warning_count = 23`, `segments_over_24_cps = 5`, and `segments_over_30_cps = 1`, so the strict French acceptance gate is not cleared yet.
 
+## French-First Subtitle Density Cleanup (2026-04-05)
+- [x] Tighten the subtitle repair path so it can reuse an existing cue layout and re-segment only the 3-block neighborhood around dense cues
+- [x] Add stronger French/Italian subtitle break guidance in the shared language rulepacks
+- [x] Add a fast segmentation-only benchmark runner that reuses existing `words.json` + `segments.json`
+- [x] Add regression coverage for French/Italian break behavior, local neighborhood repair, gap redistribution, and benchmark reuse of spoken sidecars
+- [x] Verify the subtitle module locally with `python -m unittest tests.test_alignment_tool -q`
+- [x] Run non-destructive episode `205` segmentation benchmarks for `de/es/fr/it` and write results to `workspace/benchmarks/alignment-20260405-fr-it-cleanup-all/summary.json`
+- [ ] Promote live episode `205` French and Italian reruns
+  Blocked on current benchmark: `workspace/benchmarks/alignment-20260405-fr-it-cleanup-all/summary.json` now reports `fr = 23` reading-speed warnings (`segments_over_24_cps = 2`, `segments_over_30_cps = 0`) and `it = 20` reading-speed warnings (`segments_over_24_cps = 0`, `segments_over_30_cps = 0`). The worst outliers are fixed, but the production warning-count gate is still not cleared.
+
 ## Multilingual Translation Quality Upgrade (2026-04-04)
 - [x] Add shared per-language translation rulepacks for CTA/channel/reference guidance and known bad literal patterns
 - [x] Add deterministic translation QA that runs at chunk level and script level

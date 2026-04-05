@@ -172,15 +172,19 @@ _RULEPACKS: dict[str, LanguageRulepack] = {
         subtitle_no_leading_tokens=(
             "de", "du", "des", "à", "au", "aux", "et", "ou", "que", "qui",
             "le", "la", "les", "un", "une", "en", "dans", "sur", "pour",
-            "ce", "cet", "cette", "ces", "se", "l'", "d'", "qu'", "s'",
-            "c'", "j'", "n'", "t'",
+            "ce", "cet", "cette", "ces", "se", "mais", "car", "donc", "puis",
+            "ainsi", "alors", "comme", "quand", "lorsque", "l'", "d'", "qu'",
+            "s'", "c'", "j'", "n'", "t'",
         ),
         subtitle_no_trailing_tokens=(
             "de", "du", "des", "à", "au", "aux", "et", "ou", "que", "qui",
             "le", "la", "les", "un", "une", "en", "dans", "sur", "pour",
             "ce", "cet", "cette", "ces",
         ),
-        subtitle_preferred_break_tokens=("chapitre", "verset", "versets", "à"),
+        subtitle_preferred_break_tokens=(
+            "chapitre", "verset", "versets", "à", "ainsi", "alors", "puis",
+            "donc", "quand", "lorsque", "comme",
+        ),
     ),
     "it": LanguageRulepack(
         code="it",
@@ -218,14 +222,18 @@ _RULEPACKS: dict[str, LanguageRulepack] = {
             "e", "o", "ma", "che", "di", "del", "della", "dell'", "a", "al",
             "alla", "all'", "da", "dal", "dalla", "dall'", "in", "nel",
             "nell'", "con", "per", "il", "lo", "la", "i", "gli", "le",
-            "un", "una", "uno", "si",
+            "un", "una", "uno", "si", "poi", "quindi", "così", "quando",
+            "mentre", "come", "perché",
         ),
         subtitle_no_trailing_tokens=(
             "e", "o", "ma", "che", "di", "del", "della", "a", "al", "alla",
             "da", "dal", "dalla", "in", "nel", "con", "per", "il", "lo",
             "la", "i", "gli", "le", "un", "una", "uno",
         ),
-        subtitle_preferred_break_tokens=("capitolo", "versetto", "versetti", "a"),
+        subtitle_preferred_break_tokens=(
+            "capitolo", "versetto", "versetti", "a", "poi", "quindi", "così",
+            "quando", "mentre", "come", "perché",
+        ),
     ),
 }
 

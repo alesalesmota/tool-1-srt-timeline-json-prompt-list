@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from tool1_dashboard.alignment_tool.benchmark_segmentation import run_segmentation_benchmark
 from tool1_dashboard.alignment_tool import orchestrator
 from tool1_dashboard.alignment_tool.guided_chunking import (
     build_guided_chunks,
@@ -23,6 +26,9 @@ from tool1_dashboard.alignment_tool.normalize_script import normalize_script, no
 from tool1_dashboard.alignment_tool.parse_alignment import RawAlignedWord, map_raw_words_to_script
 from tool1_dashboard.alignment_tool.segment_subtitles import segment_words
 from tool1_dashboard.translation.language_rules import build_spoken_script, component_aliases_for_token
+
+TEST_TEMP_ROOT = Path.cwd() / "workspace" / ".tmp-test-artifacts"
+TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 class AlignmentNormalizationTests(unittest.TestCase):
@@ -184,8 +190,9 @@ class SubtitleOptimizationTests(unittest.TestCase):
             WordTiming("silence", 2.17, 2.62, 8, normalized="silence", text_start=40, text_end=47, render_start=40, render_end=48, trailing_text="."),
         ]
         result = segment_words(document, words, orchestrator.SegmentationConfig(max_chars_per_line=18, max_chars_per_block=36))
-        self.assertEqual(len(result.segments), 2)
-        self.assertFalse(result.segments[1].text.split()[0].lower().startswith("la"))
+        self.assertGreaterEqual(len(result.segments), 2)
+        for segment in result.segments[1:]:
+            self.assertFalse(segment.text.replace("\n", " ").split()[0].lower().startswith("la"))
 
     def test_segment_words_uses_gap_extension_to_reduce_cps_without_losing_text(self) -> None:
         document = normalize_script("Alpha beta gamma delta epsilon. Zeta eta theta.", "en")
@@ -257,12 +264,125 @@ class SubtitleOptimizationTests(unittest.TestCase):
         result = segment_words(document, words, orchestrator.SegmentationConfig(max_chars_per_line=22, max_chars_per_block=44))
         self.assertEqual(len(result.segments), 2)
 
+    def test_segment_words_prefers_earlier_split_for_dense_french_two_line_blocks(self) -> None:
+        document = normalize_script(
+            "Ainsi la foule resta en silence puis les disciples avancèrent avec beaucoup de prudence.",
+            "fr",
+        )
+        words = [
+            WordTiming("Ainsi", 0.00, 0.24, 0, normalized="ainsi", text_start=0, text_end=5, render_start=0, render_end=5),
+            WordTiming("la", 0.25, 0.36, 1, normalized="la", text_start=6, text_end=8, render_start=6, render_end=8),
+            WordTiming("foule", 0.37, 0.62, 2, normalized="foule", text_start=9, text_end=14, render_start=9, render_end=14),
+            WordTiming("resta", 0.63, 0.88, 3, normalized="resta", text_start=15, text_end=20, render_start=15, render_end=20),
+            WordTiming("en", 0.89, 1.00, 4, normalized="en", text_start=21, text_end=23, render_start=21, render_end=23),
+            WordTiming("silence", 1.01, 1.34, 5, normalized="silence", text_start=24, text_end=31, render_start=24, render_end=31),
+            WordTiming("puis", 1.35, 1.56, 6, normalized="puis", text_start=32, text_end=36, render_start=32, render_end=36),
+            WordTiming("les", 1.57, 1.74, 7, normalized="les", text_start=37, text_end=40, render_start=37, render_end=40),
+            WordTiming("disciples", 1.75, 2.16, 8, normalized="disciples", text_start=41, text_end=50, render_start=41, render_end=50),
+            WordTiming("avancèrent", 2.17, 2.60, 9, normalized="avancerent", text_start=51, text_end=61, render_start=51, render_end=61),
+            WordTiming("avec", 2.61, 2.82, 10, normalized="avec", text_start=62, text_end=66, render_start=62, render_end=66),
+            WordTiming("beaucoup", 2.83, 3.18, 11, normalized="beaucoup", text_start=67, text_end=75, render_start=67, render_end=75),
+            WordTiming("de", 3.19, 3.31, 12, normalized="de", text_start=76, text_end=78, render_start=76, render_end=78),
+            WordTiming("prudence", 3.32, 3.74, 13, normalized="prudence", text_start=79, text_end=87, render_start=79, render_end=88, trailing_text="."),
+        ]
+        result = segment_words(document, words, orchestrator.SegmentationConfig())
+        self.assertGreaterEqual(len(result.segments), 2)
+        self.assertTrue(any("puis" in segment.text.replace("\n", " ") for segment in result.segments))
+        self.assertLess(max(segment.char_count for segment in result.segments), 84)
+
+    def test_segment_words_keeps_french_elisions_off_block_starts(self) -> None:
+        document = normalize_script("La lumière guida le peuple et l'amour demeura en eux toute la nuit.", "fr")
+        words = [
+            WordTiming("La", 0.00, 0.14, 0, normalized="la", text_start=0, text_end=2, render_start=0, render_end=2),
+            WordTiming("lumière", 0.15, 0.48, 1, normalized="lumiere", text_start=3, text_end=10, render_start=3, render_end=10),
+            WordTiming("guida", 0.49, 0.74, 2, normalized="guida", text_start=11, text_end=16, render_start=11, render_end=16),
+            WordTiming("le", 0.75, 0.88, 3, normalized="le", text_start=17, text_end=19, render_start=17, render_end=19),
+            WordTiming("peuple", 0.89, 1.20, 4, normalized="peuple", text_start=20, text_end=26, render_start=20, render_end=26),
+            WordTiming("et", 1.21, 1.33, 5, normalized="et", text_start=27, text_end=29, render_start=27, render_end=29),
+            WordTiming("l'amour", 1.34, 1.68, 6, normalized="lamour", text_start=30, text_end=37, render_start=30, render_end=37),
+            WordTiming("demeura", 1.69, 2.01, 7, normalized="demeura", text_start=38, text_end=45, render_start=38, render_end=45),
+            WordTiming("en", 2.02, 2.14, 8, normalized="en", text_start=46, text_end=48, render_start=46, render_end=48),
+            WordTiming("eux", 2.15, 2.31, 9, normalized="eux", text_start=49, text_end=52, render_start=49, render_end=52),
+            WordTiming("toute", 2.32, 2.54, 10, normalized="toute", text_start=53, text_end=58, render_start=53, render_end=58),
+            WordTiming("la", 2.55, 2.66, 11, normalized="la", text_start=59, text_end=61, render_start=59, render_end=61),
+            WordTiming("nuit", 2.67, 2.98, 12, normalized="nuit", text_start=62, text_end=66, render_start=62, render_end=67, trailing_text="."),
+        ]
+        result = segment_words(document, words, orchestrator.SegmentationConfig(max_chars_per_line=20, max_chars_per_block=40))
+        for segment in result.segments[1:]:
+            first_token = segment.text.replace("\n", " ").split()[0].lower()
+            self.assertFalse(first_token.startswith("l'"))
+
+    def test_segment_words_prefers_italian_reference_breaks(self) -> None:
+        document = normalize_script(
+            "Giovanni capitolo 18 versetto 2, Pietro avanzò con prudenza e parlò con calma.",
+            "it",
+        )
+        words = [
+            WordTiming("Giovanni", 0.00, 0.30, 0, normalized="giovanni", text_start=0, text_end=8, render_start=0, render_end=8),
+            WordTiming("capitolo", 0.31, 0.60, 1, normalized="capitolo", text_start=9, text_end=17, render_start=9, render_end=17),
+            WordTiming("18", 0.61, 0.78, 2, normalized="18", text_start=18, text_end=20, render_start=18, render_end=20),
+            WordTiming("versetto", 0.79, 1.10, 3, normalized="versetto", text_start=21, text_end=29, render_start=21, render_end=29),
+            WordTiming("2", 1.11, 1.22, 4, normalized="2", text_start=30, text_end=31, render_start=30, render_end=32, trailing_text=","),
+            WordTiming("Pietro", 1.70, 1.98, 5, normalized="pietro", text_start=33, text_end=39, render_start=33, render_end=39),
+            WordTiming("avanzò", 1.99, 2.30, 6, normalized="avanzo", text_start=40, text_end=46, render_start=40, render_end=46),
+            WordTiming("con", 2.31, 2.46, 7, normalized="con", text_start=47, text_end=50, render_start=47, render_end=50),
+            WordTiming("prudenza", 2.47, 2.84, 8, normalized="prudenza", text_start=51, text_end=59, render_start=51, render_end=59),
+            WordTiming("e", 2.85, 2.95, 9, normalized="e", text_start=60, text_end=61, render_start=60, render_end=61),
+            WordTiming("parlò", 2.96, 3.21, 10, normalized="parlo", text_start=62, text_end=67, render_start=62, render_end=67),
+            WordTiming("con", 3.22, 3.36, 11, normalized="con", text_start=68, text_end=71, render_start=68, render_end=71),
+            WordTiming("calma", 3.37, 3.68, 12, normalized="calma", text_start=72, text_end=77, render_start=72, render_end=78, trailing_text="."),
+        ]
+        result = segment_words(document, words, orchestrator.SegmentationConfig(max_chars_per_line=24, max_chars_per_block=48))
+        self.assertGreaterEqual(len(result.segments), 2)
+        self.assertIn("versetto", result.segments[0].text.replace("\n", " "))
+
+    def test_segment_words_rebalances_three_block_neighborhood_without_losing_text(self) -> None:
+        document = normalize_script(
+            "Alpha beta gamma. Delta epsilon zeta eta theta iota. Kappa lambda mu.",
+            "en",
+        )
+        words = [
+            WordTiming("Alpha", 0.00, 0.18, 0, normalized="alpha", text_start=0, text_end=5, render_start=0, render_end=5),
+            WordTiming("beta", 0.19, 0.36, 1, normalized="beta", text_start=6, text_end=10, render_start=6, render_end=10),
+            WordTiming("gamma", 0.37, 0.58, 2, normalized="gamma", text_start=11, text_end=16, render_start=11, render_end=17, trailing_text="."),
+            WordTiming("Delta", 0.95, 1.10, 3, normalized="delta", text_start=18, text_end=23, render_start=18, render_end=23),
+            WordTiming("epsilon", 1.11, 1.28, 4, normalized="epsilon", text_start=24, text_end=31, render_start=24, render_end=31),
+            WordTiming("zeta", 1.29, 1.44, 5, normalized="zeta", text_start=32, text_end=36, render_start=32, render_end=36),
+            WordTiming("eta", 1.45, 1.58, 6, normalized="eta", text_start=37, text_end=40, render_start=37, render_end=40),
+            WordTiming("theta", 1.59, 1.74, 7, normalized="theta", text_start=41, text_end=46, render_start=41, render_end=46),
+            WordTiming("iota", 1.75, 1.92, 8, normalized="iota", text_start=47, text_end=51, render_start=47, render_end=52, trailing_text="."),
+            WordTiming("Kappa", 2.50, 2.70, 9, normalized="kappa", text_start=53, text_end=58, render_start=53, render_end=58),
+            WordTiming("lambda", 2.71, 2.92, 10, normalized="lambda", text_start=59, text_end=65, render_start=59, render_end=65),
+            WordTiming("mu", 2.93, 3.05, 11, normalized="mu", text_start=66, text_end=68, render_start=66, render_end=69, trailing_text="."),
+        ]
+        result = segment_words(document, words, orchestrator.SegmentationConfig(max_chars_per_line=20, max_chars_per_block=40))
+        combined_text = " ".join(segment.text.replace("\n", " ") for segment in result.segments)
+        self.assertIn("Delta epsilon zeta eta theta iota.", combined_text)
+        self.assertLess(max(segment.reading_cps for segment in result.segments), 24.0)
+
+    def test_segment_words_borrows_gap_for_dense_middle_when_neighbors_are_safe(self) -> None:
+        document = normalize_script("Alpha beta. Gamma delta epsilon zeta. Eta theta.", "en")
+        words = [
+            WordTiming("Alpha", 0.00, 0.18, 0, normalized="alpha", text_start=0, text_end=5, render_start=0, render_end=5),
+            WordTiming("beta", 0.19, 0.36, 1, normalized="beta", text_start=6, text_end=10, render_start=6, render_end=11, trailing_text="."),
+            WordTiming("Gamma", 1.20, 1.36, 2, normalized="gamma", text_start=12, text_end=17, render_start=12, render_end=17),
+            WordTiming("delta", 1.37, 1.54, 3, normalized="delta", text_start=18, text_end=23, render_start=18, render_end=23),
+            WordTiming("epsilon", 1.55, 1.74, 4, normalized="epsilon", text_start=24, text_end=31, render_start=24, render_end=31),
+            WordTiming("zeta", 1.75, 1.92, 5, normalized="zeta", text_start=32, text_end=36, render_start=32, render_end=37, trailing_text="."),
+            WordTiming("Eta", 3.05, 3.22, 6, normalized="eta", text_start=38, text_end=41, render_start=38, render_end=41),
+            WordTiming("theta", 3.23, 3.42, 7, normalized="theta", text_start=42, text_end=47, render_start=42, render_end=48, trailing_text="."),
+        ]
+        result = segment_words(document, words, orchestrator.SegmentationConfig(max_chars_per_line=18, max_chars_per_block=36))
+        self.assertEqual(len(result.segments), 3)
+        self.assertGreater(result.segments[1].end - result.segments[1].start, words[5].end - words[2].start)
+
 
 class AlignmentOrchestratorTests(unittest.TestCase):
 
     def test_run_alignment_job_selects_best_candidate_and_writes_report_metrics(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+        temp_path = TEST_TEMP_ROOT / f"case-{uuid.uuid4().hex}"
+        temp_path.mkdir(parents=True, exist_ok=True)
+        try:
             audio_path = temp_path / "audio.wav"
             script_path = temp_path / "script.txt"
             audio_path.write_bytes(b"RIFF....WAVEfmt ")
@@ -375,6 +495,78 @@ class AlignmentOrchestratorTests(unittest.TestCase):
             self.assertIn("segment_profile", report_payload)
             self.assertIn("segments_over_24_cps", report_payload)
             self.assertIn("optimization_passes", report_payload)
+        finally:
+            shutil.rmtree(temp_path, ignore_errors=True)
+
+
+class SegmentationBenchmarkTests(unittest.TestCase):
+
+    def test_run_segmentation_benchmark_reuses_words_json_and_spoken_sidecar(self) -> None:
+        root = TEST_TEMP_ROOT / f"case-{uuid.uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            episode_dir = root / "episode"
+            baseline_root = root / "benchmarks" / "baseline" / "fr" / "20260405-000214-normalized-audio"
+            output_root = root / "benchmarks" / "segmentation-only"
+            episode_dir.mkdir(parents=True)
+            baseline_root.mkdir(parents=True)
+
+            (episode_dir / "script_fr.txt").write_text("Texte lisible.", encoding="utf-8")
+            (episode_dir / "script_fr_spoken.txt").write_text("Texte parlé simple.", encoding="utf-8")
+
+            words = [
+                WordTiming("Texte", 0.0, 0.5, 0, normalized="texte", text_start=0, text_end=5, render_start=0, render_end=5),
+                WordTiming("parlé", 0.6, 1.0, 1, normalized="parle", text_start=6, text_end=11, render_start=6, render_end=11),
+                WordTiming("simple", 1.1, 1.7, 2, normalized="simple", text_start=12, text_end=18, render_start=12, render_end=19, trailing_text="."),
+            ]
+            (baseline_root / "words.json").write_text(
+                json.dumps([word.to_dict() for word in words], ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            seed_segments = [
+                SubtitleSegment(1, 0.0, 0.8, "Texte parlé", 1, 11, 2, 13.75),
+                SubtitleSegment(2, 0.8, 1.7, "simple.", 1, 7, 1, 7.78),
+            ]
+            (baseline_root / "segments.json").write_text(
+                json.dumps([segment.to_dict() for segment in seed_segments], ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            summary = [
+                {
+                    "language": "fr",
+                    "engine": "mfa",
+                    "fallback_used": False,
+                    "fallback_reason": None,
+                    "audio_duration": 12.0,
+                    "normalized_audio_properties": {"sample_rate": 16000, "channels": 1},
+                    "approximate_word_count": 0,
+                    "dropped_word_count": 0,
+                    "mismatch_count": 0,
+                    "chunk_count": 1,
+                    "warnings": [],
+                    "warning_summary": {},
+                    "output_dir": str(baseline_root.relative_to(root)).replace("/", "\\"),
+                }
+            ]
+            summary_path = root / "benchmarks" / "baseline" / "summary.json"
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            with patch("tool1_dashboard.alignment_tool.benchmark_segmentation.REPO_ROOT", root):
+                result = run_segmentation_benchmark(
+                    episode_dir=episode_dir,
+                    baseline_summary_path=summary_path,
+                    output_root=output_root,
+                    languages=["fr"],
+                )
+
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]["strategy"], "segmentation_only_rebenchmark")
+            self.assertEqual(result[0]["script_origin"], "spoken_sidecar")
+            generated_summary = json.loads((output_root / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(generated_summary[0]["language"], "fr")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":

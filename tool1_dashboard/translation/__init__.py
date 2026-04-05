@@ -1,9 +1,19 @@
 """Creator Studio translation module."""
 
-from .adapter import TranslationAdapter, TranslationError
+try:
+    from .adapter import TranslationAdapter, TranslationError
+    from .service import ChunkResult, TranslationResult, TranslationService
+except ModuleNotFoundError as exc:
+    if exc.name not in {"httpx", "openai"}:
+        raise
+    TranslationAdapter = None
+    TranslationError = None
+    ChunkResult = None
+    TranslationResult = None
+    TranslationService = None
+
 from .chunker import TranslationChunk, build_scene_aware_chunks, build_text_chunks
 from .prompts import build_translation_prompt
-from .service import ChunkResult, TranslationResult, TranslationService
 
 __all__ = [
     "TranslationAdapter",

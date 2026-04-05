@@ -16,6 +16,18 @@ Tool 1 is the multilingual video planning pipeline for Creator Studio. The user 
 
 ## Current State Summary
 
+### French-First Subtitle Density Cleanup (2026-04-05)
+- Added a fast segmentation-only benchmark path in [tool1_dashboard/alignment_tool/benchmark_segmentation.py](C:/Users/Blue_/Desktop/PROJETOS/CREATOR%20STUDIO/TOOL%201%20SRT-TIMELINE.JSON-PROMPT%20LIST/tool1_dashboard/alignment_tool/benchmark_segmentation.py) that reuses existing `words.json` plus baseline `segments.json`, then repairs only the current cue layout instead of rerunning full MFA.
+- Subtitle repair is now explicitly neighborhood-based: the segmenter can seed from existing cue blocks, re-segment a 3-block window around the worst dense block, and then redistribute silence-gap timing between adjacent cues with a local pair optimizer.
+- French/Italian subtitle rulepacks were tightened for clause/reference breaking and awkward block-start avoidance without reopening translation or the core aligner.
+- Verification on 2026-04-05:
+  - `python -m unittest tests.test_alignment_tool -q` via `C:\Users\Blue_\AppData\Local\Programs\Python\Python312\python.exe` -> `20` tests passing
+  - full `python -m pytest tests -q` could not be rerun in the available interpreter because local packages such as `fastapi`, `httpx`, and `pytest` are missing from that Python environment
+  - non-destructive fast benchmark written to `workspace/benchmarks/alignment-20260405-fr-it-cleanup-all/summary.json`
+  - latest benchmark metrics: `de` `4` reading-speed warnings, `es` `2`, `fr` `23`, `it` `20`
+  - severe outliers improved: `fr` dropped from `5 -> 2` segments over `24 cps` and `1 -> 0` over `30 cps`; `it` dropped from `3 -> 0` and `1 -> 0`
+- Acceptance note: this pass improved the worst French/Italian outliers and added the fast low-risk cleanup path, but it did **not** clear the production gate because French stayed at `23` warnings and Italian rose to `20`. No live episode `205` French/Italian rerun was promoted.
+
 ### Subtitle Density Hardening (2026-04-04)
 - Subtitle segmentation is no longer a greedy splitter. The tool now uses a deterministic DP segmenter that optimizes readability first, then runs a repair pass for remaining dense cues.
 - Subtitle break behavior now comes from the shared language rulepacks (`de/es/fr/it`) instead of hardcoded punctuation-only logic.
