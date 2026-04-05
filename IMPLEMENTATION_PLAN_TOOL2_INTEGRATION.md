@@ -58,6 +58,37 @@ All from `TOOL 2-VIDEO ASSEMBLY/AUTO VIDEO/app/`:
 
 ---
 
+## Known Concerns & Mitigations (reviewed 2026-04-05)
+
+These were identified during critical review. Each is addressed in the relevant task notes.
+
+| # | Concern | Risk | Mitigation |
+|---|---------|------|------------|
+| C1 | Tool 1 timeline scenes lack `asset_file`/`asset_id` fields | LOW | Tool 2's `_convert_tool1_timeline()` auto-generates these from `asset_resolver.resolve_assets()`. No action needed — just ensure assets are staged before timeline is loaded. |
+| C2 | Asset naming must match scene numbering for bulk upload | MEDIUM | `asset_resolver._extract_number()` matches `prompt1`, `scene_001`, `asset_3`, or bare `1`. User must name generated files with sequential numbers. Document this in the UI help text. |
+| C3 | Shared assets copied per-language wastes disk | LOW | Accepted tradeoff. Symlinks unreliable on Windows without admin. Images are small. Video assets are larger but typically <20 per episode. Cleanup in Task 10.1. |
+| C4 | SQLite thread safety during render | LOW | Tool 1 already has thread-safe DB wrapper with lock. Observer should batch logs, not write per-FFmpeg-line. Noted in Task 5.1. |
+| C5 | Windows paths with spaces in FFmpeg subprocess calls | LOW | Tool 2's `ffmpeg_utils.py` passes paths as list args (not shell strings), which handles spaces correctly. Verify during Task 0.2. |
+| C6 | Export sets `board_status="Done"` — assembly transition must work from Done | MEDIUM | Task 4.2 guard checks `current_stage="export"` AND `pipeline_status="done"`, not board_status. |
+| C7 | Disk space for per-language renders (temp scenes + final videos) | MEDIUM | Task 10.1 adds cleanup of `temp/scenes/` after successful render. User should be warned about disk usage in the UI. |
+
+---
+
+## Pre-Flight Check Protocol (for ALL agents)
+
+**BEFORE executing any task in a phase**, the assigned agent MUST:
+
+1. **Read this plan file** to understand context and the specific task
+2. **Read the Concerns table above** — check if any concern applies to your task
+3. **Read the files you will modify** — understand existing code patterns, naming conventions, imports
+4. **Flag blockers** — If you discover something that contradicts the plan (a function doesn't exist, an import path changed, a table was already added), STOP and report the issue instead of guessing
+5. **Run existing tests** after your changes: `python -m pytest tests/ -q`
+6. **Do not add unplanned features** — implement exactly what the task describes, nothing more
+
+**After completing a task:** Update `IMPLEMENTATION_CHECKLIST_TOOL2_INTEGRATION.md` by checking off the completed task.
+
+---
+
 ## Tasks (38 total)
 
 ### Agent Legend
@@ -77,7 +108,7 @@ All from `TOOL 2-VIDEO ASSEMBLY/AUTO VIDEO/app/`:
 | # | Task | Difficulty | Agent | Files |
 |---|------|-----------|-------|-------|
 | 0.1 | FFmpeg startup check — `shutil.which("ffmpeg")` at startup, expose in `/api/health` | EASY | CODEX | `app.py` |
-| 0.2 | Copy Tool 2 modules → `tool1_dashboard/video_assembly/` subpackage | EASY | CODEX | new package |
+| 0.2 | Copy Tool 2 modules → `tool1_dashboard/video_assembly/` subpackage. **[C5]** After copying, verify `ffmpeg_utils.py` passes paths as list args (not shell=True). Run `python -c "from tool1_dashboard.video_assembly.pipeline import RenderPipeline; print('OK')"` to verify imports. | EASY | CODEX | new package |
 | 0.3 | Add `jinja2>=3.1,<4.0` to requirements.txt | EASY | CODEX | `requirements.txt` |
 
 ### PHASE 1: Database Schema
@@ -99,10 +130,10 @@ All from `TOOL 2-VIDEO ASSEMBLY/AUTO VIDEO/app/`:
 
 | # | Task | Difficulty | Agent | Files |
 |---|------|-----------|-------|-------|
-| 3.1 | Assembly project directory builder `_prepare_assembly_project()` | MEDIUM | CODEX | `service.py` |
+| 3.1 | Assembly project directory builder `_prepare_assembly_project()`. **[C1]** Copy timeline BEFORE assets are staged. **[C3]** Assets stored once in `assembly/shared_assets/`, copied per-language during render staging (Task 9.1). | MEDIUM | CODEX | `service.py` |
 | 3.2 | `GET /api/episodes/{id}/scenes` — scene list + upload status | MEDIUM | CODEX | `app.py`, `service.py` |
 | 3.3 | `POST /api/episodes/{id}/scenes/{sid}/asset` — single upload | MEDIUM | CODEX | `app.py`, `service.py` |
-| 3.4 | `POST /api/episodes/{id}/scenes/bulk-upload` — auto-match by number | MEDIUM | CODEX | `app.py`, `service.py` |
+| 3.4 | `POST /api/episodes/{id}/scenes/bulk-upload` — auto-match by number. **[C2]** Uses `_extract_number()` which matches `prompt1`, `scene_001`, `asset_3`, or bare `1` prefixes. Return clear `unmatched` list so UI can show what failed. | MEDIUM | CODEX | `app.py`, `service.py` |
 | 3.5 | `DELETE /api/episodes/{id}/scenes/{sid}/asset` — delete asset | EASY | CODEX | `app.py`, `service.py` |
 | 3.6 | `GET /api/episodes/{id}/scenes/{sid}/asset/preview` — serve file | EASY | CODEX | `app.py` |
 
@@ -111,13 +142,13 @@ All from `TOOL 2-VIDEO ASSEMBLY/AUTO VIDEO/app/`:
 | # | Task | Difficulty | Agent | Files |
 |---|------|-----------|-------|-------|
 | 4.1 | `POST /api/episodes/{id}/assembly/validate` — run Tool 2 validation | MEDIUM | CODEX | `app.py`, `service.py` |
-| 4.2 | Stage transition methods (export→asset_upload→validation→render→review) | MEDIUM | CODEX | `app.py`, `service.py` |
+| 4.2 | Stage transition methods (export→asset_upload→validation→render→review). **[C6]** Guard checks `current_stage="export"` AND `pipeline_status="done"`, NOT board_status (which is "Done" after export). | MEDIUM | CODEX | `app.py`, `service.py` |
 
 ### PHASE 5: Render Pipeline
 
 | # | Task | Difficulty | Agent | Files |
 |---|------|-----------|-------|-------|
-| 5.1 | `DashboardRenderObserver` — PipelineObserver → SQLite bridge | HARD | CLAUDE | `video_assembly/dashboard_observer.py` |
+| 5.1 | `DashboardRenderObserver` — PipelineObserver → SQLite bridge. **[C4]** Batch log writes where possible. Don't write a DB row per FFmpeg stderr line — aggregate into stage-level entries. Tool 1's DB wrapper is already thread-safe (uses lock). | HARD | CLAUDE | `video_assembly/dashboard_observer.py` |
 | 5.2 | `POST /api/episodes/{id}/assembly/render` — start render in thread | HARD | CODEX | `app.py`, `service.py` |
 | 5.3 | `GET .../render/{job_id}/events` — SSE progress stream | HARD | CLAUDE | `app.py` |
 | 5.4 | `GET .../render/{job_id}/video` + `GET .../scene/{sid}` — serve files | EASY | CODEX | `app.py` |
@@ -158,7 +189,7 @@ All from `TOOL 2-VIDEO ASSEMBLY/AUTO VIDEO/app/`:
 
 | # | Task | Difficulty | Agent | Files |
 |---|------|-----------|-------|-------|
-| 10.1 | Re-render support + cleanup old jobs | EASY | CODEX | `service.py` |
+| 10.1 | Re-render support + cleanup old jobs. **[C7]** After successful render, delete `temp/scenes/` to free disk. Keep `final_video` and `visual_master`. Warn: 50-min episode × 5 languages ≈ 10-15GB temp files if not cleaned. | EASY | CODEX | `service.py` |
 | 10.2 | FFmpeg availability guard on validate/render endpoints | EASY | CODEX | `service.py` |
 | 10.3 | Per-language render status column in episode overlay | MEDIUM | GEMINI | `app.js` |
 | 10.4 | Prevent concurrent renders + TTS conflict guard | EASY | CODEX | `service.py` |
