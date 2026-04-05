@@ -125,6 +125,56 @@ class Tool1Database:
                 UNIQUE(episode_id, language_code)
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS render_jobs (
+                id TEXT PRIMARY KEY,
+                episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+                language_code TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'idle',
+                stage TEXT NOT NULL DEFAULT 'idle',
+                current_scene_id TEXT,
+                total_scenes INTEGER NOT NULL DEFAULT 0,
+                completed_scenes INTEGER NOT NULL DEFAULT 0,
+                project_dir TEXT,
+                error_message TEXT,
+                validation_json TEXT,
+                outputs_json TEXT NOT NULL DEFAULT '{}',
+                started_at TEXT,
+                finished_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS scene_assets (
+                id TEXT PRIMARY KEY,
+                episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+                scene_id TEXT NOT NULL,
+                asset_type TEXT NOT NULL DEFAULT 'image',
+                original_filename TEXT,
+                stored_filename TEXT,
+                file_path TEXT,
+                file_size INTEGER NOT NULL DEFAULT 0,
+                width INTEGER,
+                height INTEGER,
+                duration_seconds REAL,
+                uploaded_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(episode_id, scene_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS render_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                render_job_id TEXT NOT NULL REFERENCES render_jobs(id) ON DELETE CASCADE,
+                timestamp TEXT,
+                level TEXT,
+                stage TEXT,
+                message TEXT,
+                scene_id TEXT,
+                created_at TEXT NOT NULL
+            )
+            """,
             # ── Stage runs (shared audit trail) ──
             """
             CREATE TABLE IF NOT EXISTS stage_runs (
@@ -259,6 +309,9 @@ class Tool1Database:
             # Create index after ensuring column exists
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_stage_runs_episode ON stage_runs(episode_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_render_logs_job ON render_logs(render_job_id)"
             )
             connection.commit()
 
@@ -509,6 +562,12 @@ class Tool1Database:
                 ).fetchall()
             ]
             for eid in episode_ids:
+                connection.execute(
+                    "DELETE FROM render_logs WHERE render_job_id IN (SELECT id FROM render_jobs WHERE episode_id = ?)",
+                    (eid,),
+                )
+                connection.execute("DELETE FROM render_jobs WHERE episode_id = ?", (eid,))
+                connection.execute("DELETE FROM scene_assets WHERE episode_id = ?", (eid,))
                 connection.execute("DELETE FROM episode_language_status WHERE episode_id = ?", (eid,))
                 connection.execute("DELETE FROM stage_runs WHERE episode_id = ?", (eid,))
                 connection.execute("DELETE FROM tts_jobs WHERE build_id = ?", (eid,))
@@ -535,6 +594,12 @@ class Tool1Database:
 
     def delete_episode(self, episode_id: str) -> None:
         with self._lock, self._connect() as connection:
+            connection.execute(
+                "DELETE FROM render_logs WHERE render_job_id IN (SELECT id FROM render_jobs WHERE episode_id = ?)",
+                (episode_id,),
+            )
+            connection.execute("DELETE FROM render_jobs WHERE episode_id = ?", (episode_id,))
+            connection.execute("DELETE FROM scene_assets WHERE episode_id = ?", (episode_id,))
             connection.execute("DELETE FROM episode_language_status WHERE episode_id = ?", (episode_id,))
             connection.execute("DELETE FROM stage_runs WHERE episode_id = ?", (episode_id,))
             connection.execute("DELETE FROM tts_jobs WHERE build_id = ?", (episode_id,))
@@ -589,6 +654,159 @@ class Tool1Database:
                 values,
             )
             connection.commit()
+
+    # ── render jobs ────────────────────────────────────────────────
+
+    def create_render_job(self, payload: dict[str, Any]) -> None:
+        row = dict(payload)
+        now = utc_now()
+        row.setdefault("created_at", now)
+        row.setdefault("updated_at", now)
+        row.setdefault("outputs_json", "{}")
+        self._insert("render_jobs", row)
+
+    def get_render_job(self, render_job_id: str) -> dict[str, Any] | None:
+        return self._fetchone("SELECT * FROM render_jobs WHERE id = ?", (render_job_id,))
+
+    def list_render_jobs(self, episode_id: str) -> list[dict[str, Any]]:
+        return self._fetchall(
+            "SELECT * FROM render_jobs WHERE episode_id = ? ORDER BY created_at DESC, id DESC",
+            (episode_id,),
+        )
+
+    def get_render_job_for_language(
+        self,
+        episode_id: str,
+        language_code: str,
+    ) -> dict[str, Any] | None:
+        return self._fetchone(
+            """
+            SELECT *
+            FROM render_jobs
+            WHERE episode_id = ? AND language_code = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (episode_id, language_code),
+        )
+
+    def update_render_job(self, render_job_id: str, **fields: Any) -> None:
+        self._update("render_jobs", "id", render_job_id, **fields)
+
+    def delete_render_jobs_for_episode(self, episode_id: str) -> int:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "DELETE FROM render_logs WHERE render_job_id IN (SELECT id FROM render_jobs WHERE episode_id = ?)",
+                (episode_id,),
+            )
+            cursor = connection.execute(
+                "DELETE FROM render_jobs WHERE episode_id = ?",
+                (episode_id,),
+            )
+            connection.commit()
+            return int(cursor.rowcount or 0)
+
+    # ── scene assets ───────────────────────────────────────────────
+
+    def create_scene_asset(self, payload: dict[str, Any]) -> None:
+        row = dict(payload)
+        now = utc_now()
+        row.setdefault("uploaded_at", now)
+        row.setdefault("updated_at", now)
+        self._insert("scene_assets", row)
+
+    def get_scene_asset(self, episode_id: str, scene_id: str) -> dict[str, Any] | None:
+        return self._fetchone(
+            "SELECT * FROM scene_assets WHERE episode_id = ? AND scene_id = ?",
+            (episode_id, scene_id),
+        )
+
+    def list_scene_assets(self, episode_id: str) -> list[dict[str, Any]]:
+        return self._fetchall(
+            "SELECT * FROM scene_assets WHERE episode_id = ? ORDER BY scene_id",
+            (episode_id,),
+        )
+
+    def update_scene_asset(self, episode_id: str, scene_id: str, **fields: Any) -> None:
+        fields["updated_at"] = utc_now()
+        assignments = ", ".join(f"{key} = ?" for key in fields)
+        params = list(fields.values()) + [episode_id, scene_id]
+        self._execute(
+            f"UPDATE scene_assets SET {assignments} WHERE episode_id = ? AND scene_id = ?",
+            params,
+        )
+
+    def delete_scene_asset(self, episode_id: str, scene_id: str) -> int:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM scene_assets WHERE episode_id = ? AND scene_id = ?",
+                (episode_id, scene_id),
+            )
+            connection.commit()
+            return int(cursor.rowcount or 0)
+
+    def delete_scene_assets_for_episode(self, episode_id: str) -> int:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM scene_assets WHERE episode_id = ?",
+                (episode_id,),
+            )
+            connection.commit()
+            return int(cursor.rowcount or 0)
+
+    def count_scene_assets(self, episode_id: str) -> int:
+        row = self._fetchone(
+            "SELECT COUNT(*) AS count FROM scene_assets WHERE episode_id = ?",
+            (episode_id,),
+        )
+        return int((row or {}).get("count", 0))
+
+    # ── render logs ────────────────────────────────────────────────
+
+    def append_render_log(
+        self,
+        *,
+        render_job_id: str,
+        timestamp: str,
+        level: str,
+        stage: str,
+        message: str,
+        scene_id: str | None = None,
+        created_at: str | None = None,
+    ) -> int:
+        return self._execute(
+            """
+            INSERT INTO render_logs(
+                render_job_id, timestamp, level, stage, message, scene_id, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                render_job_id,
+                timestamp,
+                level,
+                stage,
+                message,
+                scene_id,
+                created_at or utc_now(),
+            ),
+        )
+
+    def list_render_logs(self, render_job_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        return self._fetchall(
+            """
+            SELECT *
+            FROM (
+                SELECT *
+                FROM render_logs
+                WHERE render_job_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+            )
+            ORDER BY id ASC
+            """,
+            (render_job_id, limit),
+        )
 
     def list_paused_tts_episodes(self) -> list[dict[str, Any]]:
         """Return episodes currently paused waiting for TTS to complete."""

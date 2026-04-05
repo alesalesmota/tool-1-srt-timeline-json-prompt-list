@@ -9,9 +9,9 @@
 - [x] 0.3 `[EASY][CODEX]` Add jinja2 to requirements.txt
 
 ## PHASE 1: Database Schema
-- [ ] 1.1 `[MEDIUM][CODEX]` render_jobs table + CRUD (per-language tracking)
-- [ ] 1.2 `[MEDIUM][CODEX]` scene_assets table + CRUD (shared, episode-level)
-- [ ] 1.3 `[EASY][CODEX]` render_logs table + insert/query
+- [x] 1.1 `[MEDIUM][CODEX]` render_jobs table + CRUD (per-language tracking)
+- [x] 1.2 `[MEDIUM][CODEX]` scene_assets table + CRUD (shared, episode-level)
+- [x] 1.3 `[EASY][CODEX]` render_logs table + insert/query
 
 ## PHASE 2: Config & Frontend Stages
 - [ ] 2.1 `[EASY][CODEX]` Add 4 stages to EPISODE_PIPELINE_STAGES
