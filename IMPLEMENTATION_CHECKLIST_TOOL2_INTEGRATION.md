@@ -30,15 +30,15 @@
 - [x] 4.2 `[MEDIUM][CODEX]` Stage transition methods + endpoints
 
 ## PHASE 5: Render Pipeline (per-language, sequential)
-- [ ] 5.1 `[HARD][CLAUDE]` DashboardRenderObserver (PipelineObserver → SQLite)
+- [x] 5.1 `[HARD][CLAUDE]` DashboardRenderObserver (PipelineObserver → SQLite)
 - [ ] 5.2 `[HARD][CODEX]` POST render — single lang or "all" (sequential queue)
-- [ ] 5.3 `[HARD][CLAUDE]` SSE render progress endpoint
+- [x] 5.3 `[HARD][CLAUDE]` SSE render progress endpoint
 - [ ] 5.4 `[EASY][CODEX]` Video/scene serving endpoints
 
 ## PHASE 6: Frontend — Asset Upload (shared)
-- [ ] 6.1 `[HARD][GEMINI]` Scene grid + upload zones in episode overlay
-- [ ] 6.2 `[MEDIUM][GEMINI]` Drag-drop + file picker + bulk upload
-- [ ] 6.3 `[EASY][GEMINI]` Asset upload CSS
+- [x] 6.1 `[HARD][GEMINI]` Scene grid + upload zones in episode overlay
+- [x] 6.2 `[MEDIUM][GEMINI]` Drag-drop + file picker + bulk upload
+- [x] 6.3 `[EASY][GEMINI]` Asset upload CSS
 
 ## PHASE 7: Frontend — Validation & Render (per-language)
 - [ ] 7.1 `[MEDIUM][GEMINI]` Validation panel — per-language results
