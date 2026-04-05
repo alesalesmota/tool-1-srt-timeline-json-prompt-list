@@ -62,7 +62,7 @@
 - [x] 10.4 `[EASY][CODEX]` Sequential-only: prevent concurrent renders + TTS conflict
 
 ## PHASE 11: Testing
-- [ ] 11.1 `[HARD][CLAUDE]` Integration test (multilingual render)
+- [x] 11.1 `[HARD][CLAUDE]` Integration test (multilingual render)
 - [x] 11.2 `[MEDIUM][CODEX]` Unit tests for video_assembly
 
 ---
