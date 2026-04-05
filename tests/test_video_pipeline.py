@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 import json
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -302,6 +304,51 @@ def _write_master_timeline(
         updated_at=utc_now(),
     )
     return timeline_path
+
+
+def _seed_language_render_inputs(
+    service: Tool1Service,
+    episode_id: str,
+    language_code: str,
+    scenes: list[dict[str, object]],
+    *,
+    with_srt: bool = True,
+) -> dict[str, Path | None]:
+    episode = service.db.get_episode(episode_id)
+    assert episode is not None
+    workspace = Path(episode["workspace_dir"])
+    timeline_path = workspace / f"timeline_{language_code}.json"
+    timeline_path.write_text(json.dumps(scenes), encoding="utf-8")
+    audio_path = workspace / f"narration_{language_code}.wav"
+    audio_path.write_bytes(b"RIFF....WAVEfmt ")
+    srt_path: Path | None = None
+    if with_srt:
+        srt_path = workspace / f"subtitles_{language_code}.srt"
+        srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nHello world\n", encoding="utf-8")
+    service.db.update_episode_language_status(
+        episode_id,
+        language_code,
+        timeline_status="done",
+        timeline_path=str(timeline_path),
+        tts_status="done",
+        tts_audio_path=str(audio_path),
+        srt_path=str(srt_path) if srt_path is not None else None,
+    )
+    return {
+        "timeline_path": timeline_path,
+        "audio_path": audio_path,
+        "srt_path": srt_path,
+    }
+
+
+def _wait_for_render_job(service: Tool1Service, render_job_id: str, timeout: float = 3.0) -> dict[str, object]:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = service.db.get_render_job(render_job_id)
+        if job is not None and str(job.get("state") or "").lower() in {"completed", "failed"}:
+            return job
+        time.sleep(0.05)
+    raise AssertionError(f"Render job {render_job_id} did not finish within {timeout:.1f}s")
 
 
 class NicheProjectApiTests(unittest.TestCase):
@@ -989,6 +1036,206 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     episode_row = service.db.get_episode(episode_id)
                     self.assertEqual(episode_row["current_stage"], "final_review")
                     self.assertEqual(episode_row["pipeline_status"], "paused")
+                finally:
+                    self.app_module.service = original
+
+    def test_render_api_blocks_concurrent_requests_while_job_running(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en"])
+                    episode_id = episode["id"]
+                    scenes = [
+                        {
+                            "scene_id": "scene_001",
+                            "start": 0.0,
+                            "end": 2.0,
+                            "duration": 2.0,
+                            "text": "Single scene.",
+                            "asset_type": "image",
+                        }
+                    ]
+                    _write_master_timeline(service, episode_id, scenes)
+                    upload_resp = client.post(
+                        f"/api/episodes/{episode_id}/scenes/scene_001/asset",
+                        files={"file": ("prompt1.png", b"\x89PNG\r\n\x1a\nscene1", "image/png")},
+                    )
+                    self.assertEqual(upload_resp.status_code, 200)
+                    _seed_language_render_inputs(service, episode_id, "en", scenes)
+
+                    render_started = threading.Event()
+                    allow_finish = threading.Event()
+
+                    def blocking_run(pipeline_self):
+                        scene_dir = pipeline_self.project_dir / "temp" / "scenes"
+                        output_dir = pipeline_self.project_dir / "output"
+                        scene_dir.mkdir(parents=True, exist_ok=True)
+                        output_dir.mkdir(parents=True, exist_ok=True)
+                        render_started.set()
+                        allow_finish.wait(timeout=2.0)
+                        (scene_dir / "scene_001.mp4").write_bytes(b"scene-en")
+                        final_video = output_dir / "final_video_en.mp4"
+                        final_video.write_bytes(b"video-en")
+                        visual_master = output_dir / "visual_master_en.mp4"
+                        visual_master.write_bytes(b"visual-en")
+                        manifest = output_dir / f"render_manifest_{pipeline_self.job_id}.json"
+                        manifest.write_text("{}", encoding="utf-8")
+                        pipeline_self.observer.set_validation(
+                            SimpleNamespace(
+                                passed=True,
+                                errors=[],
+                                warnings=[],
+                                scene_count=1,
+                                total_duration=2.0,
+                            )
+                        )
+                        pipeline_self.observer.set_asset_probes({})
+                        pipeline_self.observer.set_state("rendering", "Rendering scene_001", "scene_001")
+                        pipeline_self.observer.add_scene_result(SimpleNamespace(scene_id="scene_001"))
+                        summary = SimpleNamespace(
+                            final_video=final_video,
+                            visual_master=visual_master,
+                            manifest_path=manifest,
+                            total_scenes=1,
+                            total_duration=2.0,
+                        )
+                        pipeline_self.observer.complete(summary)
+                        return summary
+
+                    with patch("tool1_dashboard.service.RenderPipeline.run", new=blocking_run):
+                        render_resp = client.post(
+                            f"/api/episodes/{episode_id}/assembly/render",
+                            json={"language_code": "en"},
+                        )
+                        self.assertEqual(render_resp.status_code, 200)
+                        render_job_id = render_resp.json()["render_job_id"]
+                        self.assertTrue(render_started.wait(timeout=1.0))
+
+                        blocked_resp = client.post(
+                            f"/api/episodes/{episode_id}/assembly/render",
+                            json={"language_code": "en"},
+                        )
+                        self.assertEqual(blocked_resp.status_code, 400)
+                        self.assertIn("Another render is already running", blocked_resp.json()["detail"])
+
+                        allow_finish.set()
+                        job = _wait_for_render_job(service, render_job_id)
+                        self.assertEqual(job["state"], "completed")
+                finally:
+                    self.app_module.service = original
+
+    def test_render_all_api_stages_assets_and_serves_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en", "pt-BR"])
+                    episode_id = episode["id"]
+                    scenes = [
+                        {
+                            "scene_id": "scene_001",
+                            "start": 0.0,
+                            "end": 2.0,
+                            "duration": 2.0,
+                            "text": "Shared scene.",
+                            "asset_type": "image",
+                        }
+                    ]
+                    _write_master_timeline(service, episode_id, scenes)
+                    upload_resp = client.post(
+                        f"/api/episodes/{episode_id}/scenes/scene_001/asset",
+                        files={"file": ("prompt1.png", b"\x89PNG\r\n\x1a\nscene1", "image/png")},
+                    )
+                    self.assertEqual(upload_resp.status_code, 200)
+                    _seed_language_render_inputs(service, episode_id, "en", scenes)
+                    _seed_language_render_inputs(service, episode_id, "pt-BR", scenes)
+
+                    def fast_run(pipeline_self):
+                        language_code = pipeline_self.project_dir.name
+                        scene_dir = pipeline_self.project_dir / "temp" / "scenes"
+                        output_dir = pipeline_self.project_dir / "output"
+                        scene_dir.mkdir(parents=True, exist_ok=True)
+                        output_dir.mkdir(parents=True, exist_ok=True)
+                        (scene_dir / "scene_001.mp4").write_bytes(f"scene-{language_code}".encode("utf-8"))
+                        final_video = output_dir / f"final_video_{language_code}.mp4"
+                        final_video.write_bytes(f"video-{language_code}".encode("utf-8"))
+                        visual_master = output_dir / f"visual_master_{language_code}.mp4"
+                        visual_master.write_bytes(f"visual-{language_code}".encode("utf-8"))
+                        manifest = output_dir / f"render_manifest_{pipeline_self.job_id}.json"
+                        manifest.write_text("{}", encoding="utf-8")
+                        pipeline_self.observer.set_validation(
+                            SimpleNamespace(
+                                passed=True,
+                                errors=[],
+                                warnings=[],
+                                scene_count=1,
+                                total_duration=2.0,
+                            )
+                        )
+                        pipeline_self.observer.set_asset_probes({})
+                        pipeline_self.observer.set_state("rendering", "Rendering scene_001", "scene_001")
+                        pipeline_self.observer.add_scene_result(SimpleNamespace(scene_id="scene_001"))
+                        summary = SimpleNamespace(
+                            final_video=final_video,
+                            visual_master=visual_master,
+                            manifest_path=manifest,
+                            total_scenes=1,
+                            total_duration=2.0,
+                        )
+                        pipeline_self.observer.complete(summary)
+                        return summary
+
+                    with patch("tool1_dashboard.service.RenderPipeline.run", new=fast_run):
+                        render_resp = client.post(
+                            f"/api/episodes/{episode_id}/assembly/render",
+                            json={"language_code": "all"},
+                        )
+                        self.assertEqual(render_resp.status_code, 200)
+                        render_job_ids = render_resp.json()["render_job_ids"]
+                        self.assertEqual(len(render_job_ids), 2)
+
+                        completed_jobs = {
+                            render_job_id: _wait_for_render_job(service, render_job_id)
+                            for render_job_id in render_job_ids
+                        }
+
+                    workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+                    self.assertTrue((workspace / "assembly" / "en" / "input" / "assets" / "001_prompt1.png").exists())
+                    self.assertTrue((workspace / "assembly" / "pt-BR" / "input" / "assets" / "001_prompt1.png").exists())
+
+                    status_resp = client.get(f"/api/episodes/{episode_id}/assembly/render-status")
+                    self.assertEqual(status_resp.status_code, 200)
+                    status_payload = status_resp.json()["languages"]
+                    self.assertEqual(set(status_payload.keys()), {"en", "pt-BR"})
+                    self.assertEqual(status_payload["en"]["latest"]["state"], "completed")
+                    self.assertEqual(status_payload["pt-BR"]["latest"]["state"], "completed")
+
+                    jobs_resp = client.get(f"/api/episodes/{episode_id}/assembly/render-jobs")
+                    self.assertEqual(jobs_resp.status_code, 200)
+                    self.assertEqual(len(jobs_resp.json()["render_jobs"]), 2)
+
+                    en_job_id = next(
+                        render_job_id
+                        for render_job_id, job in completed_jobs.items()
+                        if job["language_code"] == "en"
+                    )
+
+                    video_resp = client.get(
+                        f"/api/episodes/{episode_id}/assembly/render/{en_job_id}/video"
+                    )
+                    self.assertEqual(video_resp.status_code, 200)
+                    self.assertEqual(video_resp.content, b"video-en")
+
+                    scene_resp = client.get(
+                        f"/api/episodes/{episode_id}/assembly/render/{en_job_id}/scene/scene_001"
+                    )
+                    self.assertEqual(scene_resp.status_code, 200)
+                    self.assertEqual(scene_resp.content, b"scene-en")
                 finally:
                     self.app_module.service = original
 

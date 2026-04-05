@@ -73,7 +73,9 @@ from .translation_profiles import (
     sort_openai_models,
 )
 from .video_assembly.asset_resolver import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, _extract_number
+from .video_assembly.dashboard_observer import DashboardRenderObserver
 from .video_assembly.ffmpeg_utils import ffprobe_json
+from .video_assembly.pipeline import RenderPipeline
 from .tts.constants import STALE_PROCESSING_SECONDS
 from .tts.voice_config import (
     DEFAULT_VOICE_TTS_PRESET,
@@ -160,6 +162,7 @@ class Tool1Service:
         self._condition = threading.Condition()
         self._stop_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
+        self._render_lock = threading.Lock()
         self._provider_stage_stale_seconds = float(
             os.environ.get("TOOL1_PROVIDER_STAGE_STALE_SECONDS", "900")
         )
@@ -2787,6 +2790,210 @@ class Tool1Service:
         return resolved
 
     @staticmethod
+    def _parse_json_object(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        raw_value = str(value or "").strip()
+        if not raw_value:
+            return {}
+        try:
+            parsed = json.loads(raw_value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _serialize_render_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": job["id"],
+            "episode_id": job["episode_id"],
+            "language_code": job["language_code"],
+            "state": job["state"],
+            "stage": job["stage"],
+            "current_scene_id": job.get("current_scene_id"),
+            "total_scenes": int(job.get("total_scenes") or 0),
+            "completed_scenes": int(job.get("completed_scenes") or 0),
+            "project_dir": job.get("project_dir"),
+            "error_message": job.get("error_message"),
+            "validation": self._parse_json_object(job.get("validation_json")),
+            "outputs": self._parse_json_object(job.get("outputs_json")),
+            "started_at": job.get("started_at"),
+            "finished_at": job.get("finished_at"),
+            "created_at": job.get("created_at"),
+            "updated_at": job.get("updated_at"),
+        }
+
+    def _render_job_record(self, episode_id: str, render_job_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        job = self.db.get_render_job(render_job_id)
+        if job is None or job["episode_id"] != episode_id:
+            raise FileNotFoundError("Render job not found.")
+        return episode, job
+
+    def _resolve_workspace_file(
+        self,
+        episode: dict[str, Any],
+        candidate: Path,
+        *,
+        missing_message: str,
+        outside_message: str,
+    ) -> Path:
+        resolved = candidate.resolve()
+        workspace = self._episode_workspace(episode).resolve()
+        try:
+            resolved.relative_to(workspace)
+        except ValueError as exc:
+            raise ValueError(outside_message) from exc
+        if not resolved.exists() or not resolved.is_file():
+            raise FileNotFoundError(missing_message)
+        return resolved
+
+    @staticmethod
+    def _validation_failure_message(
+        language_code: str,
+        result: dict[str, Any],
+    ) -> str:
+        issues = [str(item).strip() for item in result.get("errors") or [] if str(item).strip()]
+        if not issues:
+            return f"Assembly validation failed for {language_code}."
+        first = issues[0]
+        remaining = len(issues) - 1
+        if remaining > 0:
+            return f"Assembly validation failed for {language_code}: {first} (+{remaining} more)"
+        return f"Assembly validation failed for {language_code}: {first}"
+
+    def _create_render_job_entry(
+        self,
+        episode_id: str,
+        language_code: str,
+        validation_result: dict[str, Any],
+    ) -> str:
+        render_job_id = f"render-{language_code.lower().replace('_', '-').replace('.', '-')}-{uuid.uuid4().hex[:10]}"
+        now = utc_now()
+        self.db.create_render_job(
+            {
+                "id": render_job_id,
+                "episode_id": episode_id,
+                "language_code": language_code,
+                "state": "queued",
+                "stage": "queued",
+                "current_scene_id": None,
+                "total_scenes": int(validation_result.get("scene_count") or 0),
+                "completed_scenes": 0,
+                "project_dir": None,
+                "error_message": None,
+                "validation_json": json.dumps(validation_result, ensure_ascii=False),
+                "outputs_json": "{}",
+                "started_at": None,
+                "finished_at": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+        self.db.append_render_log(
+            render_job_id=render_job_id,
+            timestamp=now,
+            level="INFO",
+            stage="queued",
+            message=f"Queued render for {language_code}.",
+        )
+        return render_job_id
+
+    def _stage_assets_for_render(self, episode_id: str, language_code: str) -> Path:
+        episode, scenes = self._load_master_timeline_scenes(episode_id)
+        project_dir = self._episode_workspace(episode) / "assembly" / language_code
+        assets_dir = ensure_dir(project_dir / "input" / "assets")
+
+        for child in list(assets_dir.iterdir()):
+            self._safe_delete_path(child, assets_dir)
+
+        assets_by_scene = {
+            asset["scene_id"]: asset
+            for asset in self.db.list_scene_assets(episode_id)
+        }
+        for index, scene in enumerate(scenes, start=1):
+            asset = assets_by_scene.get(scene["scene_id"])
+            if asset is None:
+                raise ValueError(f"Missing shared asset for {scene['scene_id']}.")
+            file_path = str(asset.get("file_path") or "").strip()
+            if not file_path:
+                raise FileNotFoundError(f"Asset file missing for {scene['scene_id']}.")
+            source_path = Path(file_path)
+            if not source_path.exists() or not source_path.is_file():
+                raise FileNotFoundError(f"Asset file missing for {scene['scene_id']}.")
+            original_name = str(asset.get("original_filename") or asset.get("stored_filename") or source_path.name)
+            staged_name = f"{index:03d}_{safe_filename(original_name, 'asset')}"
+            shutil.copy2(source_path, assets_dir / staged_name)
+
+        return project_dir
+
+    def _run_render_batch(
+        self,
+        episode_id: str,
+        job_specs: list[dict[str, str]],
+    ) -> None:
+        try:
+            for queue_index, job_spec in enumerate(job_specs, start=1):
+                render_job_id = job_spec["render_job_id"]
+                language_code = job_spec["language_code"]
+                started_at = utc_now()
+                self.db.update_render_job(
+                    render_job_id,
+                    state="preparing",
+                    stage="preparing",
+                    current_scene_id=None,
+                    error_message=None,
+                    outputs_json="{}",
+                    completed_scenes=0,
+                    started_at=started_at,
+                    finished_at=None,
+                    updated_at=started_at,
+                )
+                self.db.append_render_log(
+                    render_job_id=render_job_id,
+                    timestamp=started_at,
+                    level="INFO",
+                    stage="preparing",
+                    message=f"Preparing render for {language_code} ({queue_index}/{len(job_specs)}).",
+                )
+
+                observer: DashboardRenderObserver | None = None
+                try:
+                    project_dir = self._prepare_assembly_project(episode_id, language_code)
+                    project_dir = self._stage_assets_for_render(episode_id, language_code)
+                    self.db.update_render_job(
+                        render_job_id,
+                        project_dir=str(project_dir),
+                        updated_at=utc_now(),
+                    )
+                    observer = DashboardRenderObserver(self.db, render_job_id)
+                    RenderPipeline(project_dir, render_job_id, observer=observer).run()
+                except Exception as exc:
+                    job = self.db.get_render_job(render_job_id)
+                    if job is None or str(job.get("state") or "").strip().lower() != "failed":
+                        failed_at = utc_now()
+                        self.db.update_render_job(
+                            render_job_id,
+                            state="failed",
+                            stage="failed",
+                            error_message=str(exc),
+                            finished_at=failed_at,
+                            updated_at=failed_at,
+                        )
+                        self.db.append_render_log(
+                            render_job_id=render_job_id,
+                            timestamp=failed_at,
+                            level="ERROR",
+                            stage="failed",
+                            message=str(exc),
+                        )
+                    continue
+        finally:
+            if self._render_lock.locked():
+                self._render_lock.release()
+
+    @staticmethod
     def _assembly_stage_sequence() -> tuple[str, ...]:
         return (*VIDEO_ASSEMBLY_STAGES, "final_review")
 
@@ -2909,6 +3116,135 @@ class Tool1Service:
             "languages": results,
             "shared": shared,
         }
+
+    def start_render(self, episode_id: str, language_code: str) -> dict[str, Any]:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+
+        normalized_language = str(language_code or "").strip()
+        if not normalized_language:
+            raise ValueError("language_code is required.")
+
+        if not self._render_lock.acquire(blocking=False):
+            raise ValueError("Another render is already running. Wait for it to finish first.")
+
+        render_job_ids: list[str] = []
+        lock_acquired = True
+        try:
+            if normalized_language.lower() == "all":
+                validation_report = self.validate_assembly(episode_id)
+                valid_languages = [
+                    lang
+                    for lang, result in validation_report["languages"].items()
+                    if result.get("passed")
+                ]
+                if not valid_languages:
+                    raise ValueError("Assembly validation must pass for at least one language before rendering.")
+                invalid_languages = [
+                    lang
+                    for lang in validation_report["languages"]
+                    if lang not in valid_languages
+                ]
+                job_specs: list[dict[str, str]] = []
+                for lang in valid_languages:
+                    render_job_id = self._create_render_job_entry(
+                        episode_id,
+                        lang,
+                        validation_report["languages"][lang],
+                    )
+                    render_job_ids.append(render_job_id)
+                    job_specs.append({"render_job_id": render_job_id, "language_code": lang})
+            else:
+                validation_report = self.validate_assembly(episode_id, language_code=normalized_language)
+                result = validation_report["languages"].get(normalized_language)
+                if result is None:
+                    raise FileNotFoundError(f"Language status not found for {normalized_language}.")
+                if not result.get("passed"):
+                    raise ValueError(self._validation_failure_message(normalized_language, result))
+                render_job_id = self._create_render_job_entry(episode_id, normalized_language, result)
+                render_job_ids.append(render_job_id)
+                invalid_languages = []
+                job_specs = [{"render_job_id": render_job_id, "language_code": normalized_language}]
+
+            render_thread = threading.Thread(
+                target=self._run_render_batch,
+                args=(episode_id, job_specs),
+                daemon=True,
+            )
+            render_thread.start()
+            lock_acquired = False
+            payload: dict[str, Any] = {
+                "status": "started",
+                "render_job_ids": render_job_ids,
+                "languages": [job_spec["language_code"] for job_spec in job_specs],
+            }
+            if len(render_job_ids) == 1:
+                payload["render_job_id"] = render_job_ids[0]
+            if invalid_languages:
+                payload["skipped_languages"] = invalid_languages
+            return payload
+        except Exception:
+            if lock_acquired and self._render_lock.locked():
+                self._render_lock.release()
+            raise
+
+    def get_render_status(self, episode_id: str) -> dict[str, Any]:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+
+        jobs = [
+            self._serialize_render_job(job)
+            for job in self.db.list_render_jobs(episode_id)
+        ]
+        grouped: dict[str, dict[str, Any]] = {
+            language_code: {"latest": None, "jobs": []}
+            for language_code in self._assembly_target_languages(episode)
+        }
+        for job in jobs:
+            language_group = grouped.setdefault(job["language_code"], {"latest": None, "jobs": []})
+            language_group["jobs"].append(job)
+            if language_group["latest"] is None:
+                language_group["latest"] = job
+        return {"languages": grouped}
+
+    def list_render_jobs_payload(self, episode_id: str) -> dict[str, Any]:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        return {
+            "render_jobs": [
+                self._serialize_render_job(job)
+                for job in self.db.list_render_jobs(episode_id)
+            ]
+        }
+
+    def get_render_job_video_path(self, episode_id: str, render_job_id: str) -> Path:
+        episode, job = self._render_job_record(episode_id, render_job_id)
+        outputs = self._parse_json_object(job.get("outputs_json"))
+        final_video = str(outputs.get("final_video") or "").strip()
+        if not final_video:
+            raise FileNotFoundError("Rendered video not available for this job.")
+        return self._resolve_workspace_file(
+            episode,
+            Path(final_video),
+            missing_message="Rendered video not available for this job.",
+            outside_message="Rendered video is outside the episode workspace.",
+        )
+
+    def get_render_job_scene_path(self, episode_id: str, render_job_id: str, scene_id: str) -> Path:
+        episode, job = self._render_job_record(episode_id, render_job_id)
+        project_dir = str(job.get("project_dir") or "").strip()
+        if not project_dir:
+            raise FileNotFoundError("Render project directory not available for this job.")
+        scene_path = Path(project_dir) / "temp" / "scenes" / f"{scene_id}.mp4"
+        return self._resolve_workspace_file(
+            episode,
+            scene_path,
+            missing_message=f"Rendered scene clip not found for {scene_id}.",
+            outside_message="Rendered scene clip is outside the episode workspace.",
+        )
 
     def start_assembly(self, episode_id: str) -> dict[str, Any]:
         episode = self.db.get_episode(episode_id)

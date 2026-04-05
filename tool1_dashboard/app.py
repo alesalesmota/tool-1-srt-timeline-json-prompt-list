@@ -159,6 +159,10 @@ class AssemblyAdvanceRequest(BaseModel):
     target_stage: str
 
 
+class AssemblyRenderRequest(BaseModel):
+    language_code: str
+
+
 service = Tool1Service()
 app = FastAPI(title="Creator Studio")
 app.add_middleware(
@@ -570,6 +574,39 @@ async def advance_episode_assembly(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/episodes/{episode_id}/assembly/render")
+async def start_episode_render(
+    episode_id: str,
+    payload: AssemblyRenderRequest,
+) -> dict[str, Any]:
+    try:
+        return service.start_render(episode_id, payload.language_code)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/episodes/{episode_id}/assembly/render-status")
+async def episode_render_status(episode_id: str) -> dict[str, Any]:
+    try:
+        return service.get_render_status(episode_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/episodes/{episode_id}/assembly/render-jobs")
+async def episode_render_jobs(episode_id: str) -> dict[str, Any]:
+    try:
+        return service.list_render_jobs_payload(episode_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/episodes/{episode_id}/assembly/render/{render_job_id}/events")
 async def render_job_events(episode_id: str, render_job_id: str) -> StreamingResponse:
     """SSE stream of render progress for a specific render job."""
@@ -625,6 +662,32 @@ async def render_job_events(episode_id: str, render_job_id: str) -> StreamingRes
             await asyncio.sleep(1)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.get("/api/episodes/{episode_id}/assembly/render/{render_job_id}/video")
+async def render_job_video(episode_id: str, render_job_id: str) -> FileResponse:
+    try:
+        video_path = service.get_render_job_video_path(episode_id, render_job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FileResponse(str(video_path), filename=video_path.name, media_type="video/mp4")
+
+
+@app.get("/api/episodes/{episode_id}/assembly/render/{render_job_id}/scene/{scene_id}")
+async def render_job_scene_clip(
+    episode_id: str,
+    render_job_id: str,
+    scene_id: str,
+) -> FileResponse:
+    try:
+        scene_path = service.get_render_job_scene_path(episode_id, render_job_id, scene_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FileResponse(str(scene_path), filename=scene_path.name, media_type="video/mp4")
 
 
 @app.post("/api/episodes/{episode_id}/queue")

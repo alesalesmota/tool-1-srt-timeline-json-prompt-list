@@ -31,9 +31,9 @@
 
 ## PHASE 5: Render Pipeline (per-language, sequential)
 - [x] 5.1 `[HARD][CLAUDE]` DashboardRenderObserver (PipelineObserver → SQLite)
-- [ ] 5.2 `[HARD][CODEX]` POST render — single lang or "all" (sequential queue)
+- [x] 5.2 `[HARD][CODEX]` POST render — single lang or "all" (sequential queue)
 - [x] 5.3 `[HARD][CLAUDE]` SSE render progress endpoint
-- [ ] 5.4 `[EASY][CODEX]` Video/scene serving endpoints
+- [x] 5.4 `[EASY][CODEX]` Video/scene serving endpoints
 
 ## PHASE 6: Frontend — Asset Upload (shared)
 - [x] 6.1 `[HARD][GEMINI]` Scene grid + upload zones in episode overlay
@@ -41,19 +41,19 @@
 - [x] 6.3 `[EASY][GEMINI]` Asset upload CSS
 
 ## PHASE 7: Frontend — Validation & Render (per-language)
-- [ ] 7.1 `[MEDIUM][GEMINI]` Validation panel — per-language results
-- [ ] 7.2 `[HARD][GEMINI]` Render progress panel — language tabs + SSE + queue
-- [ ] 7.3 `[MEDIUM][GEMINI]` Final review — per-language video gallery
-- [ ] 7.4 `[EASY][GEMINI]` Render/validation CSS
+- [x] 7.1 `[MEDIUM][GEMINI]` Validation panel — per-language results
+- [x] 7.2 `[HARD][GEMINI]` Render progress panel — language tabs + SSE + queue
+- [x] 7.3 `[MEDIUM][GEMINI]` Final review — per-language video gallery
+- [x] 7.4 `[EASY][GEMINI]` Render/validation CSS
 
 ## PHASE 8: Workflow Integration
-- [ ] 8.1 `[EASY][GEMINI]` "Start Video Assembly" button
-- [ ] 8.2 `[EASY][GEMINI]` Stage strip for 16 stages
+- [x] 8.1 `[EASY][GEMINI]` "Start Video Assembly" button
+- [x] 8.2 `[EASY][GEMINI]` Stage strip for 16 stages
 - [ ] 8.3 `[MEDIUM][CODEX]` Conditional assembly UI loader
 
 ## PHASE 9: Asset Staging
-- [ ] 9.1 `[MEDIUM][CODEX]` _stage_assets_for_render() — copy shared → per-lang
-- [ ] 9.2 `[EASY][CODEX]` Wire staging into start_render()
+- [x] 9.1 `[MEDIUM][CODEX]` _stage_assets_for_render() — copy shared → per-lang
+- [x] 9.2 `[EASY][CODEX]` Wire staging into start_render()
 
 ## PHASE 10: Polish & Safety
 - [ ] 10.1 `[EASY][CODEX]` Re-render + cleanup temp files
