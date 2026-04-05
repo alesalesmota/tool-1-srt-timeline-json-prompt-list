@@ -18,12 +18,12 @@
 - [x] 2.2 `[EASY][GEMINI]` Add 4 Kanban columns to app.js
 
 ## PHASE 3: Asset Upload Backend (shared assets)
-- [ ] 3.1 `[MEDIUM][CODEX]` _prepare_assembly_project() — per-language dir builder
-- [ ] 3.2 `[MEDIUM][CODEX]` GET /api/episodes/{id}/scenes — master scene list + upload status
-- [ ] 3.3 `[MEDIUM][CODEX]` POST single-scene asset upload
-- [ ] 3.4 `[MEDIUM][CODEX]` POST bulk asset upload with auto-match
-- [ ] 3.5 `[EASY][CODEX]` DELETE scene asset endpoint
-- [ ] 3.6 `[EASY][CODEX]` GET asset preview endpoint
+- [x] 3.1 `[MEDIUM][CODEX]` _prepare_assembly_project() — per-language dir builder
+- [x] 3.2 `[MEDIUM][CODEX]` GET /api/episodes/{id}/scenes — master scene list + upload status
+- [x] 3.3 `[MEDIUM][CODEX]` POST single-scene asset upload
+- [x] 3.4 `[MEDIUM][CODEX]` POST bulk asset upload with auto-match
+- [x] 3.5 `[EASY][CODEX]` DELETE scene asset endpoint
+- [x] 3.6 `[EASY][CODEX]` GET asset preview endpoint
 
 ## PHASE 4: Assembly Validation (per-language)
 - [ ] 4.1 `[MEDIUM][CODEX]` POST validate — shared assets + per-language prerequisites

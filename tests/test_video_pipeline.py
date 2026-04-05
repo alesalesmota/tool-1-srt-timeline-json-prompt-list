@@ -286,6 +286,24 @@ def _build_profile_assignments(
     return voice_profiles, translation_profiles
 
 
+def _write_master_timeline(
+    service: Tool1Service,
+    episode_id: str,
+    scenes: list[dict[str, object]],
+) -> Path:
+    episode = service.db.get_episode(episode_id)
+    assert episode is not None
+    workspace = Path(episode["workspace_dir"])
+    timeline_path = workspace / "timeline_draft.json"
+    timeline_path.write_text(json.dumps(scenes), encoding="utf-8")
+    service.db.update_episode(
+        episode_id,
+        timeline_draft_path=str(timeline_path),
+        updated_at=utc_now(),
+    )
+    return timeline_path
+
+
 class NicheProjectApiTests(unittest.TestCase):
     """Tests for the niche project + episode API endpoints."""
 
@@ -682,6 +700,88 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     self.assertEqual(download_resp.content, b"root stderr output")
                     self.assertIn("stderr.txt", download_resp.headers["content-disposition"])
                     self.assertTrue(download_resp.headers["content-type"].startswith("text/plain"))
+                finally:
+                    self.app_module.service = original
+
+    def test_episode_scene_asset_api_supports_list_upload_bulk_preview_and_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en"])
+                    episode_id = episode["id"]
+                    _write_master_timeline(
+                        service,
+                        episode_id,
+                        [
+                            {
+                                "scene_id": "scene_001",
+                                "start": 0.0,
+                                "end": 2.5,
+                                "duration": 2.5,
+                                "text": "Opening shot.",
+                                "asset_type": "image",
+                            },
+                            {
+                                "scene_id": "scene_002",
+                                "start": 2.5,
+                                "end": 5.0,
+                                "duration": 2.5,
+                                "text": "Second shot.",
+                                "asset_type": "video",
+                            },
+                        ],
+                    )
+
+                    list_resp = client.get(f"/api/episodes/{episode_id}/scenes")
+                    self.assertEqual(list_resp.status_code, 200)
+                    self.assertEqual(list_resp.json()["total_scenes"], 2)
+                    self.assertEqual(list_resp.json()["uploaded_count"], 0)
+                    self.assertEqual(list_resp.json()["scenes"][0]["asset"], None)
+
+                    upload_resp = client.post(
+                        f"/api/episodes/{episode_id}/scenes/scene_001/asset",
+                        files={"file": ("prompt1.png", b"\x89PNG\r\n\x1a\nphase3-scene-1", "image/png")},
+                    )
+                    self.assertEqual(upload_resp.status_code, 200)
+                    self.assertEqual(upload_resp.json()["asset"]["scene_id"], "scene_001")
+                    self.assertEqual(upload_resp.json()["asset"]["filename"], "prompt1.png")
+
+                    bulk_resp = client.post(
+                        f"/api/episodes/{episode_id}/scenes/bulk-upload",
+                        files=[
+                            ("files", ("asset_2.jpg", b"\xff\xd8\xffphase3-scene-2", "image/jpeg")),
+                            ("files", ("nomatch.png", b"\x89PNG\r\n\x1a\nnomatch", "image/png")),
+                        ],
+                    )
+                    self.assertEqual(bulk_resp.status_code, 200)
+                    self.assertEqual(bulk_resp.json()["total_uploaded"], 1)
+                    self.assertEqual(bulk_resp.json()["matched"][0]["scene_id"], "scene_002")
+                    self.assertEqual(bulk_resp.json()["unmatched"], ["nomatch.png"])
+
+                    list_after_resp = client.get(f"/api/episodes/{episode_id}/scenes")
+                    self.assertEqual(list_after_resp.status_code, 200)
+                    self.assertEqual(list_after_resp.json()["uploaded_count"], 2)
+                    self.assertEqual(list_after_resp.json()["scenes"][1]["asset"]["filename"], "asset_2.jpg")
+
+                    preview_resp = client.get(
+                        f"/api/episodes/{episode_id}/scenes/scene_001/asset/preview"
+                    )
+                    self.assertEqual(preview_resp.status_code, 200)
+                    self.assertEqual(preview_resp.content, b"\x89PNG\r\n\x1a\nphase3-scene-1")
+
+                    delete_resp = client.delete(
+                        f"/api/episodes/{episode_id}/scenes/scene_001/asset"
+                    )
+                    self.assertEqual(delete_resp.status_code, 200)
+                    self.assertTrue(delete_resp.json()["deleted"])
+
+                    final_list_resp = client.get(f"/api/episodes/{episode_id}/scenes")
+                    self.assertEqual(final_list_resp.status_code, 200)
+                    self.assertEqual(final_list_resp.json()["uploaded_count"], 1)
+                    self.assertEqual(final_list_resp.json()["scenes"][0]["asset"], None)
                 finally:
                     self.app_module.service = original
 
@@ -2462,6 +2562,61 @@ class EpisodePipelineServiceTests(unittest.TestCase):
             self.assertIsNotNone(decorated["stderr_updated_at"])
             self.assertGreater(decorated["stdout_size_bytes"], 0)
             self.assertEqual(decorated["stderr_size_bytes"], 0)
+
+    def test_prepare_assembly_project_copies_language_specific_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                voice_profiles, _ = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    ["en", "pt-BR"],
+                    master_language="en",
+                    include_translation_for=[],
+                )
+                project = service.create_niche_project(
+                    name="Assembly Prep",
+                    master_language="en",
+                    configured_languages=["en", "pt-BR"],
+                    language_voice_profiles=voice_profiles,
+                )
+                episode = service.submit_episode(
+                    project["project"]["id"],
+                    title="Assembly inputs",
+                    script_text="Test script for assembly prep.",
+                )["episode"]
+                episode_id = episode["id"]
+                workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+
+                pt_timeline = workspace / "timeline_pt-BR.json"
+                pt_timeline.write_text(json.dumps([{"scene_id": "scene_001", "start": 0, "end": 2}]), encoding="utf-8")
+                pt_audio = workspace / "narration_pt-BR.wav"
+                pt_audio.write_bytes(b"RIFF....WAVEfmt ")
+                pt_srt = workspace / "subtitles_pt-BR.srt"
+                pt_srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nTeste\n", encoding="utf-8")
+
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "pt-BR",
+                    timeline_path=str(pt_timeline),
+                    timeline_status="done",
+                    tts_audio_path=str(pt_audio),
+                    tts_status="done",
+                    srt_path=str(pt_srt),
+                    srt_status="done",
+                )
+
+                project_dir = service._prepare_assembly_project(episode_id, "pt-BR")
+                input_dir = project_dir / "input"
+                self.assertTrue((input_dir / "timeline.json").exists())
+                self.assertTrue((input_dir / "voiceover.wav").exists())
+                self.assertTrue((input_dir / "subtitles.srt").exists())
+                self.assertTrue((input_dir / "assets").exists())
+                self.assertEqual(
+                    (input_dir / "timeline.json").read_text(encoding="utf-8"),
+                    pt_timeline.read_text(encoding="utf-8"),
+                )
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ import shutil
 import threading
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from .alignment_tool.extract_script import extract_script_text
 from .alignment_tool.normalize_script import normalize_script
@@ -71,6 +71,8 @@ from .translation_profiles import (
     sanitize_translation_profile,
     sort_openai_models,
 )
+from .video_assembly.asset_resolver import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, _extract_number
+from .video_assembly.ffmpeg_utils import ffprobe_json
 from .tts.constants import STALE_PROCESSING_SECONDS
 from .tts.voice_config import (
     DEFAULT_VOICE_TTS_PRESET,
@@ -2431,6 +2433,357 @@ class Tool1Service:
             "stage_runs": stage_runs,
             "worker_health": worker_health,
         }
+
+    @staticmethod
+    def _normalize_scene_payload_for_assets(scene: dict[str, Any], index: int) -> dict[str, Any]:
+        scene_id = str(scene.get("scene_id") or f"scene_{index + 1:03d}").strip() or f"scene_{index + 1:03d}"
+        start = float(scene.get("start") or 0.0)
+        end = float(scene.get("end") or start)
+        raw_duration = scene.get("duration")
+        try:
+            duration = float(raw_duration) if raw_duration not in (None, "") else max(0.0, end - start)
+        except (TypeError, ValueError):
+            duration = max(0.0, end - start)
+        return {
+            "scene_id": scene_id,
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "duration": round(duration, 3),
+            "text": str(scene.get("text") or scene.get("scene_text") or "").strip(),
+            "asset_type": str(scene.get("asset_type") or "image").strip() or "image",
+        }
+
+    def _load_master_timeline_scenes(
+        self,
+        episode_id: str,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        timeline_path = episode.get("timeline_draft_path")
+        if not timeline_path or not Path(timeline_path).exists():
+            raise ValueError("Master timeline draft is missing.")
+        raw_scenes = read_json(Path(timeline_path), default=[])
+        if not isinstance(raw_scenes, list) or not raw_scenes:
+            raise ValueError("Master timeline draft is empty.")
+        scenes = [
+            self._normalize_scene_payload_for_assets(scene, index)
+            for index, scene in enumerate(raw_scenes)
+        ]
+        return episode, scenes
+
+    @staticmethod
+    def _scene_storage_prefix(scene_id: str) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", str(scene_id or "").strip())
+        return cleaned or "scene"
+
+    def _assembly_shared_assets_dir(self, episode: dict[str, Any]) -> Path:
+        return ensure_dir(self._episode_workspace(episode) / "assembly" / "shared_assets")
+
+    @staticmethod
+    def _detect_upload_asset_type(filename: str) -> str:
+        ext = Path(str(filename or "")).suffix.lower()
+        if ext in IMAGE_EXTENSIONS:
+            return "image"
+        if ext in VIDEO_EXTENSIONS:
+            return "video"
+        allowed = ", ".join(sorted(IMAGE_EXTENSIONS | VIDEO_EXTENSIONS))
+        raise ValueError(f"Unsupported asset file type. Allowed: {allowed}")
+
+    def _probe_scene_asset_metadata(self, asset_path: Path, asset_type: str) -> dict[str, Any]:
+        metadata = {
+            "width": None,
+            "height": None,
+            "duration_seconds": None,
+        }
+        if not shutil.which("ffprobe"):
+            return metadata
+        try:
+            probe = ffprobe_json(asset_path)
+            streams = probe.get("streams", [])
+            video_stream = next(
+                (stream for stream in streams if stream.get("codec_type") == "video"),
+                None,
+            )
+            if video_stream is None:
+                return metadata
+            width = int(video_stream.get("width", 0) or 0) or None
+            height = int(video_stream.get("height", 0) or 0) or None
+            metadata["width"] = width
+            metadata["height"] = height
+            if asset_type == "video":
+                raw_duration = probe.get("format", {}).get("duration") or video_stream.get("duration")
+                metadata["duration_seconds"] = float(raw_duration) if raw_duration not in (None, "") else None
+        except Exception:
+            return metadata
+        return metadata
+
+    def _store_scene_asset(
+        self,
+        *,
+        episode: dict[str, Any],
+        scene_id: str,
+        source_file: BinaryIO,
+        original_filename: str,
+    ) -> dict[str, Any]:
+        _, scenes = self._load_master_timeline_scenes(episode["id"])
+        if scene_id not in {scene["scene_id"] for scene in scenes}:
+            raise FileNotFoundError("Scene not found.")
+
+        asset_type = self._detect_upload_asset_type(original_filename)
+        assets_dir = self._assembly_shared_assets_dir(episode)
+        safe_name = safe_filename(original_filename or "asset", "asset")
+        stored_filename = f"{self._scene_storage_prefix(scene_id)}_{safe_name}"
+        stored_path = assets_dir / stored_filename
+
+        if hasattr(source_file, "seek"):
+            source_file.seek(0)
+        with stored_path.open("wb") as handle:
+            shutil.copyfileobj(source_file, handle)
+
+        stat = stored_path.stat()
+        metadata = self._probe_scene_asset_metadata(stored_path, asset_type)
+        existing = self.db.get_scene_asset(episode["id"], scene_id)
+        if existing is not None:
+            old_path_value = str(existing.get("file_path") or "").strip()
+            old_path = Path(old_path_value) if old_path_value else None
+            self.db.update_scene_asset(
+                episode["id"],
+                scene_id,
+                asset_type=asset_type,
+                original_filename=original_filename,
+                stored_filename=stored_filename,
+                file_path=str(stored_path),
+                file_size=int(stat.st_size),
+                width=metadata["width"],
+                height=metadata["height"],
+                duration_seconds=metadata["duration_seconds"],
+                uploaded_at=utc_now(),
+            )
+            if old_path and old_path != stored_path and old_path.exists():
+                self._safe_delete_path(old_path, assets_dir)
+        else:
+            now = utc_now()
+            self.db.create_scene_asset(
+                {
+                    "id": str(uuid.uuid4()),
+                    "episode_id": episode["id"],
+                    "scene_id": scene_id,
+                    "asset_type": asset_type,
+                    "original_filename": original_filename,
+                    "stored_filename": stored_filename,
+                    "file_path": str(stored_path),
+                    "file_size": int(stat.st_size),
+                    "width": metadata["width"],
+                    "height": metadata["height"],
+                    "duration_seconds": metadata["duration_seconds"],
+                    "uploaded_at": now,
+                    "updated_at": now,
+                }
+            )
+        asset = self.db.get_scene_asset(episode["id"], scene_id)
+        if asset is None:
+            raise RuntimeError("Failed to persist scene asset.")
+        return asset
+
+    @staticmethod
+    def _scene_asset_response(asset: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": asset["id"],
+            "episode_id": asset["episode_id"],
+            "scene_id": asset["scene_id"],
+            "asset_type": asset["asset_type"],
+            "original_filename": asset.get("original_filename"),
+            "stored_filename": asset.get("stored_filename"),
+            "filename": asset.get("original_filename") or asset.get("stored_filename"),
+            "file_path": asset.get("file_path"),
+            "file_size": int(asset.get("file_size") or 0),
+            "width": asset.get("width"),
+            "height": asset.get("height"),
+            "duration_seconds": asset.get("duration_seconds"),
+            "uploaded_at": asset.get("uploaded_at"),
+            "updated_at": asset.get("updated_at"),
+        }
+
+    def _scene_number_lookup(self, scenes: list[dict[str, Any]]) -> dict[int, list[str]]:
+        lookup: dict[int, list[str]] = {}
+        for index, scene in enumerate(scenes):
+            numbers = {index + 1}
+            scene_id_number = _extract_number(scene["scene_id"])
+            if scene_id_number is not None:
+                numbers.add(scene_id_number)
+            for number in numbers:
+                scene_ids = lookup.setdefault(number, [])
+                if scene["scene_id"] not in scene_ids:
+                    scene_ids.append(scene["scene_id"])
+        return lookup
+
+    def _prepare_assembly_project(self, episode_id: str, language_code: str) -> Path:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        language_status = self.db.get_episode_language_status(episode_id, language_code)
+        if language_status is None:
+            raise FileNotFoundError(f"Language status not found for {language_code}.")
+
+        timeline_path = str(language_status.get("timeline_path") or "").strip()
+        if not timeline_path or not Path(timeline_path).exists():
+            raise ValueError(f"Language {language_code} has no timeline — run timeline mapping first")
+
+        voiceover_path = str(language_status.get("tts_audio_path") or "").strip()
+        if not voiceover_path or not Path(voiceover_path).exists():
+            raise ValueError(f"Language {language_code} has no TTS audio — run TTS first")
+
+        workspace = self._episode_workspace(episode)
+        project_dir = ensure_dir(workspace / "assembly" / language_code)
+        input_dir = ensure_dir(project_dir / "input")
+        ensure_dir(input_dir / "assets")
+
+        shutil.copy2(timeline_path, input_dir / "timeline.json")
+        shutil.copy2(voiceover_path, input_dir / "voiceover.wav")
+
+        subtitles_output = input_dir / "subtitles.srt"
+        srt_path = str(language_status.get("srt_path") or "").strip()
+        if srt_path and Path(srt_path).exists():
+            shutil.copy2(srt_path, subtitles_output)
+        elif subtitles_output.exists():
+            subtitles_output.unlink()
+
+        return project_dir
+
+    def list_episode_scenes(self, episode_id: str) -> dict[str, Any]:
+        _, scenes = self._load_master_timeline_scenes(episode_id)
+        assets = {
+            asset["scene_id"]: asset
+            for asset in self.db.list_scene_assets(episode_id)
+        }
+        payload_scenes: list[dict[str, Any]] = []
+        uploaded_count = 0
+
+        for scene in scenes:
+            asset = assets.get(scene["scene_id"])
+            asset_payload = None
+            if asset is not None:
+                uploaded_count += 1
+                asset_payload = {
+                    "filename": asset.get("original_filename") or asset.get("stored_filename"),
+                    "file_size": int(asset.get("file_size") or 0),
+                    "asset_type": asset.get("asset_type") or "image",
+                }
+            payload_scenes.append(
+                {
+                    "scene_id": scene["scene_id"],
+                    "start": scene["start"],
+                    "end": scene["end"],
+                    "duration": scene["duration"],
+                    "text": scene["text"],
+                    "asset_type": scene["asset_type"],
+                    "asset": asset_payload,
+                }
+            )
+
+        return {
+            "scenes": payload_scenes,
+            "total_scenes": len(payload_scenes),
+            "uploaded_count": uploaded_count,
+        }
+
+    def upload_scene_asset(
+        self,
+        episode_id: str,
+        scene_id: str,
+        *,
+        source_file: BinaryIO,
+        original_filename: str,
+    ) -> dict[str, Any]:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        asset = self._store_scene_asset(
+            episode=episode,
+            scene_id=scene_id,
+            source_file=source_file,
+            original_filename=original_filename,
+        )
+        return {"asset": self._scene_asset_response(asset)}
+
+    def bulk_upload_scene_assets(
+        self,
+        episode_id: str,
+        uploads: list[tuple[str, BinaryIO]],
+    ) -> dict[str, Any]:
+        episode, scenes = self._load_master_timeline_scenes(episode_id)
+        scene_lookup = self._scene_number_lookup(scenes)
+        matched: list[dict[str, Any]] = []
+        unmatched: list[str] = []
+        claimed_scenes: set[str] = set()
+
+        for original_filename, source_file in uploads:
+            file_label = str(original_filename or "").strip() or "unnamed-file"
+            number = _extract_number(Path(file_label).stem)
+            if number is None:
+                unmatched.append(file_label)
+                continue
+            scene_candidates = scene_lookup.get(number) or []
+            scene_id = next((candidate for candidate in scene_candidates if candidate not in claimed_scenes), None)
+            if scene_id is None:
+                unmatched.append(file_label)
+                continue
+            try:
+                self._store_scene_asset(
+                    episode=episode,
+                    scene_id=scene_id,
+                    source_file=source_file,
+                    original_filename=file_label,
+                )
+            except ValueError:
+                unmatched.append(file_label)
+                continue
+            matched.append({"scene_id": scene_id, "filename": file_label})
+            claimed_scenes.add(scene_id)
+
+        return {
+            "matched": matched,
+            "unmatched": unmatched,
+            "total_uploaded": len(matched),
+        }
+
+    def delete_scene_asset(self, episode_id: str, scene_id: str) -> dict[str, Any]:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        asset = self.db.get_scene_asset(episode_id, scene_id)
+        if asset is None:
+            raise FileNotFoundError("Scene asset not found.")
+
+        file_path = str(asset.get("file_path") or "").strip()
+        if file_path:
+            candidate = Path(file_path)
+            if candidate.exists():
+                self._safe_delete_path(candidate, self._assembly_shared_assets_dir(episode))
+        self.db.delete_scene_asset(episode_id, scene_id)
+        return {"deleted": True, "scene_id": scene_id}
+
+    def get_scene_asset_preview_path(self, episode_id: str, scene_id: str) -> Path:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        asset = self.db.get_scene_asset(episode_id, scene_id)
+        if asset is None:
+            raise FileNotFoundError("Scene asset not found.")
+        file_path = str(asset.get("file_path") or "").strip()
+        if not file_path:
+            raise FileNotFoundError("Scene asset file not found.")
+        candidate = Path(file_path)
+        if not candidate.exists() or not candidate.is_file():
+            raise FileNotFoundError("Scene asset file not found.")
+        workspace = self._episode_workspace(episode).resolve()
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(workspace)
+        except ValueError as exc:
+            raise ValueError("Scene asset file is outside the episode workspace.") from exc
+        return resolved
 
     def queue_episode(
         self,

@@ -455,6 +455,80 @@ async def episode_detail(episode_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/api/episodes/{episode_id}/scenes")
+async def episode_scenes(episode_id: str) -> dict[str, Any]:
+    try:
+        return service.list_episode_scenes(episode_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/episodes/{episode_id}/scenes/{scene_id}/asset")
+async def upload_scene_asset(
+    episode_id: str,
+    scene_id: str,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    try:
+        await file.seek(0)
+        return service.upload_scene_asset(
+            episode_id,
+            scene_id,
+            source_file=file.file,
+            original_filename=file.filename or "asset",
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        await file.close()
+
+
+@app.post("/api/episodes/{episode_id}/scenes/bulk-upload")
+async def bulk_upload_scene_assets(
+    episode_id: str,
+    files: list[UploadFile] = File(...),
+) -> dict[str, Any]:
+    uploads: list[tuple[str, Any]] = []
+    try:
+        for upload in files:
+            await upload.seek(0)
+            uploads.append((upload.filename or "asset", upload.file))
+        return service.bulk_upload_scene_assets(episode_id, uploads)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        for upload in files:
+            await upload.close()
+
+
+@app.delete("/api/episodes/{episode_id}/scenes/{scene_id}/asset")
+async def delete_scene_asset(episode_id: str, scene_id: str) -> dict[str, Any]:
+    try:
+        return service.delete_scene_asset(episode_id, scene_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/episodes/{episode_id}/scenes/{scene_id}/asset/preview")
+async def preview_scene_asset(episode_id: str, scene_id: str) -> FileResponse:
+    try:
+        asset_path = service.get_scene_asset_preview_path(episode_id, scene_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    media_type = mimetypes.guess_type(asset_path.name)[0]
+    return FileResponse(str(asset_path), filename=asset_path.name, media_type=media_type)
+
+
 @app.post("/api/episodes/{episode_id}/queue")
 async def queue_episode(episode_id: str, payload: EpisodeQueueRequest) -> dict[str, Any]:
     try:
