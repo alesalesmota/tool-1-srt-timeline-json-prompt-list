@@ -2436,6 +2436,7 @@ class Tool1Service:
             "language_statuses": lang_statuses,
             "stage_runs": stage_runs,
             "worker_health": worker_health,
+            "render_jobs": self.get_render_status(episode_id)["languages"],
         }
 
     @staticmethod
@@ -2831,6 +2832,21 @@ class Tool1Service:
             raise FileNotFoundError("Render job not found.")
         return episode, job
 
+    @staticmethod
+    def _ffmpeg_tools_available() -> bool:
+        return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+
+    def _ensure_ffmpeg_available(self) -> None:
+        if not self._ffmpeg_tools_available():
+            raise RuntimeError("FFmpeg required")
+
+    def _assert_tts_not_processing(self) -> None:
+        health = self.tts_manager.get_worker_health()
+        status = str(getattr(health, "status", "") or "").strip().lower()
+        is_stale = bool(getattr(health, "is_stale", False))
+        if status == "processing" and not is_stale:
+            raise ValueError("TTS running")
+
     def _resolve_workspace_file(
         self,
         episode: dict[str, Any],
@@ -2848,6 +2864,20 @@ class Tool1Service:
         if not resolved.exists() or not resolved.is_file():
             raise FileNotFoundError(missing_message)
         return resolved
+
+    def _cleanup_project_temp_dir(self, project_dir: Path) -> bool:
+        temp_dir = project_dir / "temp"
+        if not temp_dir.exists():
+            return False
+        self._safe_delete_path(temp_dir, project_dir)
+        return True
+
+    def _cleanup_project_scene_dir(self, project_dir: Path) -> bool:
+        scenes_dir = project_dir / "temp" / "scenes"
+        if not scenes_dir.exists():
+            return False
+        self._safe_delete_path(scenes_dir, project_dir / "temp")
+        return True
 
     @staticmethod
     def _validation_failure_message(
@@ -2989,6 +3019,15 @@ class Tool1Service:
                             message=str(exc),
                         )
                     continue
+                else:
+                    if self._cleanup_project_scene_dir(project_dir):
+                        self.db.append_render_log(
+                            render_job_id=render_job_id,
+                            timestamp=utc_now(),
+                            level="INFO",
+                            stage="cleanup",
+                            message=f"Removed scene temp files for {language_code}.",
+                        )
         finally:
             if self._render_lock.locked():
                 self._render_lock.release()
@@ -3060,6 +3099,7 @@ class Tool1Service:
         episode_id: str,
         language_code: str | None = None,
     ) -> dict[str, Any]:
+        self._ensure_ffmpeg_available()
         episode = self.db.get_episode(episode_id)
         if episode is None:
             raise FileNotFoundError("Episode not found.")
@@ -3121,6 +3161,9 @@ class Tool1Service:
         episode = self.db.get_episode(episode_id)
         if episode is None:
             raise FileNotFoundError("Episode not found.")
+
+        self._ensure_ffmpeg_available()
+        self._assert_tts_not_processing()
 
         normalized_language = str(language_code or "").strip()
         if not normalized_language:
@@ -3245,6 +3288,47 @@ class Tool1Service:
             missing_message=f"Rendered scene clip not found for {scene_id}.",
             outside_message="Rendered scene clip is outside the episode workspace.",
         )
+
+    def delete_render_job(self, episode_id: str, render_job_id: str) -> dict[str, Any]:
+        _, job = self._render_job_record(episode_id, render_job_id)
+        state = str(job.get("state") or "").strip().lower()
+        if state not in {"completed", "failed"}:
+            raise ValueError("Only completed or failed render jobs can be deleted.")
+
+        project_dir_value = str(job.get("project_dir") or "").strip()
+        cleaned_temp = False
+        if project_dir_value:
+            project_dir = Path(project_dir_value)
+            if project_dir.exists():
+                cleaned_temp = self._cleanup_project_temp_dir(project_dir) or cleaned_temp
+
+        deleted = self.db.delete_render_job(render_job_id)
+        return {
+            "deleted": bool(deleted),
+            "render_job_id": render_job_id,
+            "cleaned_temp": cleaned_temp,
+        }
+
+    def cleanup_assembly_temp_files(self, episode_id: str) -> dict[str, Any]:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+
+        workspace = self._episode_workspace(episode)
+        assembly_root = workspace / "assembly"
+        cleaned_languages: list[str] = []
+        if assembly_root.exists():
+            for child in assembly_root.iterdir():
+                if not child.is_dir() or child.name == "shared_assets":
+                    continue
+                if self._cleanup_project_temp_dir(child):
+                    cleaned_languages.append(child.name)
+
+        return {
+            "cleaned": True,
+            "languages": cleaned_languages,
+            "count": len(cleaned_languages),
+        }
 
     def start_assembly(self, episode_id: str) -> dict[str, Any]:
         episode = self.db.get_episode(episode_id)

@@ -56,10 +56,10 @@
 - [x] 9.2 `[EASY][CODEX]` Wire staging into start_render()
 
 ## PHASE 10: Polish & Safety
-- [ ] 10.1 `[EASY][CODEX]` Re-render + cleanup temp files
-- [ ] 10.2 `[EASY][CODEX]` FFmpeg guard on endpoints
-- [ ] 10.3 `[MEDIUM][GEMINI]` Per-language render status column
-- [ ] 10.4 `[EASY][CODEX]` Sequential-only: prevent concurrent renders + TTS conflict
+- [x] 10.1 `[EASY][CODEX]` Re-render + cleanup temp files
+- [x] 10.2 `[EASY][CODEX]` FFmpeg guard on endpoints
+- [x] 10.3 `[MEDIUM][GEMINI]` Per-language render status column
+- [x] 10.4 `[EASY][CODEX]` Sequential-only: prevent concurrent renders + TTS conflict
 
 ## PHASE 11: Testing
 - [ ] 11.1 `[HARD][CLAUDE]` Integration test (multilingual render)

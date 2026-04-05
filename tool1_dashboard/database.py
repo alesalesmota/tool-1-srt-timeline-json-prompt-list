@@ -693,6 +693,19 @@ class Tool1Database:
     def update_render_job(self, render_job_id: str, **fields: Any) -> None:
         self._update("render_jobs", "id", render_job_id, **fields)
 
+    def delete_render_job(self, render_job_id: str) -> int:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "DELETE FROM render_logs WHERE render_job_id = ?",
+                (render_job_id,),
+            )
+            cursor = connection.execute(
+                "DELETE FROM render_jobs WHERE id = ?",
+                (render_job_id,),
+            )
+            connection.commit()
+            return int(cursor.rowcount or 0)
+
     def delete_render_jobs_for_episode(self, episode_id: str) -> int:
         with self._lock, self._connect() as connection:
             connection.execute(

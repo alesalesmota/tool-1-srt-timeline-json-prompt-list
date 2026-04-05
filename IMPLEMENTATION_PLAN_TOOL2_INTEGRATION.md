@@ -260,6 +260,8 @@ All from `TOOL 2-VIDEO ASSEMBLY/AUTO VIDEO/app/`:
 
 ### PHASE 10: Polish & Safety
 
+Status (2026-04-05): Codex tasks `10.1`, `10.2`, and `10.4` are complete. Task `10.3` remains tracked as the frontend/UI follow-up.
+
 | # | Task | Diff | Agent | Files |
 |---|------|------|-------|-------|
 | 10.1 | Re-render + cleanup. On re-render: create NEW render_job (preserve history). `DELETE /api/episodes/{id}/assembly/render/{job_id}` deletes job + temp files. **[C7]** After successful render, auto-delete `temp/scenes/` for that language (keep final_video + visual_master). Add `POST /api/episodes/{id}/assembly/cleanup` to delete ALL temp files for all languages. | EASY | CODEX | `service.py`, `app.py` |

@@ -191,6 +191,10 @@ def _patches(temp_path: Path):
     )
 
 
+def _ffmpeg_ready(service: Tool1Service):
+    return patch.object(service, "_ffmpeg_tools_available", return_value=True)
+
+
 class FakeAsyncResponse:
     def __init__(self, status_code: int, payload: dict[str, object], text: str = "") -> None:
         self.status_code = status_code
@@ -891,30 +895,55 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                         tts_audio_path=str(en_audio),
                     )
 
-                    resp = client.post(f"/api/episodes/{episode_id}/assembly/validate")
-                    self.assertEqual(resp.status_code, 200)
-                    payload = resp.json()
-                    self.assertFalse(payload["shared"]["all_assets_uploaded"])
-                    self.assertEqual(payload["shared"]["missing_scenes"], ["scene_002"])
+                    with _ffmpeg_ready(service):
+                        resp = client.post(f"/api/episodes/{episode_id}/assembly/validate")
+                        self.assertEqual(resp.status_code, 200)
+                        payload = resp.json()
+                        self.assertFalse(payload["shared"]["all_assets_uploaded"])
+                        self.assertEqual(payload["shared"]["missing_scenes"], ["scene_002"])
 
-                    en_result = payload["languages"]["en"]
-                    self.assertFalse(en_result["passed"])
-                    self.assertEqual(en_result["scene_count"], 2)
-                    self.assertEqual(en_result["total_duration"], 5.0)
-                    self.assertEqual(en_result["errors"], [])
-                    self.assertIn("SRT missing for en (optional)", en_result["warnings"])
+                        en_result = payload["languages"]["en"]
+                        self.assertFalse(en_result["passed"])
+                        self.assertEqual(en_result["scene_count"], 2)
+                        self.assertEqual(en_result["total_duration"], 5.0)
+                        self.assertEqual(en_result["errors"], [])
+                        self.assertIn("SRT missing for en (optional)", en_result["warnings"])
 
-                    pt_result = payload["languages"]["pt-BR"]
-                    self.assertFalse(pt_result["passed"])
-                    self.assertIn("Timeline mapping not completed for pt-BR", pt_result["errors"])
-                    self.assertIn("TTS not completed for pt-BR", pt_result["errors"])
+                        pt_result = payload["languages"]["pt-BR"]
+                        self.assertFalse(pt_result["passed"])
+                        self.assertIn("Timeline mapping not completed for pt-BR", pt_result["errors"])
+                        self.assertIn("TTS not completed for pt-BR", pt_result["errors"])
 
-                    single_resp = client.post(
-                        f"/api/episodes/{episode_id}/assembly/validate",
-                        params={"language_code": "en"},
-                    )
-                    self.assertEqual(single_resp.status_code, 200)
-                    self.assertEqual(set(single_resp.json()["languages"].keys()), {"en"})
+                        single_resp = client.post(
+                            f"/api/episodes/{episode_id}/assembly/validate",
+                            params={"language_code": "en"},
+                        )
+                        self.assertEqual(single_resp.status_code, 200)
+                        self.assertEqual(set(single_resp.json()["languages"].keys()), {"en"})
+                finally:
+                    self.app_module.service = original
+
+    def test_assembly_endpoints_require_ffmpeg(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en"])
+                    episode_id = episode["id"]
+
+                    with patch.object(service, "_ffmpeg_tools_available", return_value=False):
+                        validate_resp = client.post(f"/api/episodes/{episode_id}/assembly/validate")
+                        render_resp = client.post(
+                            f"/api/episodes/{episode_id}/assembly/render",
+                            json={"language_code": "en"},
+                        )
+
+                    self.assertEqual(validate_resp.status_code, 400)
+                    self.assertEqual(validate_resp.json()["detail"], "FFmpeg required")
+                    self.assertEqual(render_resp.status_code, 400)
+                    self.assertEqual(render_resp.json()["detail"], "FFmpeg required")
                 finally:
                     self.app_module.service = original
 
@@ -1105,7 +1134,7 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                         pipeline_self.observer.complete(summary)
                         return summary
 
-                    with patch("tool1_dashboard.service.RenderPipeline.run", new=blocking_run):
+                    with _ffmpeg_ready(service), patch("tool1_dashboard.service.RenderPipeline.run", new=blocking_run):
                         render_resp = client.post(
                             f"/api/episodes/{episode_id}/assembly/render",
                             json={"language_code": "en"},
@@ -1124,6 +1153,44 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                         allow_finish.set()
                         job = _wait_for_render_job(service, render_job_id)
                         self.assertEqual(job["state"], "completed")
+                finally:
+                    self.app_module.service = original
+
+    def test_render_api_rejects_when_tts_worker_is_processing(self) -> None:
+        from tool1_dashboard.tts.manager import WorkerHealth
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en"])
+                    episode_id = episode["id"]
+
+                    with _ffmpeg_ready(service), patch.object(
+                        service.tts_manager,
+                        "get_worker_health",
+                        return_value=WorkerHealth(
+                            running=True,
+                            worker_id="worker-1",
+                            status="processing",
+                            current_job_id="tts-job-1",
+                            last_heartbeat=utc_now(),
+                            is_stale=False,
+                            pid=1234,
+                            startup_error=None,
+                            missing_dependencies=[],
+                            lifecycle_state="running",
+                        ),
+                    ):
+                        render_resp = client.post(
+                            f"/api/episodes/{episode_id}/assembly/render",
+                            json={"language_code": "en"},
+                        )
+
+                    self.assertEqual(render_resp.status_code, 400)
+                    self.assertEqual(render_resp.json()["detail"], "TTS running")
                 finally:
                     self.app_module.service = original
 
@@ -1190,7 +1257,7 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                         pipeline_self.observer.complete(summary)
                         return summary
 
-                    with patch("tool1_dashboard.service.RenderPipeline.run", new=fast_run):
+                    with _ffmpeg_ready(service), patch("tool1_dashboard.service.RenderPipeline.run", new=fast_run):
                         render_resp = client.post(
                             f"/api/episodes/{episode_id}/assembly/render",
                             json={"language_code": "all"},
@@ -1207,6 +1274,8 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
                     self.assertTrue((workspace / "assembly" / "en" / "input" / "assets" / "001_prompt1.png").exists())
                     self.assertTrue((workspace / "assembly" / "pt-BR" / "input" / "assets" / "001_prompt1.png").exists())
+                    self.assertFalse((workspace / "assembly" / "en" / "temp" / "scenes").exists())
+                    self.assertFalse((workspace / "assembly" / "pt-BR" / "temp" / "scenes").exists())
 
                     status_resp = client.get(f"/api/episodes/{episode_id}/assembly/render-status")
                     self.assertEqual(status_resp.status_code, 200)
@@ -1234,8 +1303,130 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     scene_resp = client.get(
                         f"/api/episodes/{episode_id}/assembly/render/{en_job_id}/scene/scene_001"
                     )
-                    self.assertEqual(scene_resp.status_code, 200)
-                    self.assertEqual(scene_resp.content, b"scene-en")
+                    self.assertEqual(scene_resp.status_code, 404)
+
+                    en_logs = service.db.list_render_logs(en_job_id)
+                    self.assertTrue(any(log["stage"] == "cleanup" for log in en_logs))
+                finally:
+                    self.app_module.service = original
+
+    def test_delete_render_job_endpoint_removes_temp_and_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en"])
+                    episode_id = episode["id"]
+                    scenes = [
+                        {
+                            "scene_id": "scene_001",
+                            "start": 0.0,
+                            "end": 2.0,
+                            "duration": 2.0,
+                            "text": "Single scene.",
+                            "asset_type": "image",
+                        }
+                    ]
+                    _write_master_timeline(service, episode_id, scenes)
+                    upload_resp = client.post(
+                        f"/api/episodes/{episode_id}/scenes/scene_001/asset",
+                        files={"file": ("prompt1.png", b"\x89PNG\r\n\x1a\nscene1", "image/png")},
+                    )
+                    self.assertEqual(upload_resp.status_code, 200)
+                    _seed_language_render_inputs(service, episode_id, "en", scenes)
+
+                    def fast_run(pipeline_self):
+                        output_dir = pipeline_self.project_dir / "output"
+                        output_dir.mkdir(parents=True, exist_ok=True)
+                        final_video = output_dir / "final_video_en.mp4"
+                        final_video.write_bytes(b"video-en")
+                        visual_master = output_dir / "visual_master_en.mp4"
+                        visual_master.write_bytes(b"visual-en")
+                        manifest = output_dir / f"render_manifest_{pipeline_self.job_id}.json"
+                        manifest.write_text("{}", encoding="utf-8")
+                        pipeline_self.observer.set_validation(
+                            SimpleNamespace(
+                                passed=True,
+                                errors=[],
+                                warnings=[],
+                                scene_count=1,
+                                total_duration=2.0,
+                            )
+                        )
+                        pipeline_self.observer.set_asset_probes({})
+                        pipeline_self.observer.complete(
+                            SimpleNamespace(
+                                final_video=final_video,
+                                visual_master=visual_master,
+                                manifest_path=manifest,
+                                total_scenes=1,
+                                total_duration=2.0,
+                            )
+                        )
+                        return SimpleNamespace(
+                            final_video=final_video,
+                            visual_master=visual_master,
+                            manifest_path=manifest,
+                            total_scenes=1,
+                            total_duration=2.0,
+                        )
+
+                    with _ffmpeg_ready(service), patch("tool1_dashboard.service.RenderPipeline.run", new=fast_run):
+                        render_resp = client.post(
+                            f"/api/episodes/{episode_id}/assembly/render",
+                            json={"language_code": "en"},
+                        )
+                        self.assertEqual(render_resp.status_code, 200)
+                        render_job_id = render_resp.json()["render_job_id"]
+                        job = _wait_for_render_job(service, render_job_id)
+                        self.assertEqual(job["state"], "completed")
+
+                    project_dir = Path(job["project_dir"])
+                    leftover_temp = project_dir / "temp" / "stale"
+                    leftover_temp.mkdir(parents=True, exist_ok=True)
+                    (leftover_temp / "artifact.tmp").write_text("temp", encoding="utf-8")
+
+                    delete_resp = client.delete(
+                        f"/api/episodes/{episode_id}/assembly/render/{render_job_id}"
+                    )
+                    self.assertEqual(delete_resp.status_code, 200)
+                    self.assertTrue(delete_resp.json()["deleted"])
+                    self.assertTrue(delete_resp.json()["cleaned_temp"])
+                    self.assertIsNone(service.db.get_render_job(render_job_id))
+                    self.assertFalse((project_dir / "temp").exists())
+
+                    jobs_resp = client.get(f"/api/episodes/{episode_id}/assembly/render-jobs")
+                    self.assertEqual(jobs_resp.status_code, 200)
+                    self.assertEqual(jobs_resp.json()["render_jobs"], [])
+                finally:
+                    self.app_module.service = original
+
+    def test_cleanup_assembly_endpoint_removes_all_language_temp_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en", "pt-BR"])
+                    episode_id = episode["id"]
+                    workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+
+                    en_temp = workspace / "assembly" / "en" / "temp"
+                    pt_temp = workspace / "assembly" / "pt-BR" / "temp"
+                    en_temp.mkdir(parents=True, exist_ok=True)
+                    pt_temp.mkdir(parents=True, exist_ok=True)
+                    (en_temp / "leftover.tmp").write_text("en", encoding="utf-8")
+                    (pt_temp / "leftover.tmp").write_text("pt", encoding="utf-8")
+
+                    cleanup_resp = client.post(f"/api/episodes/{episode_id}/assembly/cleanup")
+                    self.assertEqual(cleanup_resp.status_code, 200)
+                    self.assertEqual(set(cleanup_resp.json()["languages"]), {"en", "pt-BR"})
+                    self.assertEqual(cleanup_resp.json()["count"], 2)
+                    self.assertFalse(en_temp.exists())
+                    self.assertFalse(pt_temp.exists())
                 finally:
                     self.app_module.service = original
 

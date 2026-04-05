@@ -607,6 +607,29 @@ async def episode_render_jobs(episode_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/episodes/{episode_id}/assembly/cleanup")
+async def cleanup_episode_assembly(episode_id: str) -> dict[str, Any]:
+    try:
+        return service.cleanup_assembly_temp_files(episode_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/episodes/{episode_id}/assembly/render/{render_job_id}")
+async def delete_episode_render_job(
+    episode_id: str,
+    render_job_id: str,
+) -> dict[str, Any]:
+    try:
+        return service.delete_render_job(episode_id, render_job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/episodes/{episode_id}/assembly/render/{render_job_id}/events")
 async def render_job_events(episode_id: str, render_job_id: str) -> StreamingResponse:
     """SSE stream of render progress for a specific render job."""
