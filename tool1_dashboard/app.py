@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import re
@@ -9,7 +10,7 @@ from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -152,6 +153,10 @@ class ReviewDataUpdateRequest(BaseModel):
     consistency_guide: dict | None = None
     timeline_draft: list | None = None
     prompt_list: str | None = None
+
+
+class AssemblyAdvanceRequest(BaseModel):
+    target_stage: str
 
 
 service = Tool1Service()
@@ -527,6 +532,99 @@ async def preview_scene_asset(episode_id: str, scene_id: str) -> FileResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     media_type = mimetypes.guess_type(asset_path.name)[0]
     return FileResponse(str(asset_path), filename=asset_path.name, media_type=media_type)
+
+
+@app.post("/api/episodes/{episode_id}/assembly/validate")
+async def validate_episode_assembly(
+    episode_id: str,
+    language_code: str | None = None,
+) -> dict[str, Any]:
+    try:
+        return service.validate_assembly(episode_id, language_code=language_code)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/episodes/{episode_id}/assembly/start")
+async def start_episode_assembly(episode_id: str) -> dict[str, Any]:
+    try:
+        return service.start_assembly(episode_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/episodes/{episode_id}/assembly/advance")
+async def advance_episode_assembly(
+    episode_id: str,
+    payload: AssemblyAdvanceRequest,
+) -> dict[str, Any]:
+    try:
+        return service.advance_assembly_stage(episode_id, payload.target_stage)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/episodes/{episode_id}/assembly/render/{render_job_id}/events")
+async def render_job_events(episode_id: str, render_job_id: str) -> StreamingResponse:
+    """SSE stream of render progress for a specific render job."""
+
+    job = service.db.get_render_job(render_job_id)
+    if job is None or job["episode_id"] != episode_id:
+        raise HTTPException(status_code=404, detail="Render job not found.")
+
+    async def event_stream():
+        last_log_id = 0
+        while True:
+            job = service.db.get_render_job(render_job_id)
+            if job is None:
+                break
+
+            logs = service.db.list_render_logs(render_job_id)
+            new_logs = [log for log in logs if log["id"] > last_log_id]
+            if new_logs:
+                last_log_id = max(log["id"] for log in new_logs)
+
+            payload = json.dumps(
+                {
+                    "job": {
+                        "id": job["id"],
+                        "state": job["state"],
+                        "stage": job["stage"],
+                        "current_scene_id": job["current_scene_id"],
+                        "total_scenes": job["total_scenes"],
+                        "completed_scenes": job["completed_scenes"],
+                        "error_message": job["error_message"],
+                        "started_at": job["started_at"],
+                        "finished_at": job["finished_at"],
+                    },
+                    "new_logs": [
+                        {
+                            "id": log["id"],
+                            "level": log["level"],
+                            "stage": log["stage"],
+                            "message": log["message"],
+                            "scene_id": log["scene_id"],
+                            "timestamp": log["timestamp"],
+                        }
+                        for log in new_logs
+                    ],
+                },
+                ensure_ascii=False,
+            )
+            yield f"event: update\ndata: {payload}\n\n"
+
+            if job["state"] in ("completed", "failed"):
+                break
+
+            await asyncio.sleep(1)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.post("/api/episodes/{episode_id}/queue")
