@@ -4,9 +4,9 @@
 > See IMPLEMENTATION_PLAN_TOOL2_INTEGRATION.md for full task details.
 
 ## PHASE 0: Preparation
-- [ ] 0.1 `[EASY][CODEX]` FFmpeg startup check in app.py
-- [ ] 0.2 `[EASY][CODEX]` Copy Tool 2 modules → video_assembly/ subpackage
-- [ ] 0.3 `[EASY][CODEX]` Add jinja2 to requirements.txt
+- [x] 0.1 `[EASY][CODEX]` FFmpeg startup check in app.py
+- [x] 0.2 `[EASY][CODEX]` Copy Tool 2 modules → video_assembly/ subpackage
+- [x] 0.3 `[EASY][CODEX]` Add jinja2 to requirements.txt
 
 ## PHASE 1: Database Schema
 - [ ] 1.1 `[MEDIUM][CODEX]` render_jobs table + CRUD (per-language tracking)

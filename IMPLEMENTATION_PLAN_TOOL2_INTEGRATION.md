@@ -1,7 +1,7 @@
 # Creator Studio: Tool 2 Video Assembly Integration Plan
 
 > **Date:** 2026-04-05 (revised)
-> **Status:** Planning — awaiting approval
+> **Status:** In progress — Phase 0 completed on 2026-04-05
 > **Scope:** Merge Tool 2 (Video Assembly) into Tool 1 (Creator Studio Dashboard)
 
 ---

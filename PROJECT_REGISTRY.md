@@ -23,6 +23,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 
 - **Tool 1** (this project) — Planning & pre-generation: translation → TTS → alignment → scene planning → timeline → prompts
 - **Tool 2** (separate) — Final video assembly: takes Tool 1 outputs + shared assets → produces final localized videos
+- **Integration status (2026-04-05)** — `IMPLEMENTATION_PLAN_TOOL2_INTEGRATION.md` is now active. Phase 0 is complete: Tool 2 core render modules were ported into `tool1_dashboard/video_assembly/`, Tool 1 startup health now reports FFmpeg availability, and the repo requirements now include `jinja2` for the imported Tool 2 web/runtime dependency chain.
 
 ## Current State (as of 2026-04-05)
 
@@ -96,11 +97,15 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - dashboard refreshes now reuse short-lived frontend cache windows for health/settings metadata and skip legacy board fetches unless the board view is active
   - CLI provider probe calls are now cached briefly inside `CliRunner`, avoiding repeated `codex`/`claude` subprocess checks on every click
 - **AI agent configs** (`config/agents/`) — scene planning, visual bible, video/image prompts (Claude + OpenAI)
+- **Video assembly subpackage** (`tool1_dashboard/video_assembly/`) — Tool 2 rendering core ported into Tool 1 on 2026-04-05
+  - Imported modules: pipeline, timeline loading, validation, asset resolution, probing, image/video scene rendering, concat, mux, subtitle burn, FFmpeg helpers, shared utils, exceptions
+  - Portability follow-up: the copied Tool 2 utils were adjusted to use `datetime.timezone.utc` so `RenderPipeline` imports cleanly on the repo's Python 3.10 runtime
+- **FFmpeg readiness visibility** — `/api/health` now exposes `ffmpeg_available`, populated at app startup via `shutil.which("ffmpeg")` + `shutil.which("ffprobe")`
 - **Test suite** — 220 tests passing, 4 subtests passing (`python -m pytest tests -q` on 2026-04-05)
 
 ### What's Being Worked On
 
-**Status as of 2026-04-05:** All 10 implementation phases are complete. The subtitle pipeline, translation quality gate, and alignment hardening are finalized and merged to `main`. The tool is **production-ready for Tool 2 handoff**.
+**Status as of 2026-04-05:** The original 10-phase Tool 1 rebuild is complete, and Tool 2 integration has now started under `IMPLEMENTATION_PLAN_TOOL2_INTEGRATION.md`. Phase 0 is done; next work begins with Tool 2 schema/config integration (Phase 1 / Phase 2).
 
 Production subtitle metrics (episode 205 benchmark):
 - DE: 4 warnings / 746 segments, max 23.4 CPS — excellent
@@ -254,6 +259,7 @@ Remaining French/Italian density is inherent to the text-to-audio ratio for thos
 
 | Date | What Changed |
 |------|-------------|
+| 2026-04-05 | **Tool 2 integration Phase 0 completed**: activated `IMPLEMENTATION_PLAN_TOOL2_INTEGRATION.md`, added startup FFmpeg/FFprobe detection to `tool1_dashboard/app.py` with `ffmpeg_available` exposed on `/api/health`, ported the 14 planned Tool 2 rendering modules into `tool1_dashboard/video_assembly/`, added a package init file, and added `jinja2>=3.1,<4.0` to `requirements.txt`. Import verification passed with `python -c "from tool1_dashboard.video_assembly.pipeline import RenderPipeline; print('OK')"` after a Python 3.10 compatibility fix in the copied utils module (`datetime.timezone.utc` instead of `datetime.UTC`). Full regression verification passed with `python -m pytest tests/ -q` (`220` passing, `4` subtests passing). |
 | 2026-04-05 | **French-first subtitle cleanup shipped as a fast seeded repair path**: added `tool1_dashboard/alignment_tool/benchmark_segmentation.py`, allowed `segment_words(...)` to seed from an existing cue layout, tightened French/Italian subtitle break rules, added 3-block neighborhood re-segmentation plus pairwise silence-gap redistribution, and added alignment tests for the new repair/benchmark path. Local verification used `python -m unittest tests.test_alignment_tool -q` (`20` passing) because the available Python environment does not have `pytest` / `fastapi` / `httpx` installed. Non-destructive benchmark output was written to `workspace/benchmarks/alignment-20260405-fr-it-cleanup-all/summary.json`: `de=4`, `es=2`, `fr=23`, `it=20` reading-speed warnings. Severe outliers improved (`fr 5->2 over 24 cps, 1->0 over 30 cps`; `it 3->0 and 1->0`), but the total-warning gate is still red, so no live French/Italian rerun was promoted. |
 | 2026-04-04 | **Subtitle-density hardening shipped at tool level**: replaced the old greedy subtitle splitter with a deterministic DP readability-first segmenter, added shared subtitle break rules to the language rulepacks, added timing-gap redistribution plus local repair attempts for dense cues, and extended `alignment_report.json` with subtitle-density diagnostics (`segment_profile`, `segments_over_18/24/30_cps`, fast-segment buckets, averages, optimization passes). Verified with `python -m pytest tests -q` (`214` passing, `4` subtests passing) and two non-destructive episode `205` benchmark runs using spoken-script inputs for `de/es/fr/it`. The current code benchmark in `workspace/benchmarks/alignment-20260404-density-v2/summary.json` landed at `de=2`, `es=2`, `fr=23`, `it=12` reading-speed warnings. French is dramatically improved versus the older `139`, but still misses the strict `>24` / `>30` cps acceptance gate, so no live French rerun was promoted yet. |
 | 2026-04-04 | **Context-file cleanup for AI safety**: archived the outdated root Google Stitch application spec and the Tool 2 merge/integration guide because both described superseded concepts that no longer match the shipped app. Also marked `IMPLEMENTATION_PLAN.md` and `IMPLEMENTATION_CHECKLIST.md` as historical migration artifacts, and refreshed the current test commands in `README.md` / `docs/VALIDATION_NOTES.md` to point at the active `pytest` flow. |

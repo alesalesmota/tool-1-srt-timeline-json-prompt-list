@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -168,6 +169,11 @@ app.mount("/ui", StaticFiles(directory=UI_DIR), name="ui")
 TEXT_PREVIEW_EXTENSIONS = {".csv", ".json", ".jsonl", ".log", ".md", ".srt", ".txt"}
 AUDIO_PREVIEW_EXTENSIONS = {".m4a", ".mp3", ".ogg", ".wav"}
 OUTPUT_FILE_EXTENSIONS = TEXT_PREVIEW_EXTENSIONS | AUDIO_PREVIEW_EXTENSIONS | {".zip"}
+_ffmpeg_available = False
+
+
+def _check_ffmpeg_available() -> bool:
+    return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 
 
 def _ui_asset_version() -> str:
@@ -195,6 +201,8 @@ async def disable_ui_caching(request: Request, call_next) -> Response:
 
 @app.on_event("startup")
 async def startup() -> None:
+    global _ffmpeg_available
+    _ffmpeg_available = _check_ffmpeg_available()
     service.start_worker()
 
 
@@ -309,7 +317,10 @@ async def root() -> str:
 
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
-    return service.get_health()
+    return {
+        **service.get_health(),
+        "ffmpeg_available": _ffmpeg_available,
+    }
 
 
 @app.post("/api/languages/{language_code}/prepare")

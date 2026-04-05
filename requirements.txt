@@ -18,3 +18,4 @@ gruut[de,es,fr]==2.2.3
 spacy[ja]>=3.0.0
 umap-learn>=0.5.1
 bangla==0.0.5
+jinja2>=3.1,<4.0
