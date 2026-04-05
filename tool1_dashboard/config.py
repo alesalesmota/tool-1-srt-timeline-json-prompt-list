@@ -49,6 +49,10 @@ EPISODE_PIPELINE_STAGES = (
     "timeline_mapping",
     "review",
     "export",
+    "asset_upload",
+    "assembly_validation",
+    "video_render",
+    "final_review",
 )
 
 EPISODE_RUNNABLE_STAGES = (
@@ -62,6 +66,8 @@ EPISODE_RUNNABLE_STAGES = (
     "image_prompt_generation",
     "timeline_mapping",
 )
+
+VIDEO_ASSEMBLY_STAGES = ("asset_upload", "assembly_validation", "video_render")
 
 # Per-language stages (these loop over each configured language sequentially)
 EPISODE_PER_LANGUAGE_STAGES = ("translation", "tts", "alignment", "timeline_mapping")

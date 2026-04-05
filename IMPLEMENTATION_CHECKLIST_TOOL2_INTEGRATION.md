@@ -14,8 +14,8 @@
 - [x] 1.3 `[EASY][CODEX]` render_logs table + insert/query
 
 ## PHASE 2: Config & Frontend Stages
-- [ ] 2.1 `[EASY][CODEX]` Add 4 stages to EPISODE_PIPELINE_STAGES
-- [ ] 2.2 `[EASY][GEMINI]` Add 4 Kanban columns to app.js
+- [x] 2.1 `[EASY][CODEX]` Add 4 stages to EPISODE_PIPELINE_STAGES
+- [x] 2.2 `[EASY][GEMINI]` Add 4 Kanban columns to app.js
 
 ## PHASE 3: Asset Upload Backend (shared assets)
 - [ ] 3.1 `[MEDIUM][CODEX]` _prepare_assembly_project() — per-language dir builder

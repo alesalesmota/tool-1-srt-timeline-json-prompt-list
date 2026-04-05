@@ -12,13 +12,17 @@ const EPISODE_PIPELINE_COLUMNS = [
   { id: "timeline_mapping", label: "Timelines", short: "Timelines", copy: "Mapping master scenes to per-language durations." },
   { id: "review", label: "Review", short: "Review", copy: "Human review before final export." },
   { id: "export", label: "Exported", short: "Export", copy: "Final files ready to use." },
+  { id: "asset_upload", label: "Asset Upload", short: "Assets", copy: "Upload media assets for video assembly." },
+  { id: "assembly_validation", label: "Assembly Check", short: "Check", copy: "Validate per-language assembly requirements." },
+  { id: "video_render", label: "Video Render", short: "Render", copy: "Render final videos for each language." },
+  { id: "final_review", label: "Final Review", short: "Final", copy: "Review final assembled videos." },
   { id: "needs_attention", label: "Needs Attention", short: "Attention", copy: "Failed or blocked episodes." },
 ];
 const EPISODE_STAGE_LABELS = Object.fromEntries(EPISODE_PIPELINE_COLUMNS.map((c) => [c.id, c.label]));
 const EPISODE_PER_LANG_STAGES = ["translation", "tts", "alignment", "timeline_mapping"];
 const EPISODE_RUNNABLE_STAGE_IDS = EPISODE_PIPELINE_COLUMNS
   .map((column) => column.id)
-  .filter((columnId) => !["draft", "review", "export", "needs_attention"].includes(columnId));
+  .filter((columnId) => !["draft", "review", "export", "asset_upload", "assembly_validation", "video_render", "final_review", "needs_attention"].includes(columnId));
 
 const PROVIDERS = ["claude", "codex", "openai"];
 const DEFAULT_MODEL_CATALOG = {
