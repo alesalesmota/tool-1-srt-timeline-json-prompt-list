@@ -143,6 +143,9 @@ const state = {
   lastEpisodeFilesLoadedFor: null,
   lastEpisodeReviewLoadedFor: null,
   episodeAssemblyActiveRenderLanguage: {},
+  episodeAssemblyCache: {},
+  episodeAssemblyInteractionHoldUntil: 0,
+  episodeAssemblyUploadsInFlight: 0,
   cachedReviewData: null,
   cachedReviewEpisodeId: null,
   projectConfigDisclosures: {
@@ -572,7 +575,38 @@ function resetEpisodeSupplementalState(episodeId = null) {
     state.cachedReviewData = null;
     state.cachedReviewEpisodeId = null;
   }
+  if (!episodeId) {
+    state.episodeAssemblyCache = {};
+  } else {
+    delete state.episodeAssemblyCache[episodeId];
+  }
   clearEpisodeWorkflowActionState(episodeId);
+}
+
+function episodeAssemblyInteractionIsActive() {
+  return (
+    state.episodeAssemblyUploadsInFlight > 0 ||
+    Date.now() < Number(state.episodeAssemblyInteractionHoldUntil || 0)
+  );
+}
+
+function holdEpisodeAssemblyInteraction(durationMs = 60000) {
+  state.episodeAssemblyInteractionHoldUntil = Math.max(
+    Number(state.episodeAssemblyInteractionHoldUntil || 0),
+    Date.now() + durationMs
+  );
+}
+
+function beginEpisodeAssemblyUploadInteraction(durationMs = 120000) {
+  holdEpisodeAssemblyInteraction(durationMs);
+  state.episodeAssemblyUploadsInFlight += 1;
+}
+
+function endEpisodeAssemblyUploadInteraction() {
+  state.episodeAssemblyUploadsInFlight = Math.max(0, state.episodeAssemblyUploadsInFlight - 1);
+  if (!state.episodeAssemblyUploadsInFlight && Date.now() >= Number(state.episodeAssemblyInteractionHoldUntil || 0)) {
+    state.episodeAssemblyInteractionHoldUntil = 0;
+  }
 }
 
 function episodeWorkflowActionState(episodeId) {
@@ -965,6 +999,7 @@ function renderProjectConfigDisclosure({ projectId, panelName, label, body, isOp
 
 function ensureEpisodeSupplementalDataLoaded(episodeId, { force = false } = {}) {
   if (!episodeId) return;
+  const detailEpisode = state.episodeDetail?.episode;
   const fileState = episodeFilesState(episodeId);
   const fileCacheIsFresh = fileState.syncedAt && (Date.now() - fileState.syncedAt) < EPISODE_FILES_CACHE_TTL_MS;
   if (force || state.lastEpisodeFilesLoadedFor !== episodeId || (!fileState.loading && !fileCacheIsFresh)) {
@@ -973,7 +1008,11 @@ function ensureEpisodeSupplementalDataLoaded(episodeId, { force = false } = {}) 
   } else {
     syncEpisodeFilesSection(episodeId);
   }
-  if (force || state.lastEpisodeReviewLoadedFor !== episodeId) {
+  if (
+    detailEpisode?.id === episodeId &&
+    ["review", "export", "done"].includes(detailEpisode.pipeline_status || "") &&
+    (force || state.lastEpisodeReviewLoadedFor !== episodeId || state.cachedReviewEpisodeId !== episodeId)
+  ) {
     state.lastEpisodeReviewLoadedFor = episodeId;
     loadReviewData(episodeId);
   }
@@ -995,6 +1034,104 @@ function renderLoadingSurface(title, copy) {
       </div>
     </section>
   `;
+}
+
+function renderAssemblyLoadingMarkup(stage) {
+  if (stage === "video_render") {
+    return renderLoadingSurface("Loading renders", "Fetching per-language render progress.");
+  }
+  if (stage === "final_review") {
+    return renderLoadingSurface("Loading final videos", "Fetching completed render outputs.");
+  }
+  return renderLoadingSurface("Loading scenes", "Fetching timeline scenes and uploaded assets.");
+}
+
+function updateEpisodeAssemblyCache(episodeId, stage, html) {
+  if (!episodeId || !stage || !ASSEMBLY_STAGE_IDS.includes(stage)) return;
+  state.episodeAssemblyCache[episodeId] = {
+    stage,
+    html: String(html || ""),
+  };
+}
+
+function renderEpisodeAssemblySectionShell(episodeId, stage, className) {
+  if (!ASSEMBLY_STAGE_IDS.includes(stage)) {
+    return `<div id="episode-assembly-section" class="${className}" style="display:none;"></div>`;
+  }
+  const cached = state.episodeAssemblyCache[episodeId];
+  const hasCachedHtml = cached?.stage === stage && String(cached.html || "").trim();
+  const attrs = hasCachedHtml
+    ? ` data-assembly-episode-id="${esc(episodeId)}" data-assembly-stage="${esc(stage)}" data-assembly-ready="true"`
+    : "";
+  const body = hasCachedHtml ? cached.html : renderAssemblyLoadingMarkup(stage);
+  return `<div id="episode-assembly-section" class="${className}"${attrs}>${body}</div>`;
+}
+
+function renderReviewSectionMarkup(episodeId, ep, data) {
+  const guideStr = data.consistency_guide ? JSON.stringify(data.consistency_guide, null, 2) : "{}";
+  const timelineStr = data.timeline_draft ? JSON.stringify(data.timeline_draft, null, 2) : "[]";
+  const promptStr = data.prompt_list || "";
+  const canEdit = ep.current_stage === "review" && ep.pipeline_status !== "done";
+  const readonlyAttr = canEdit ? "" : "readonly";
+  return `
+    <div class="section-header" style="margin-bottom:12px;">
+      <div class="eyebrow">Phase 9: Review & Export</div>
+      <div class="button-row">
+        ${canEdit ? '<button type="button" class="button button-primary button-small has-icon" data-save-review="' + esc(episodeId) + '">' + iconContent("save", "Save Edits") + '</button>' : ''}
+        ${canEdit ? '<button type="button" class="button button-primary button-small has-icon" style="background:var(--success);color:var(--bg)" data-finalize-export="' + esc(episodeId) + '">' + iconContent("finalize", "Finalize & Export") + '</button>' : ''}
+        ${ep.pipeline_status === "done" || ep.current_stage === "export" ? '<button type="button" class="button button-primary button-small has-icon" data-download-export="' + esc(episodeId) + '">' + iconContent("download", "Download ZIP") + '</button>' : ''}
+        ${ep.current_stage === "export" && ep.pipeline_status === "done" ? '<button type="button" class="button button-primary button-small has-icon" style="background:var(--brand);color:var(--bg)" data-start-video-assembly="' + esc(episodeId) + '">' + iconContent("play", "Start Video Assembly") + '</button>' : ''}
+      </div>
+    </div>
+
+    <div class="review-editors-grid">
+      <div class="editor-col">
+        <div class="eyebrow" style="margin-bottom:6px;">Consistency Guide (JSON)</div>
+        <textarea id="review-guide" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(guideStr)}</textarea>
+      </div>
+      <div class="editor-col">
+        <div class="eyebrow" style="margin-bottom:6px;">Timeline Editor (JSON)</div>
+        <textarea id="review-timeline" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(timelineStr)}</textarea>
+      </div>
+      <div class="editor-col">
+        <div class="eyebrow" style="margin-bottom:6px;">Prompt List</div>
+        <textarea id="review-prompts" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(promptStr)}</textarea>
+      </div>
+    </div>
+
+    <div style="margin-top:16px;">
+      <details class="run-detail-card">
+        <summary>
+          <div class="run-detail-head"><strong>Per-Language Timelines (Read-Only Preview)</strong> <span class="badge badge-small">${Object.keys(data.per_language_timelines || {}).length}</span></div>
+        </summary>
+        <div class="run-detail-body" style="max-height: 400px; overflow-y: auto;">
+          <pre class="run-output">${esc(JSON.stringify(data.per_language_timelines, null, 2))}</pre>
+        </div>
+      </details>
+    </div>
+  `;
+}
+
+function renderReviewSectionPendingMarkup(ep) {
+  const stage = stageLabel(ep.current_stage || ep.queued_from_stage || "consistency_guide");
+  return `
+    <div class="section-header" style="margin-bottom:12px;">
+      <div class="eyebrow">Phase 9: Review & Export</div>
+    </div>
+    <p class="helper">Review data will appear here after the pipeline reaches the review stage. Currently at: ${esc(stage)}.</p>
+  `;
+}
+
+function renderEpisodeReviewSectionShell(episodeId, ep, className) {
+  let body = "";
+  if (!["review", "export", "done"].includes(ep.pipeline_status || "")) {
+    body = renderReviewSectionPendingMarkup(ep);
+  } else if (state.cachedReviewData && state.cachedReviewEpisodeId === episodeId) {
+    body = renderReviewSectionMarkup(episodeId, ep, state.cachedReviewData);
+  } else {
+    body = '<p class="helper">Loading review data…</p>';
+  }
+  return `<div id="episode-review-section" class="${className}">${body}</div>`;
 }
 
 async function api(url, options = {}) {
@@ -3668,9 +3805,6 @@ function renderNicheProjectDetail() {
   syncProviderModelSelect("niche-video_prompt-provider", "niche-video_prompt-model");
   syncProviderModelSelect("niche-image_prompt-provider", "niche-image_prompt-model");
   if (state.episodeOverlayId && state.episodeDetail?.episode?.id === state.episodeOverlayId) {
-    // The overlay innerHTML was just recreated, so clear the review cache
-    // to ensure the review section gets repopulated.
-    state.lastEpisodeReviewLoadedFor = null;
     ensureEpisodeSupplementalDataLoaded(state.episodeOverlayId);
   }
 }
@@ -3831,8 +3965,8 @@ function renderEpisodeDetailOverlay() {
                 <tbody>${langRows || '<tr><td colspan="7" class="helper">No language data.</td></tr>'}</tbody>
               </table>
             </div>
-            <div id="episode-assembly-section" class="board-modal-section"></div>
-            <div id="episode-review-section" class="board-modal-section"></div>
+            ${renderEpisodeAssemblySectionShell(episode.id, currentStage, "board-modal-section")}
+            ${renderEpisodeReviewSectionShell(episode.id, episode, "board-modal-section")}
             <div class="board-modal-section">
               <div id="episode-files-shell">${renderEpisodeFilesSection(episode.id)}</div>
             </div>
@@ -3943,8 +4077,8 @@ function renderEpisodeDetail() {
       <div id="episode-files-shell">${renderEpisodeFilesSection(episode.id)}</div>
     </div>`;
 
-  const assemblySection = '<div id="episode-assembly-section" class="detail-section"></div>';
-  const reviewSection = '<div id="episode-review-section" class="detail-section"></div>';
+  const assemblySection = renderEpisodeAssemblySectionShell(episode.id, currentStage, "detail-section");
+  const reviewSection = renderEpisodeReviewSectionShell(episode.id, episode, "detail-section");
 
   $("view").innerHTML = `
     <div class="episode-detail-layout" style="display:grid; gap:24px; padding:8px 0;">
@@ -4006,9 +4140,6 @@ function renderEpisodeDetail() {
     ${state.modal.kind === "translation-preview" ? renderTranslationPreviewModal() : ""}
   `;
 
-  // The innerHTML replacement above destroyed any previously-loaded review
-  // content, so clear the cache flag so it gets reloaded.
-  state.lastEpisodeReviewLoadedFor = null;
   // Auto-load files
   ensureEpisodeSupplementalDataLoaded(episode.id);
 }
@@ -4278,50 +4409,7 @@ async function loadEpisodeFiles(episodeId) {
 }
 
 function renderReviewSectionContent(container, episodeId, ep, data) {
-  const guideStr = data.consistency_guide ? JSON.stringify(data.consistency_guide, null, 2) : "{}";
-  const timelineStr = data.timeline_draft ? JSON.stringify(data.timeline_draft, null, 2) : "[]";
-  const promptStr = data.prompt_list || "";
-
-  const canEdit = ep.current_stage === "review" && ep.pipeline_status !== "done";
-  const readonlyAttr = canEdit ? "" : "readonly";
-
-  container.innerHTML = `
-    <div class="section-header" style="margin-bottom:12px;">
-      <div class="eyebrow">Phase 9: Review & Export</div>
-      <div class="button-row">
-        ${canEdit ? '<button type="button" class="button button-primary button-small has-icon" data-save-review="' + esc(episodeId) + '">' + iconContent("save", "Save Edits") + '</button>' : ''}
-        ${canEdit ? '<button type="button" class="button button-primary button-small has-icon" style="background:var(--success);color:var(--bg)" data-finalize-export="' + esc(episodeId) + '">' + iconContent("finalize", "Finalize & Export") + '</button>' : ''}
-        ${ep.pipeline_status === "done" || ep.current_stage === "export" ? '<button type="button" class="button button-primary button-small has-icon" data-download-export="' + esc(episodeId) + '">' + iconContent("download", "Download ZIP") + '</button>' : ''}
-        ${ep.current_stage === "export" && ep.pipeline_status === "done" ? '<button type="button" class="button button-primary button-small has-icon" style="background:var(--brand);color:var(--bg)" data-start-video-assembly="' + esc(episodeId) + '">' + iconContent("play", "Start Video Assembly") + '</button>' : ''}
-      </div>
-    </div>
-
-    <div class="review-editors-grid">
-      <div class="editor-col">
-        <div class="eyebrow" style="margin-bottom:6px;">Consistency Guide (JSON)</div>
-        <textarea id="review-guide" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(guideStr)}</textarea>
-      </div>
-      <div class="editor-col">
-        <div class="eyebrow" style="margin-bottom:6px;">Timeline Editor (JSON)</div>
-        <textarea id="review-timeline" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(timelineStr)}</textarea>
-      </div>
-      <div class="editor-col">
-        <div class="eyebrow" style="margin-bottom:6px;">Prompt List</div>
-        <textarea id="review-prompts" class="review-textarea" spellcheck="false" ${readonlyAttr}>${esc(promptStr)}</textarea>
-      </div>
-    </div>
-
-    <div style="margin-top:16px;">
-      <details class="run-detail-card">
-        <summary>
-          <div class="run-detail-head"><strong>Per-Language Timelines (Read-Only Preview)</strong> <span class="badge badge-small">${Object.keys(data.per_language_timelines || {}).length}</span></div>
-        </summary>
-        <div class="run-detail-body" style="max-height: 400px; overflow-y: auto;">
-          <pre class="run-output">${esc(JSON.stringify(data.per_language_timelines, null, 2))}</pre>
-        </div>
-      </details>
-    </div>
-  `;
+  container.innerHTML = renderReviewSectionMarkup(episodeId, ep, data);
 }
 
 async function loadReviewData(episodeId) {
@@ -4334,13 +4422,7 @@ async function loadReviewData(episodeId) {
 
   container.style.display = "block";
   if (!["review", "export", "done"].includes(ep.pipeline_status)) {
-    const stage = stageLabel(ep.current_stage || ep.queued_from_stage || "consistency_guide");
-    container.innerHTML = `
-      <div class="section-header" style="margin-bottom:12px;">
-        <div class="eyebrow">Phase 9: Review & Export</div>
-      </div>
-      <p class="helper">Review data will appear here after the pipeline reaches the review stage. Currently at: ${esc(stage)}.</p>
-    `;
+    container.innerHTML = renderReviewSectionPendingMarkup(ep);
     return;
   }
 
@@ -4908,7 +4990,8 @@ function resetAutoRefresh() {
       state.isLoadingRoute ||
       state.isRefreshingData ||
       voiceProfileAudioIsPlaying() ||
-      projectConfigInteractionIsActive()
+      projectConfigInteractionIsActive() ||
+      episodeAssemblyInteractionIsActive()
     ) return;
     refreshData().then(renderApp).catch(() => {});
   }, currentRefreshIntervalMs);
@@ -6079,10 +6162,12 @@ async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
     delete container.dataset.assemblyEpisodeId;
     delete container.dataset.assemblyStage;
     delete container.dataset.assemblyReady;
+    delete state.episodeAssemblyCache[episodeId];
     return;
   }
 
   container.style.display = "";
+  bindEpisodeAssemblyUploadInputs(container);
   const shouldShowLoading =
     container.dataset.assemblyReady !== "true" ||
     container.dataset.assemblyEpisodeId !== episodeId ||
@@ -6097,6 +6182,7 @@ async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
     if (currentStage === "asset_upload") {
       await renderAssemblySection(episodeId, { showLoading: shouldShowLoading });
       container.dataset.assemblyReady = "true";
+      updateEpisodeAssemblyCache(episodeId, currentStage, container.innerHTML);
       return;
     }
 
@@ -6105,6 +6191,7 @@ async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
       const validationData = await api(`/api/episodes/${encodeURIComponent(episodeId)}/assembly/validate`, { method: "POST" });
       container.insertAdjacentHTML("beforeend", renderAssemblyValidationPanel(episodeId, validationData));
       container.dataset.assemblyReady = "true";
+      updateEpisodeAssemblyCache(episodeId, currentStage, container.innerHTML);
       return;
     }
 
@@ -6120,6 +6207,7 @@ async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
       }
       container.innerHTML = renderAssemblyRenderPanel(episodeId, renderJobs, preferredTab);
       container.dataset.assemblyReady = "true";
+      updateEpisodeAssemblyCache(episodeId, currentStage, container.innerHTML);
       return;
     }
 
@@ -6131,10 +6219,12 @@ async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
       const completedVideos = normalizeAssemblyRenderJobs(renderJobsPayload).filter((job) => job.state === "completed");
       container.innerHTML = renderAssemblyReviewPanel(episodeId, completedVideos);
       container.dataset.assemblyReady = "true";
+      updateEpisodeAssemblyCache(episodeId, currentStage, container.innerHTML);
     }
   } catch (error) {
     if (shouldShowLoading || !container.innerHTML.trim()) {
       container.innerHTML = `<div class="notice" data-tone="error">Failed to load assembly UI: ${esc(error.message)}</div>`;
+      updateEpisodeAssemblyCache(episodeId, currentStage, container.innerHTML);
     } else {
       setNotice(`Failed to refresh assembly UI: ${error.message}`, "error");
     }
@@ -6216,13 +6306,54 @@ async function renderAssemblySection(episodeId, { readOnly = false, showLoading 
       ${statsBar}
       <div class="scene-grid">${gridLayout}</div>
     `;
+    bindEpisodeAssemblyUploadInputs(container);
+    const cachedStage = container.dataset.assemblyStage || state.episodeDetail?.episode?.current_stage || null;
+    updateEpisodeAssemblyCache(episodeId, cachedStage, container.innerHTML);
   } catch (err) {
     if (showLoading || !container.innerHTML.trim()) {
       container.innerHTML = `<div class="notice" data-tone="error">Failed to load scenes: ${esc(err.message)}</div>`;
+      const cachedStage = container.dataset.assemblyStage || state.episodeDetail?.episode?.current_stage || null;
+      updateEpisodeAssemblyCache(episodeId, cachedStage, container.innerHTML);
     } else {
       throw err;
     }
   }
+}
+
+function handleBulkUploadInputChange(event) {
+  const input = event.currentTarget;
+  const epId = input.dataset.bulkUploadInput;
+  beginEpisodeAssemblyUploadInteraction();
+  handleBulkUpload(epId, input.files).finally(() => {
+    endEpisodeAssemblyUploadInteraction();
+  });
+  input.value = "";
+}
+
+function handleSingleUploadInputChange(event) {
+  const input = event.currentTarget;
+  const epId = input.dataset.singleUploadInput;
+  const sceneId = input.dataset.scene;
+  if (input.files.length > 0) {
+    beginEpisodeAssemblyUploadInteraction();
+    handleAssetUpload(epId, sceneId, input.files[0]).finally(() => {
+      endEpisodeAssemblyUploadInteraction();
+    });
+  }
+  input.value = "";
+}
+
+function bindEpisodeAssemblyUploadInputs(root = document) {
+  root.querySelectorAll("[data-bulk-upload-input]").forEach((input) => {
+    if (input.dataset.changeBound === "true") return;
+    input.dataset.changeBound = "true";
+    input.addEventListener("change", handleBulkUploadInputChange);
+  });
+  root.querySelectorAll("[data-single-upload-input]").forEach((input) => {
+    if (input.dataset.changeBound === "true") return;
+    input.dataset.changeBound = "true";
+    input.addEventListener("change", handleSingleUploadInputChange);
+  });
 }
 
 async function handleAssetUpload(episodeId, sceneId, file) {
@@ -6275,6 +6406,7 @@ document.addEventListener("click", async (event) => {
   if (bulkBtn) {
     const epId = bulkBtn.dataset.bulkUpload;
     const input = $(`bulk-upload-input-${epId}`);
+    holdEpisodeAssemblyInteraction();
     if (input) input.click();
     return;
   }
@@ -6283,6 +6415,7 @@ document.addEventListener("click", async (event) => {
   if (uploadBtn) {
     const sceneId = uploadBtn.dataset.scene;
     const input = $(`single-upload-input-${sceneId}`);
+    holdEpisodeAssemblyInteraction();
     if (input) input.click();
     return;
   }
@@ -6303,19 +6436,17 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("change", (event) => {
-  if (event.target.dataset.bulkUploadInput) {
-    const epId = event.target.dataset.bulkUploadInput;
-    handleBulkUpload(epId, event.target.files);
-    event.target.value = ""; // reset
+  const target = event.target;
+  if (!target?.dataset) return;
+  if (target.dataset.changeBound === "true") {
     return;
   }
-  if (event.target.dataset.singleUploadInput) {
-    const epId = event.target.dataset.singleUploadInput;
-    const sceneId = event.target.dataset.scene;
-    if (event.target.files.length > 0) {
-      handleAssetUpload(epId, sceneId, event.target.files[0]);
-    }
-    event.target.value = ""; // reset
+  if (target.dataset.bulkUploadInput) {
+    handleBulkUploadInputChange({ currentTarget: target });
+    return;
+  }
+  if (target.dataset.singleUploadInput) {
+    handleSingleUploadInputChange({ currentTarget: target });
     return;
   }
 });
