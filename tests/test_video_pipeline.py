@@ -783,12 +783,20 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                                 "text": "Second shot.",
                                 "asset_type": "video",
                             },
+                            {
+                                "scene_id": "scene_003",
+                                "start": 5.0,
+                                "end": 7.5,
+                                "duration": 2.5,
+                                "text": "Third shot.",
+                                "asset_type": "image",
+                            },
                         ],
                     )
 
                     list_resp = client.get(f"/api/episodes/{episode_id}/scenes")
                     self.assertEqual(list_resp.status_code, 200)
-                    self.assertEqual(list_resp.json()["total_scenes"], 2)
+                    self.assertEqual(list_resp.json()["total_scenes"], 3)
                     self.assertEqual(list_resp.json()["uploaded_count"], 0)
                     self.assertEqual(list_resp.json()["scenes"][0]["asset"], None)
 
@@ -803,19 +811,24 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     bulk_resp = client.post(
                         f"/api/episodes/{episode_id}/scenes/bulk-upload",
                         files=[
-                            ("files", ("asset_2.jpg", b"\xff\xd8\xffphase3-scene-2", "image/jpeg")),
+                            ("files", ("video (1).mp4", b"\x00\x00\x00phase3-scene-2", "video/mp4")),
+                            ("files", ("img (2).jpg", b"\xff\xd8\xffphase3-scene-3", "image/jpeg")),
                             ("files", ("nomatch.png", b"\x89PNG\r\n\x1a\nnomatch", "image/png")),
                         ],
                     )
                     self.assertEqual(bulk_resp.status_code, 200)
-                    self.assertEqual(bulk_resp.json()["total_uploaded"], 1)
-                    self.assertEqual(bulk_resp.json()["matched"][0]["scene_id"], "scene_002")
+                    self.assertEqual(bulk_resp.json()["total_uploaded"], 2)
+                    self.assertEqual(
+                        [item["scene_id"] for item in bulk_resp.json()["matched"]],
+                        ["scene_002", "scene_003"],
+                    )
                     self.assertEqual(bulk_resp.json()["unmatched"], ["nomatch.png"])
 
                     list_after_resp = client.get(f"/api/episodes/{episode_id}/scenes")
                     self.assertEqual(list_after_resp.status_code, 200)
-                    self.assertEqual(list_after_resp.json()["uploaded_count"], 2)
-                    self.assertEqual(list_after_resp.json()["scenes"][1]["asset"]["filename"], "asset_2.jpg")
+                    self.assertEqual(list_after_resp.json()["uploaded_count"], 3)
+                    self.assertEqual(list_after_resp.json()["scenes"][1]["asset"]["filename"], "video (1).mp4")
+                    self.assertEqual(list_after_resp.json()["scenes"][2]["asset"]["filename"], "img (2).jpg")
 
                     preview_resp = client.get(
                         f"/api/episodes/{episode_id}/scenes/scene_001/asset/preview"
@@ -831,8 +844,41 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
 
                     final_list_resp = client.get(f"/api/episodes/{episode_id}/scenes")
                     self.assertEqual(final_list_resp.status_code, 200)
-                    self.assertEqual(final_list_resp.json()["uploaded_count"], 1)
+                    self.assertEqual(final_list_resp.json()["uploaded_count"], 2)
                     self.assertEqual(final_list_resp.json()["scenes"][0]["asset"], None)
+                finally:
+                    self.app_module.service = original
+
+    def test_scene_asset_upload_rejects_type_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en"])
+                    episode_id = episode["id"]
+                    _write_master_timeline(
+                        service,
+                        episode_id,
+                        [
+                            {
+                                "scene_id": "scene_001",
+                                "start": 0.0,
+                                "end": 2.5,
+                                "duration": 2.5,
+                                "text": "Opening shot.",
+                                "asset_type": "video",
+                            },
+                        ],
+                    )
+
+                    upload_resp = client.post(
+                        f"/api/episodes/{episode_id}/scenes/scene_001/asset",
+                        files={"file": ("still.png", b"\x89PNG\r\n\x1a\nphase3-scene-1", "image/png")},
+                    )
+                    self.assertEqual(upload_resp.status_code, 400)
+                    self.assertIn("expects a video asset", upload_resp.json()["detail"])
                 finally:
                     self.app_module.service = original
 

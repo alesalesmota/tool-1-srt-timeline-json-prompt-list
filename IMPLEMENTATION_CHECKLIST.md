@@ -4,6 +4,14 @@
 > [!IMPORTANT]
 > Historical completed checklist. Keep this for audit/history, but use `README.md` and `PROJECT_REGISTRY.md` for the current app behavior.
 
+## Drawbridge Bulk Upload Repair (2026-04-07)
+- [x] Reproduce the mixed image/video bulk-upload failure reported from Drawbridge and confirm the old matcher was using only raw scene numbers
+- [x] Enforce scene asset-type validation for single uploads so an image cannot be attached to a video scene or vice-versa
+- [x] Update bulk upload matching so Windows batches named `img (...)` and `video (...)` map within the corresponding asset-type sequence
+- [x] Clarify the asset picker hint and restrict file inputs to media types in `tool1_dashboard/ui/app.js`
+- [x] Refresh regression coverage in `tests/test_video_pipeline.py` for mixed-type bulk upload plus explicit mismatch rejection
+- [x] Verify with `node --check tool1_dashboard/ui/app.js` and `python -m pytest tests/test_video_pipeline.py -q` (`72` passing)
+
 ## Subtitle Density Hardening (2026-04-04)
 - [x] Replace the greedy subtitle splitter with a deterministic DP readability-first segmenter
 - [x] Add shared subtitle-profile rules to the language rulepacks for `de/es/fr/it`

@@ -118,5 +118,31 @@
     "screenshotPath": "./screenshots/moat-1775175974654-dqwv394r0.png",
     "status": "done",
     "timestamp": 1775175974814
+  },
+  {
+    "id": "a78de437-3485-48ed-9e95-7153f617f594",
+    "title": "Container #episode-assembly-section",
+    "comment": "when i scrool down here, the screen glitches a section appear out of knowhere and disappear fast",
+    "selector": "#episode-assembly-section",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1775599212867-s68r07r7b.png",
+    "status": "doing",
+    "timestamp": 1775599213073
+  },
+  {
+    "id": "eeeccb89-b7ea-4059-88cb-a0e22403d11b",
+    "title": "Button: Bulk Upload",
+    "comment": "the upload function is not working, for video and for images",
+    "selector": "#episode-assembly-section > div.assembly-stats-bar:nth-child(2) > div:nth-child(2) > button:nth-of-type(1)",
+    "boundingRect": {
+      "x": 0,
+      "y": 0
+    },
+    "screenshotPath": "./screenshots/moat-1775599239571-52ateuhso.png",
+    "status": "done",
+    "timestamp": 1775599239779
   }
 ]

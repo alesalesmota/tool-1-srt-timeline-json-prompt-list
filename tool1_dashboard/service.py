@@ -102,6 +102,13 @@ from .validators import (
 
 log = logging.getLogger(__name__)
 
+_TYPE_SCOPED_IMAGE_UPLOAD_RE = re.compile(r"^(?:img|image)(?:$|[^a-z0-9].*)", re.IGNORECASE)
+_TYPE_SCOPED_VIDEO_UPLOAD_RE = re.compile(r"^(?:video|vid)(?:$|[^a-z0-9].*)", re.IGNORECASE)
+_EXPLICIT_SCENE_NUMBER_UPLOAD_RE = re.compile(
+    r"(?:^|[^a-z0-9])(?:scene|asset|prompt)[_\s-]*\d+|^\d+",
+    re.IGNORECASE,
+)
+
 QUEUE_PROVIDER_TARGETS = (
     ("consistency_guide", "Consistency Guide", "visual_bible_provider", "visual_bible_model"),
     ("scene_planning", "Scene Planning", "scene_planning_provider", "scene_planning_model"),
@@ -2532,10 +2539,17 @@ class Tool1Service:
         original_filename: str,
     ) -> dict[str, Any]:
         _, scenes = self._load_master_timeline_scenes(episode["id"])
-        if scene_id not in {scene["scene_id"] for scene in scenes}:
+        scene_payload = next((scene for scene in scenes if scene["scene_id"] == scene_id), None)
+        if scene_payload is None:
             raise FileNotFoundError("Scene not found.")
 
         asset_type = self._detect_upload_asset_type(original_filename)
+        expected_asset_type = str(scene_payload.get("asset_type") or asset_type).strip() or asset_type
+        if expected_asset_type != asset_type:
+            raise ValueError(
+                f"Scene {scene_id} expects a {expected_asset_type} asset, "
+                f"but '{original_filename}' is a {asset_type} asset."
+            )
         assets_dir = self._assembly_shared_assets_dir(episode)
         safe_name = safe_filename(original_filename or "asset", "asset")
         stored_filename = f"{self._scene_storage_prefix(scene_id)}_{safe_name}"
@@ -2622,6 +2636,39 @@ class Tool1Service:
                 if scene["scene_id"] not in scene_ids:
                     scene_ids.append(scene["scene_id"])
         return lookup
+
+    @staticmethod
+    def _scene_asset_type_lookup(scenes: list[dict[str, Any]]) -> dict[str, str]:
+        return {
+            str(scene["scene_id"]): str(scene.get("asset_type") or "image").strip() or "image"
+            for scene in scenes
+        }
+
+    def _scene_type_sequence_lookup(self, scenes: list[dict[str, Any]]) -> dict[str, dict[int, str]]:
+        grouped: dict[str, list[str]] = {}
+        for scene in scenes:
+            asset_type = str(scene.get("asset_type") or "image").strip() or "image"
+            grouped.setdefault(asset_type, []).append(scene["scene_id"])
+        return {
+            asset_type: {
+                index: scene_id
+                for index, scene_id in enumerate(scene_ids, start=1)
+            }
+            for asset_type, scene_ids in grouped.items()
+        }
+
+    @staticmethod
+    def _bulk_upload_uses_type_sequence(filename: str, asset_type: str) -> bool:
+        stem = Path(str(filename or "")).stem.strip()
+        if not stem:
+            return False
+        if _EXPLICIT_SCENE_NUMBER_UPLOAD_RE.search(stem):
+            return False
+        if asset_type == "image":
+            return _TYPE_SCOPED_IMAGE_UPLOAD_RE.match(stem) is not None
+        if asset_type == "video":
+            return _TYPE_SCOPED_VIDEO_UPLOAD_RE.match(stem) is not None
+        return False
 
     def _prepare_assembly_project(self, episode_id: str, language_code: str) -> Path:
         episode = self.db.get_episode(episode_id)
@@ -2719,6 +2766,8 @@ class Tool1Service:
     ) -> dict[str, Any]:
         episode, scenes = self._load_master_timeline_scenes(episode_id)
         scene_lookup = self._scene_number_lookup(scenes)
+        scene_type_lookup = self._scene_asset_type_lookup(scenes)
+        type_sequence_lookup = self._scene_type_sequence_lookup(scenes)
         matched: list[dict[str, Any]] = []
         unmatched: list[str] = []
         claimed_scenes: set[str] = set()
@@ -2729,7 +2778,22 @@ class Tool1Service:
             if number is None:
                 unmatched.append(file_label)
                 continue
-            scene_candidates = scene_lookup.get(number) or []
+            try:
+                upload_asset_type = self._detect_upload_asset_type(file_label)
+            except ValueError:
+                unmatched.append(file_label)
+                continue
+            scene_candidates: list[str] = []
+            if self._bulk_upload_uses_type_sequence(file_label, upload_asset_type):
+                scoped_scene_id = type_sequence_lookup.get(upload_asset_type, {}).get(number)
+                if scoped_scene_id:
+                    scene_candidates.append(scoped_scene_id)
+            if not scene_candidates:
+                scene_candidates.extend(
+                    scene_id
+                    for scene_id in (scene_lookup.get(number) or [])
+                    if scene_type_lookup.get(scene_id) == upload_asset_type
+                )
             scene_id = next((candidate for candidate in scene_candidates if candidate not in claimed_scenes), None)
             if scene_id is None:
                 unmatched.append(file_label)

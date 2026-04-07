@@ -6138,8 +6138,8 @@ async function renderAssemblySection(episodeId, { readOnly = false } = {}) {
           <button type="button" class="button button-inline" data-bulk-upload="${esc(episodeId)}">
             ${iconContent("add", "Bulk Upload")}
           </button>
-          <input type="file" id="bulk-upload-input-${esc(episodeId)}" multiple style="display:none;" data-bulk-upload-input="${esc(episodeId)}" />
-          <span class="helper hint-text">Tip: Select all images in Windows, rename to "img" &rarr; files become img (1), img (2)... Same for videos with "video". Auto-match by number.</span>
+          <input type="file" id="bulk-upload-input-${esc(episodeId)}" multiple accept="image/*,video/*" style="display:none;" data-bulk-upload-input="${esc(episodeId)}" />
+          <span class="helper hint-text">Tip: Rename image batches to "img" and video batches to "video" in Windows. <code>img (1)</code> maps to the first image scene; <code>video (1)</code> maps to the first video scene.</span>
           `}
         </div>
       </div>
@@ -6156,7 +6156,7 @@ async function renderAssemblySection(episodeId, { readOnly = false } = {}) {
              ${readOnly ? "" : `<div style="padding: 12px; display: flex; justify-content: flex-end; gap: 8px;">
                <button class="button button-ghost button-small" data-upload-asset="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">Replace</button>
                <button class="button button-ghost button-small button-danger" data-remove-asset="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">Remove</button>
-               <input type="file" id="single-upload-input-${esc(scene.scene_id)}" style="display:none;" data-single-upload-input="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}" />
+              <input type="file" id="single-upload-input-${esc(scene.scene_id)}" accept="image/*,video/*" style="display:none;" data-single-upload-input="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}" />
              </div>`}
            </div>`
         : readOnly
@@ -6164,7 +6164,7 @@ async function renderAssemblySection(episodeId, { readOnly = false } = {}) {
           : `<div class="scene-card-dropzone" data-dropzone="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">
                <div class="helper">Drag & drop or</div>
                <button class="button button-ghost button-small" style="margin-top:8px;" data-upload-asset="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">Browse File</button>
-               <input type="file" id="single-upload-input-${esc(scene.scene_id)}" style="display:none;" data-single-upload-input="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}" />
+               <input type="file" id="single-upload-input-${esc(scene.scene_id)}" accept="image/*,video/*" style="display:none;" data-single-upload-input="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}" />
              </div>`;
       
       const timeRange = `${voiceTtsNumberValue(scene.start, 1)}s - ${voiceTtsNumberValue(scene.end, 1)}s`;
@@ -6232,7 +6232,7 @@ async function handleBulkUpload(episodeId, files) {
     if (!res.ok) throw new Error(data.detail || "Bulk upload failed");
     
     if (data.unmatched && data.unmatched.length > 0) {
-      setNotice(`${data.matched.length} uploaded, ${data.unmatched.length} skipped (unmatched filenames)`, "warn");
+      setNotice(`${data.matched.length} uploaded, ${data.unmatched.length} skipped (filename or type mismatch)`, "warn");
     } else {
       setNotice(`Bulk uploaded ${data.matched?.length || 0} assets`, "success");
     }

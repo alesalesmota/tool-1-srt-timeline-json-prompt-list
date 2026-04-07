@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 7 | **To Do**: 0 | **Doing**: 0 | **Done**: 7
+**Total**: 9 | **To Do**: 0 | **Doing**: 1 | **Done**: 8
 
 ## Tasks
 
@@ -11,8 +11,10 @@
 5. [x] Background Container – "i got this new error, could you find the root cause of it..." `section.kanban-column.project-kanban-column:nth-child(13) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
 6. [x] Background Container – "the missmatch issue happened again" `section.kanban-column.project-kanban-column:nth-child(13) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
 7. [x] Background Container – "we got an error on the tts step can you verify and fix" `section.kanban-column.project-kanban-column:nth-child(13) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
+8. [~] Container #episode-assembly-section – "when i scrool down here, the screen glitches a section ap..." `#episode-assembly-section`
+9. [x] Button: Bulk Upload – "the upload function is not working, for video and for images" `#episode-assembly-section > div.assembly-stats-bar:nth-child(2) > div:nth-child(2) > button:nth-of-type(1)`
 
 ---
 
-_Generated: 02/04/2026, 21:47:31_
+_Generated: 07/04/2026, 19:18:22_
 _Source: moat-tasks-detail.json_
