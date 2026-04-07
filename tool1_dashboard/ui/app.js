@@ -6076,29 +6076,42 @@ async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
   if (!ASSEMBLY_STAGE_IDS.includes(currentStage)) {
     container.innerHTML = "";
     container.style.display = "none";
+    delete container.dataset.assemblyEpisodeId;
+    delete container.dataset.assemblyStage;
+    delete container.dataset.assemblyReady;
     return;
   }
 
   container.style.display = "";
+  const shouldShowLoading =
+    container.dataset.assemblyReady !== "true" ||
+    container.dataset.assemblyEpisodeId !== episodeId ||
+    container.dataset.assemblyStage !== currentStage;
+  container.dataset.assemblyEpisodeId = episodeId;
+  container.dataset.assemblyStage = currentStage;
   if (activeRenderLanguage) {
     state.episodeAssemblyActiveRenderLanguage[episodeId] = activeRenderLanguage;
   }
 
   try {
     if (currentStage === "asset_upload") {
-      await renderAssemblySection(episodeId);
+      await renderAssemblySection(episodeId, { showLoading: shouldShowLoading });
+      container.dataset.assemblyReady = "true";
       return;
     }
 
     if (currentStage === "assembly_validation") {
-      await renderAssemblySection(episodeId, { readOnly: true });
+      await renderAssemblySection(episodeId, { readOnly: true, showLoading: shouldShowLoading });
       const validationData = await api(`/api/episodes/${encodeURIComponent(episodeId)}/assembly/validate`, { method: "POST" });
       container.insertAdjacentHTML("beforeend", renderAssemblyValidationPanel(episodeId, validationData));
+      container.dataset.assemblyReady = "true";
       return;
     }
 
     if (currentStage === "video_render") {
-      container.innerHTML = renderLoadingSurface("Loading renders", "Fetching per-language render progress.");
+      if (shouldShowLoading) {
+        container.innerHTML = renderLoadingSurface("Loading renders", "Fetching per-language render progress.");
+      }
       const renderStatus = await api(`/api/episodes/${encodeURIComponent(episodeId)}/assembly/render-status`);
       const renderJobs = normalizeAssemblyRenderJobs(renderStatus);
       const preferredTab = activeRenderLanguage || state.episodeAssemblyActiveRenderLanguage[episodeId] || renderJobs[0]?.language_code || null;
@@ -6106,24 +6119,34 @@ async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
         state.episodeAssemblyActiveRenderLanguage[episodeId] = preferredTab;
       }
       container.innerHTML = renderAssemblyRenderPanel(episodeId, renderJobs, preferredTab);
+      container.dataset.assemblyReady = "true";
       return;
     }
 
     if (currentStage === "final_review") {
-      container.innerHTML = renderLoadingSurface("Loading final videos", "Fetching completed render outputs.");
+      if (shouldShowLoading) {
+        container.innerHTML = renderLoadingSurface("Loading final videos", "Fetching completed render outputs.");
+      }
       const renderJobsPayload = await api(`/api/episodes/${encodeURIComponent(episodeId)}/assembly/render-jobs`);
       const completedVideos = normalizeAssemblyRenderJobs(renderJobsPayload).filter((job) => job.state === "completed");
       container.innerHTML = renderAssemblyReviewPanel(episodeId, completedVideos);
+      container.dataset.assemblyReady = "true";
     }
   } catch (error) {
-    container.innerHTML = `<div class="notice" data-tone="error">Failed to load assembly UI: ${esc(error.message)}</div>`;
+    if (shouldShowLoading || !container.innerHTML.trim()) {
+      container.innerHTML = `<div class="notice" data-tone="error">Failed to load assembly UI: ${esc(error.message)}</div>`;
+    } else {
+      setNotice(`Failed to refresh assembly UI: ${error.message}`, "error");
+    }
   }
 }
 
-async function renderAssemblySection(episodeId, { readOnly = false } = {}) {
+async function renderAssemblySection(episodeId, { readOnly = false, showLoading = true } = {}) {
   const container = $("episode-assembly-section");
   if (!container) return;
-  container.innerHTML = renderLoadingSurface("Loading scenes", "Fetching timeline scenes and uploaded assets.");
+  if (showLoading) {
+    container.innerHTML = renderLoadingSurface("Loading scenes", "Fetching timeline scenes and uploaded assets.");
+  }
   try {
     const data = await api(`/api/episodes/${encodeURIComponent(episodeId)}/scenes`);
     const scenes = data.scenes || [];
@@ -6194,7 +6217,11 @@ async function renderAssemblySection(episodeId, { readOnly = false } = {}) {
       <div class="scene-grid">${gridLayout}</div>
     `;
   } catch (err) {
-    container.innerHTML = `<div class="notice" data-tone="error">Failed to load scenes: ${esc(err.message)}</div>`;
+    if (showLoading || !container.innerHTML.trim()) {
+      container.innerHTML = `<div class="notice" data-tone="error">Failed to load scenes: ${esc(err.message)}</div>`;
+    } else {
+      throw err;
+    }
   }
 }
 

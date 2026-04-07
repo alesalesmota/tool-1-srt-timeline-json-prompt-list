@@ -4,6 +4,13 @@
 > [!IMPORTANT]
 > Historical completed checklist. Keep this for audit/history, but use `README.md` and `PROJECT_REGISTRY.md` for the current app behavior.
 
+## Drawbridge Assembly Scroll Glitch Repair (2026-04-07)
+- [x] Trace the Drawbridge `#episode-assembly-section` flicker to passive auto-refresh rerendering the same assembly stage with a fresh loading shell
+- [x] Reuse the existing assembly surface for same-episode same-stage refreshes so background polling updates content without flashing `Loading scenes`
+- [x] Keep stale assembly content visible on passive refresh failures and surface a notice instead of replacing the section mid-scroll
+- [x] Verify with `node --check tool1_dashboard/ui/app.js`
+- [x] Attempt a live browser repro against the local dashboard; current runtime no longer exposes episode `205`, so visual confirmation is blocked by `/api/episodes/205 -> 404`
+
 ## Drawbridge Bulk Upload Repair (2026-04-07)
 - [x] Reproduce the mixed image/video bulk-upload failure reported from Drawbridge and confirm the old matcher was using only raw scene numbers
 - [x] Enforce scene asset-type validation for single uploads so an image cannot be attached to a video scene or vice-versa
