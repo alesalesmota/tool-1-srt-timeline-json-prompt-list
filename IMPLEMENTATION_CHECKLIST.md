@@ -2,7 +2,7 @@
 
 Companion to `IMPLEMENTATION_PLAN.md`. Tick each box as the task is completed and verified. **Tags:** `[BACKEND]` = Python only, `[FRONTEND]` = JS/CSS only, `[FRONTEND-DESIGN]` = visual UI work — activate the design skill before starting.
 
-Status on 2026-04-08: implementation complete for Phases 1-5. Manual end-to-end browser verification is still pending.
+Status on 2026-04-08: implementation complete for Phases 1-6. Manual end-to-end browser verification is still pending.
 
 ## Phase 1 — Backend safety net & helpers
 
@@ -51,11 +51,26 @@ Status on 2026-04-08: implementation complete for Phases 1-5. Manual end-to-end 
 - [x] **Task 5.3 [BACKEND]** — Smoke tests (`tool1_dashboard/tests/...`)
   - Verify: `pytest` is green; the new tests cover queue guard + advance preconditions.
 
+## Phase 6 — Assembly workspace hierarchy follow-up  ⚠️ activate UI/design skill
+
+- [x] **Task 6.1 [FRONTEND-DESIGN]** — Reorder modal/detail layout around the assembly workspace (`tool1_dashboard/ui/app.js`)
+  - Verify: assembly stages render the workspace directly under the episode header/control panel, above generic pipeline progress and telemetry.
+- [x] **Task 6.2 [FRONTEND-DESIGN]** — Add exact assembly stage naming + current-step strip (`tool1_dashboard/ui/app.js`, `tool1_dashboard/ui/app.css`)
+  - Verify: the UI shows `Asset Upload`, `Assembly Validation`, `Video Render`, and `Final Review` consistently in the stepper/current-step panel.
+- [x] **Task 6.3 [FRONTEND-DESIGN]** — Convert `loadAssemblyUI()` into a stable workspace composer (`tool1_dashboard/ui/app.js`)
+  - Verify: advancing stages no longer removes prior assembly context; validation stays visible during render/review and scene/assets stay visible read-only after `asset_upload`.
+- [x] **Task 6.4 [FRONTEND-DESIGN]** — Clarify render/review copy and render entrypoints (`tool1_dashboard/ui/app.js`)
+  - Verify: `video_render` explains localized final video rendering clearly and shows per-language render actions even before any job exists.
+- [x] **Task 6.5 [FRONTEND-DESIGN]** — Minimal styling pass for the new hierarchy (`tool1_dashboard/ui/app.css`)
+  - Verify: the stepper/current-step panel/reference sections read as one ordered workspace without introducing a new design system.
+
 ## End-to-end verification (run after every phase, mandatory after Phase 5)
 
 - [ ] Episode runs through to export, then "Start Video Assembly" → `asset_upload`.
 - [ ] Bulk upload assets; board card shows progress + Continue (no Resume dropdown).
 - [ ] Continue → `assembly_validation`; validate → Continue → `video_render`; render → Continue → `final_review`.
+- [ ] In `assembly_validation`, `video_render`, and `final_review`, the current step appears first and earlier assembly context remains visible read-only below it.
+- [ ] In `video_render`, the UI explains that rendering one language means generating one localized final video and exposes a direct render action before any previous render job exists.
 - [ ] Manual `curl POST /api/episodes/{id}/queue` against an assembly episode returns 400 with zero `stage_runs` deletions.
 - [ ] `scene_assets` table and `workspace/episodes/{episode}/assembly/shared_assets/` unchanged before vs. after every advance.
 - [ ] Page refresh at every stage preserves the new buttons (state comes from server payload).

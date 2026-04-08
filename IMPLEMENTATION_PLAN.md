@@ -1,6 +1,6 @@
 # Plan: Wire the post-upload assembly continuation flow
 
-Status on 2026-04-08: implemented in code and regression tests. Manual end-to-end browser verification is still pending.
+Status on 2026-04-08: implemented in code and regression tests. A follow-up UI hierarchy pass for the assembly modal/detail flow is also implemented in code. Manual end-to-end browser verification is still pending.
 
 ## Context
 
@@ -214,6 +214,18 @@ Each task below is tagged with one of:
 - `tool1_dashboard/ui/app.js:6698-6767` — `renderAssemblyValidationPanel()`
 - `tool1_dashboard/ui/app.js:6991-7072` — delegated click handler block (pattern to follow)
 - `tool1_dashboard/ui/app.js` — existing `loadAssemblyUI()` helper used by `data-start-video-assembly` (search for it; reuse for the new `data-open-assembly` branch)
+
+## 2026-04-08 UX follow-up execution note
+
+The original continuation fix solved the destructive rerun path, but the user still got lost inside the assembly modal/detail flow because the UI hierarchy was backwards. The implemented follow-up keeps the same backend/API contract and restructures the assembly UI around the active step:
+
+- The assembly workspace now renders immediately after the episode header/control panel for assembly stages, above generic pipeline telemetry.
+- The current-step panel now includes a visible four-step strip with exact labels: `Asset Upload`, `Assembly Validation`, `Video Render`, `Final Review`.
+- Stage copy was standardized so the UI no longer mixes `Assembly Check` / `Render Progress` wording with the backend stage ids.
+- `loadAssemblyUI(...)` now composes a stable workspace stack instead of replacing the whole surface per stage.
+- Later stages preserve earlier context as read-only reference: validation stays visible during render/review, and the scene/assets preview stays visible beyond `asset_upload`.
+- `video_render` now exposes render entrypoints even before any render job exists, so “render one language” is concretely presented as rendering one localized final video.
+- `final_review` now shows finished-video playback/download first while preserving render/validation/scene context below.
 
 ## End-to-end verification
 
