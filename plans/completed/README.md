@@ -6,3 +6,4 @@ Finished implementation plans live here so the active folders stay focused on un
 
 - `ASSEMBLY_LIGHTWEIGH_PLAN.md`
 - `PERF_PLAN_SMART_REFRESH.md`
+- `PERF_PLAN_VIDEO_ENCODING.md`

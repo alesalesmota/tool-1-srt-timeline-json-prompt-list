@@ -28,7 +28,7 @@ def burn_subtitles(
             "-vf", f"subtitles='{safe_sub_path}':force_style='FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2'",
             "-c:a", "copy",
             "-c:v", "libx264",
-            "-preset", "medium",
+            "-preset", "fast",
             "-crf", "18",
             str(output_path),
         ],

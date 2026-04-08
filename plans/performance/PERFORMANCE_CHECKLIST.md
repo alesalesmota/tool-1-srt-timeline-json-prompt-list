@@ -27,12 +27,13 @@
   - [x] Verify with `node --check tool1_dashboard/ui/app.js` and `python -m pytest tests/test_video_pipeline.py -q` (`72` passing)
   - Plan: `plans/completed/PERF_PLAN_SMART_REFRESH.md`
 
-- [ ] **B1 — Triple Video Re-encoding**
-  - [ ] Switch concat to stream copy (`-c:v copy`) in `concat_scenes.py`
-  - [ ] Add `-preset fast -crf 20` to `render_video_scene.py` and `render_image_scene.py`
-  - [ ] Change subtitle burn preset from `medium` to `fast` in `burn_subtitles.py`
-  - [ ] End-to-end verification (subtitle path + no-subtitle path + mixed assets)
-  - Plan: `plans/performance/PERF_PLAN_VIDEO_ENCODING.md`
+- [x] **B1 — Triple Video Re-encoding** (2026-04-08)
+  - [x] Switch concat to stream copy (`-c:v copy`) in `concat_scenes.py`
+  - [x] Add `-preset fast -crf 20` to `render_video_scene.py` and `render_image_scene.py`
+  - [x] Change subtitle burn preset from `medium` to `fast` in `burn_subtitles.py`
+  - [x] End-to-end verification (subtitle path + no-subtitle path + mixed assets)
+  - [x] Verify with `python -m pytest tests/test_video_assembly/test_encoding_commands.py -q` (`4` passing), `python -m pytest tests/test_video_assembly_integration.py -q` (`16` passing), and a real local FFmpeg smoke covering mixed image/video scenes plus no-subtitle and subtitle outputs
+  - Plan: `plans/completed/PERF_PLAN_VIDEO_ENCODING.md`
 
 ---
 

@@ -3,7 +3,7 @@
 > **Date:** 2026-04-08  
 > **Audit ref:** `PERFORMANCE_AUDIT.md` finding B1  
 > **Checklist ref:** `PERFORMANCE_CHECKLIST.md`  
-> **Status:** Ready for implementation
+> **Status:** Implemented (2026-04-08)
 
 ---
 
@@ -67,6 +67,16 @@ AFTER (1 encode for scenes + 1 encode only if subtitles):
 | `tool1_dashboard/video_assembly/burn_subtitles.py` | Change preset from `medium` to `fast` |
 
 **Files NOT modified:** `pipeline.py`, `mux_voiceover.py`, `ffmpeg_utils.py`, `models.py` — no orchestration or model changes needed.
+
+---
+
+## Implementation Outcome
+
+- `concat_scenes.py` now uses `-c:v copy`, removing the redundant full-video encode during concat.
+- `render_video_scene.py` and `render_image_scene.py` now encode with `libx264 -preset fast -crf 20`.
+- `burn_subtitles.py` now uses `-preset fast` while keeping the final `-crf 18`.
+- Added unit coverage in `tests/test_video_assembly/test_encoding_commands.py` to lock the ffmpeg arguments.
+- Verified the mocked assembly pipeline with `tests/test_video_assembly_integration.py` and a real local FFmpeg smoke that rendered mixed image/video scenes through concat, mux, and subtitle burn.
 
 ---
 
@@ -225,11 +235,11 @@ run_command(
 
 ## Implementation Checklist
 
-- [ ] Task 1: Switch `concat_scenes.py` from `-c:v libx264` to `-c:v copy`, remove `-pix_fmt`
-- [ ] Task 2: Add `-preset fast -crf 20` to `render_video_scene.py`
-- [ ] Task 3: Add `-preset fast -crf 20` to `render_image_scene.py`
-- [ ] Task 4: Change `-preset medium` to `-preset fast` in `burn_subtitles.py`
-- [ ] Task 5: End-to-end verification (subtitle path, no-subtitle path, mixed assets)
+- [x] Task 1: Switch `concat_scenes.py` from `-c:v libx264` to `-c:v copy`, remove `-pix_fmt`
+- [x] Task 2: Add `-preset fast -crf 20` to `render_video_scene.py`
+- [x] Task 3: Add `-preset fast -crf 20` to `render_image_scene.py`
+- [x] Task 4: Change `-preset medium` to `-preset fast` in `burn_subtitles.py`
+- [x] Task 5: End-to-end verification (subtitle path, no-subtitle path, mixed assets)
 
 ---
 
