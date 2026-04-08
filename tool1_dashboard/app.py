@@ -474,6 +474,16 @@ async def episode_scenes(episode_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/api/episodes/{episode_id}/scenes/{scene_id}")
+async def get_single_scene(episode_id: str, scene_id: str) -> dict[str, Any]:
+    try:
+        return service.get_single_scene(episode_id, scene_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/episodes/{episode_id}/scenes/{scene_id}/asset")
 async def upload_scene_asset(
     episode_id: str,

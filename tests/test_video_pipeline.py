@@ -800,6 +800,11 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     self.assertEqual(list_resp.json()["uploaded_count"], 0)
                     self.assertEqual(list_resp.json()["scenes"][0]["asset"], None)
 
+                    single_scene_resp = client.get(f"/api/episodes/{episode_id}/scenes/scene_001")
+                    self.assertEqual(single_scene_resp.status_code, 200)
+                    self.assertEqual(single_scene_resp.json()["scene_id"], "scene_001")
+                    self.assertEqual(single_scene_resp.json()["asset"], None)
+
                     upload_resp = client.post(
                         f"/api/episodes/{episode_id}/scenes/scene_001/asset",
                         files={"file": ("prompt1.png", b"\x89PNG\r\n\x1a\nphase3-scene-1", "image/png")},
@@ -807,6 +812,10 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     self.assertEqual(upload_resp.status_code, 200)
                     self.assertEqual(upload_resp.json()["asset"]["scene_id"], "scene_001")
                     self.assertEqual(upload_resp.json()["asset"]["filename"], "prompt1.png")
+
+                    single_after_upload_resp = client.get(f"/api/episodes/{episode_id}/scenes/scene_001")
+                    self.assertEqual(single_after_upload_resp.status_code, 200)
+                    self.assertEqual(single_after_upload_resp.json()["asset"]["filename"], "prompt1.png")
 
                     bulk_resp = client.post(
                         f"/api/episodes/{episode_id}/scenes/bulk-upload",
@@ -846,6 +855,14 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     self.assertEqual(final_list_resp.status_code, 200)
                     self.assertEqual(final_list_resp.json()["uploaded_count"], 2)
                     self.assertEqual(final_list_resp.json()["scenes"][0]["asset"], None)
+
+                    single_after_delete_resp = client.get(f"/api/episodes/{episode_id}/scenes/scene_001")
+                    self.assertEqual(single_after_delete_resp.status_code, 200)
+                    self.assertEqual(single_after_delete_resp.json()["asset"], None)
+
+                    missing_scene_resp = client.get(f"/api/episodes/{episode_id}/scenes/scene_999")
+                    self.assertEqual(missing_scene_resp.status_code, 404)
+                    self.assertIn("Scene scene_999 not found.", missing_scene_resp.json()["detail"])
                 finally:
                     self.app_module.service = original
 

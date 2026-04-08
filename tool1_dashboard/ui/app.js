@@ -63,6 +63,7 @@ const TRANSLATION_PROFILE_PROVIDER_CATALOG = [
 ];
 const REFRESH_INTERVAL_MS = 5000;
 const ACTIVE_REFRESH_INTERVAL_MS = 1000;
+const ASSEMBLY_PAGE_SIZE = 20;
 const EPISODE_FILES_CACHE_TTL_MS = 3000;
 const HEALTH_CACHE_TTL_MS = 15000;
 const SETTINGS_CACHE_TTL_MS = 30000;
@@ -144,6 +145,7 @@ const state = {
   lastEpisodeReviewLoadedFor: null,
   episodeAssemblyActiveRenderLanguage: {},
   episodeAssemblyCache: {},
+  episodeAssemblyVisibleCounts: {},
   episodeAssemblyInteractionHoldUntil: 0,
   episodeAssemblyUploadsInFlight: 0,
   cachedReviewData: null,
@@ -607,6 +609,45 @@ function endEpisodeAssemblyUploadInteraction() {
   if (!state.episodeAssemblyUploadsInFlight && Date.now() >= Number(state.episodeAssemblyInteractionHoldUntil || 0)) {
     state.episodeAssemblyInteractionHoldUntil = 0;
   }
+}
+
+function setEpisodeAssemblyVisibleCount(episodeId, nextCount) {
+  if (!episodeId) return;
+  const numericCount = Math.max(1, Math.floor(Number(nextCount) || ASSEMBLY_PAGE_SIZE));
+  state.episodeAssemblyVisibleCounts = {
+    ...state.episodeAssemblyVisibleCounts,
+    [episodeId]: numericCount,
+  };
+}
+
+function getEpisodeAssemblyVisibleCount(episodeId) {
+  const storedCount = Number(state.episodeAssemblyVisibleCounts?.[episodeId] || 0);
+  if (storedCount > 0) {
+    return storedCount;
+  }
+  const container = $("episode-assembly-section");
+  if (container?.dataset.visibleCountEpisodeId === String(episodeId)) {
+    const renderedCount = Number(container.dataset.visibleCount || 0);
+    if (renderedCount > 0) {
+      setEpisodeAssemblyVisibleCount(episodeId, renderedCount);
+      return renderedCount;
+    }
+  }
+  setEpisodeAssemblyVisibleCount(episodeId, ASSEMBLY_PAGE_SIZE);
+  return ASSEMBLY_PAGE_SIZE;
+}
+
+function episodeAssemblyStageIsReadOnly(stage) {
+  return stage === "assembly_validation";
+}
+
+function updateEpisodeAssemblyProgressCounter(container, uploadedCount, totalScenes) {
+  if (!container) return;
+  const progressEl = container.querySelector(".asset-upload-progress");
+  if (!progressEl) return;
+  progressEl.dataset.uploadedCount = String(Math.max(0, Number(uploadedCount) || 0));
+  progressEl.dataset.totalScenes = String(Math.max(0, Number(totalScenes) || 0));
+  progressEl.textContent = `${progressEl.dataset.uploadedCount}/${progressEl.dataset.totalScenes} assets uploaded`;
 }
 
 function episodeWorkflowActionState(episodeId) {
@@ -6163,6 +6204,8 @@ async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
     delete container.dataset.assemblyEpisodeId;
     delete container.dataset.assemblyStage;
     delete container.dataset.assemblyReady;
+    delete container.dataset.visibleCount;
+    delete container.dataset.visibleCountEpisodeId;
     delete state.episodeAssemblyCache[episodeId];
     return;
   }
@@ -6232,6 +6275,54 @@ async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
   }
 }
 
+function renderSceneCardHtml(scene, episodeId, readOnly) {
+  const isUploaded = !!scene.asset;
+  const previewUrl = `/api/episodes/${encodeURIComponent(episodeId)}/scenes/${encodeURIComponent(scene.scene_id)}/asset/preview`;
+  const uploadedAssetType = scene.asset?.asset_type || scene.asset_type || "image";
+  const assetMarkup = isUploaded
+    ? `<div style="position:relative">
+         ${uploadedAssetType === "video"
+           ? `<div class="scene-card-video-placeholder" data-video-src="${esc(previewUrl)}">
+                <div class="scene-card-video-play-overlay">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+                </div>
+                <div class="helper" style="font-size:0.75rem;">video &middot; ${esc(scene.asset?.filename || "")}</div>
+              </div>`
+           : `<img src="${esc(previewUrl)}" class="scene-card-thumbnail" loading="lazy" />`
+         }
+         ${readOnly ? "" : `<div style="padding: 12px; display: flex; justify-content: flex-end; gap: 8px;">
+           <button class="button button-ghost button-small" data-upload-asset="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">Replace</button>
+           <button class="button button-ghost button-small button-danger" data-remove-asset="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">Remove</button>
+           <input type="file" id="single-upload-input-${esc(scene.scene_id)}" accept="image/*,video/*" style="display:none;" data-single-upload-input="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}" />
+         </div>`}
+       </div>`
+    : readOnly
+      ? `<div class="scene-card-dropzone"><div class="helper">No asset uploaded</div></div>`
+      : `<div class="scene-card-dropzone" data-dropzone="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">
+           <div class="helper">Drag & drop or</div>
+           <button class="button button-ghost button-small" style="margin-top:8px;" data-upload-asset="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">Browse File</button>
+           <input type="file" id="single-upload-input-${esc(scene.scene_id)}" accept="image/*,video/*" style="display:none;" data-single-upload-input="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}" />
+         </div>`;
+
+  const timeRange = `${voiceTtsNumberValue(scene.start, 1)}s - ${voiceTtsNumberValue(scene.end, 1)}s`;
+
+  return `
+    <div class="scene-card" data-scene-id="${esc(scene.scene_id)}" data-has-asset="${isUploaded ? "true" : "false"}">
+      <div class="scene-card-header">
+        <div>
+          <div class="scene-card-title">Scene ${esc(scene.scene_id)}</div>
+          <div class="scene-card-time">${esc(timeRange)}</div>
+        </div>
+        <div class="asset-badge">${esc(scene.asset_type || "image")}</div>
+      </div>
+      <div class="scene-card-body">
+        ${esc(shortText(scene.text, 60))}
+      </div>
+      ${assetMarkup}
+    </div>
+  `;
+}
+
 async function renderAssemblySection(episodeId, { readOnly = false, showLoading = true } = {}) {
   const container = $("episode-assembly-section");
   if (!container) return;
@@ -6243,10 +6334,13 @@ async function renderAssemblySection(episodeId, { readOnly = false, showLoading 
     const scenes = data.scenes || [];
     const totalScenes = data.total_scenes || 0;
     const uploadedCount = data.uploaded_count || 0;
+    const visibleCount = getEpisodeAssemblyVisibleCount(episodeId);
+    const visibleScenes = scenes.slice(0, visibleCount);
+    const shownCount = Math.min(visibleCount, scenes.length);
 
     const statsBar = `
       <div class="assembly-stats-bar">
-        <div class="asset-upload-progress">${uploadedCount}/${totalScenes} assets uploaded</div>
+        <div class="asset-upload-progress" data-uploaded-count="${uploadedCount}" data-total-scenes="${totalScenes}">${uploadedCount}/${totalScenes} assets uploaded</div>
         <div>
           ${readOnly ? '<span class="helper">Read-only at this stage</span>' : `
           <button type="button" class="button button-inline" data-bulk-upload="${esc(episodeId)}">
@@ -6259,46 +6353,16 @@ async function renderAssemblySection(episodeId, { readOnly = false, showLoading 
       </div>
     `;
 
-    const gridLayout = scenes.map(scene => {
-      const isUploaded = scene.asset !== null;
-      const assetMarkup = isUploaded 
-        ? `<div style="position:relative">
-             ${scene.asset.asset_type === "video" 
-               ? `<video src="/api/episodes/${encodeURIComponent(episodeId)}/scenes/${encodeURIComponent(scene.scene_id)}/asset/preview" class="scene-card-thumbnail" controls controlsList="nodownload"></video>`
-               : `<img src="/api/episodes/${encodeURIComponent(episodeId)}/scenes/${encodeURIComponent(scene.scene_id)}/asset/preview" class="scene-card-thumbnail" />`
-             }
-             ${readOnly ? "" : `<div style="padding: 12px; display: flex; justify-content: flex-end; gap: 8px;">
-               <button class="button button-ghost button-small" data-upload-asset="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">Replace</button>
-               <button class="button button-ghost button-small button-danger" data-remove-asset="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">Remove</button>
-              <input type="file" id="single-upload-input-${esc(scene.scene_id)}" accept="image/*,video/*" style="display:none;" data-single-upload-input="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}" />
-             </div>`}
-           </div>`
-        : readOnly
-          ? `<div class="scene-card-dropzone"><div class="helper">No asset uploaded</div></div>`
-          : `<div class="scene-card-dropzone" data-dropzone="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">
-               <div class="helper">Drag & drop or</div>
-               <button class="button button-ghost button-small" style="margin-top:8px;" data-upload-asset="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}">Browse File</button>
-               <input type="file" id="single-upload-input-${esc(scene.scene_id)}" accept="image/*,video/*" style="display:none;" data-single-upload-input="${esc(episodeId)}" data-scene="${esc(scene.scene_id)}" />
-             </div>`;
-      
-      const timeRange = `${voiceTtsNumberValue(scene.start, 1)}s - ${voiceTtsNumberValue(scene.end, 1)}s`;
-      
-      return `
-        <div class="scene-card">
-          <div class="scene-card-header">
-            <div>
-              <div class="scene-card-title">Scene ${esc(scene.scene_id)}</div>
-              <div class="scene-card-time">${esc(timeRange)}</div>
-            </div>
-            <div class="asset-badge">${esc(scene.asset_type || "image")}</div>
-          </div>
-          <div class="scene-card-body">
-            ${esc(shortText(scene.text, 60))}
-          </div>
-          ${assetMarkup}
-        </div>
-      `;
-    }).join("");
+    const gridLayout = visibleScenes.map((scene) => renderSceneCardHtml(scene, episodeId, readOnly)).join("");
+    const hasMore = shownCount < scenes.length;
+    const remaining = Math.max(0, scenes.length - shownCount);
+    const loadMoreMarkup = hasMore
+      ? `<div style="text-align:center; margin-top:16px;">
+           <button type="button" class="button button-ghost" data-load-more-scenes="${esc(episodeId)}">
+             Show ${Math.min(ASSEMBLY_PAGE_SIZE, remaining)} more (${shownCount} of ${scenes.length} shown)
+           </button>
+         </div>`
+      : "";
 
     container.innerHTML = `
       <div class="section-header" style="margin-bottom:12px;">
@@ -6306,7 +6370,11 @@ async function renderAssemblySection(episodeId, { readOnly = false, showLoading 
       </div>
       ${statsBar}
       <div class="scene-grid">${gridLayout}</div>
+      ${loadMoreMarkup}
     `;
+    container.dataset.assemblyEpisodeId = String(episodeId);
+    container.dataset.visibleCount = String(shownCount);
+    container.dataset.visibleCountEpisodeId = String(episodeId);
     bindEpisodeAssemblyUploadInputs(container);
     const cachedStage = container.dataset.assemblyStage || state.episodeDetail?.episode?.current_stage || null;
     updateEpisodeAssemblyCache(episodeId, cachedStage, container.innerHTML);
@@ -6318,6 +6386,44 @@ async function renderAssemblySection(episodeId, { readOnly = false, showLoading 
     } else {
       throw err;
     }
+  }
+}
+
+async function updateSingleSceneCard(episodeId, sceneId) {
+  const container = $("episode-assembly-section");
+  if (!container) return;
+  const stage = container.dataset.assemblyStage || state.episodeDetail?.episode?.current_stage || null;
+  const readOnly = episodeAssemblyStageIsReadOnly(stage);
+  try {
+    const existingCard = container.querySelector(`[data-scene-id="${sceneId}"]`);
+    if (!existingCard) {
+      await renderAssemblySection(episodeId, { readOnly, showLoading: false });
+      return;
+    }
+
+    const scene = await api(`/api/episodes/${encodeURIComponent(episodeId)}/scenes/${encodeURIComponent(sceneId)}`);
+    const oldHasAsset = existingCard.dataset.hasAsset === "true";
+    const tempDiv = document.createElement("div");
+    tempDiv.innerHTML = renderSceneCardHtml(scene, episodeId, readOnly).trim();
+    const newCard = tempDiv.firstElementChild;
+    if (!newCard) {
+      throw new Error("Failed to render updated scene card");
+    }
+    existingCard.replaceWith(newCard);
+    bindEpisodeAssemblyUploadInputs(newCard);
+
+    const newHasAsset = newCard.dataset.hasAsset === "true";
+    if (oldHasAsset !== newHasAsset) {
+      const progressEl = container.querySelector(".asset-upload-progress");
+      const currentUploaded = Number(progressEl?.dataset.uploadedCount || 0);
+      const totalScenes = Number(progressEl?.dataset.totalScenes || 0);
+      const delta = newHasAsset ? 1 : -1;
+      updateEpisodeAssemblyProgressCounter(container, currentUploaded + delta, totalScenes);
+    }
+
+    updateEpisodeAssemblyCache(episodeId, stage, container.innerHTML);
+  } catch (err) {
+    await renderAssemblySection(episodeId, { readOnly, showLoading: false });
   }
 }
 
@@ -6373,7 +6479,7 @@ async function handleAssetUpload(episodeId, sceneId, file) {
       throw new Error(data.detail || "Upload failed");
     }
     setNotice(`Uploaded ${file.name}`, "success");
-    await renderAssemblySection(episodeId);
+    await updateSingleSceneCard(episodeId, sceneId);
   } catch (err) {
     setNotice(`Upload failed: ${err.message}`, "error");
   }
@@ -6381,32 +6487,79 @@ async function handleAssetUpload(episodeId, sceneId, file) {
 
 async function handleBulkUpload(episodeId, files) {
   if (!files || files.length === 0) return;
-  const formData = new FormData();
-  for (const file of files) {
-    formData.append("files", file);
+  const chunkSize = 5;
+  const chunks = [];
+  for (let index = 0; index < files.length; index += chunkSize) {
+    chunks.push(files.slice(index, index + chunkSize));
   }
-  setNotice(`Uploading ${files.length} file${files.length > 1 ? "s" : ""}…`, "neutral");
-  try {
-    const res = await fetch(`/api/episodes/${encodeURIComponent(episodeId)}/scenes/bulk-upload`, {
-      method: "POST",
-      body: formData
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || "Bulk upload failed");
 
-    if (data.unmatched && data.unmatched.length > 0) {
-      setNotice(`${data.matched.length} uploaded, ${data.unmatched.length} skipped (filename or type mismatch)`, "warn");
-    } else {
-      setNotice(`Bulk uploaded ${data.matched?.length || 0} assets`, "success");
+  let totalMatched = 0;
+  let unmatched = [];
+  let failed = false;
+  for (let index = 0; index < chunks.length; index += 1) {
+    holdEpisodeAssemblyInteraction(120000);
+    setNotice(`Uploading batch ${index + 1}/${chunks.length} (${totalMatched} matched so far)…`, "neutral");
+    const formData = new FormData();
+    for (const file of chunks[index]) {
+      formData.append("files", file);
     }
-    await renderAssemblySection(episodeId);
-  } catch (err) {
-    setNotice(`Bulk upload failed: ${err.message}`, "error");
+    try {
+      const res = await fetch(`/api/episodes/${encodeURIComponent(episodeId)}/scenes/bulk-upload`, {
+        method: "POST",
+        body: formData
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Batch upload failed");
+      totalMatched += data.matched?.length || 0;
+      unmatched = unmatched.concat(data.unmatched || []);
+    } catch (err) {
+      setNotice(`Bulk upload failed on batch ${index + 1}: ${err.message}`, "error");
+      failed = true;
+      break;
+    }
   }
+
+  if (!failed) {
+    if (unmatched.length > 0) {
+      setNotice(`${totalMatched} uploaded, ${unmatched.length} skipped (filename or type mismatch)`, "warn");
+    } else {
+      setNotice(`Bulk uploaded ${totalMatched} assets`, "success");
+    }
+  }
+
+  await renderAssemblySection(episodeId, { showLoading: false });
 }
 
 // Global Event Delegation for Video Assembly
 document.addEventListener("click", async (event) => {
+  // Click-to-play video placeholder
+  const videoPlaceholder = event.target.closest("[data-video-src]");
+  if (videoPlaceholder) {
+    const src = videoPlaceholder.dataset.videoSrc;
+    const video = document.createElement("video");
+    video.src = src;
+    video.className = "scene-card-thumbnail";
+    video.controls = true;
+    video.controlsList = "nodownload";
+    video.preload = "metadata";
+    video.autoplay = true;
+    videoPlaceholder.replaceWith(video);
+    return;
+  }
+
+  const loadMoreBtn = event.target.closest("[data-load-more-scenes]");
+  if (loadMoreBtn) {
+    const epId = loadMoreBtn.dataset.loadMoreScenes;
+    setEpisodeAssemblyVisibleCount(epId, getEpisodeAssemblyVisibleCount(epId) + ASSEMBLY_PAGE_SIZE);
+    const container = $("episode-assembly-section");
+    const stage = container?.dataset.assemblyStage || state.episodeDetail?.episode?.current_stage || null;
+    await renderAssemblySection(epId, {
+      readOnly: episodeAssemblyStageIsReadOnly(stage),
+      showLoading: false,
+    });
+    return;
+  }
+
   const bulkBtn = event.target.closest("[data-bulk-upload]");
   if (bulkBtn) {
     const epId = bulkBtn.dataset.bulkUpload;
@@ -6432,7 +6585,7 @@ document.addEventListener("click", async (event) => {
     try {
       const res = await fetch(`/api/episodes/${encodeURIComponent(epId)}/scenes/${encodeURIComponent(sceneId)}/asset`, { method: "DELETE" });
       if (!res.ok) throw new Error("Failed to delete asset");
-      await renderAssemblySection(epId);
+      await updateSingleSceneCard(epId, sceneId);
     } catch (err) {
       setNotice(err.message, "error");
     }

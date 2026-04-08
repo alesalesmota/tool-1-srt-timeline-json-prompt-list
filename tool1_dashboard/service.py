@@ -2703,6 +2703,28 @@ class Tool1Service:
 
         return project_dir
 
+    @staticmethod
+    def _serialize_episode_scene(
+        scene: dict[str, Any],
+        asset: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        asset_payload = None
+        if asset is not None:
+            asset_payload = {
+                "filename": asset.get("original_filename") or asset.get("stored_filename"),
+                "file_size": int(asset.get("file_size") or 0),
+                "asset_type": asset.get("asset_type") or "image",
+            }
+        return {
+            "scene_id": scene["scene_id"],
+            "start": scene["start"],
+            "end": scene["end"],
+            "duration": scene["duration"],
+            "text": scene["text"],
+            "asset_type": scene.get("asset_type") or "image",
+            "asset": asset_payload,
+        }
+
     def list_episode_scenes(self, episode_id: str) -> dict[str, Any]:
         _, scenes = self._load_master_timeline_scenes(episode_id)
         assets = {
@@ -2714,31 +2736,23 @@ class Tool1Service:
 
         for scene in scenes:
             asset = assets.get(scene["scene_id"])
-            asset_payload = None
             if asset is not None:
                 uploaded_count += 1
-                asset_payload = {
-                    "filename": asset.get("original_filename") or asset.get("stored_filename"),
-                    "file_size": int(asset.get("file_size") or 0),
-                    "asset_type": asset.get("asset_type") or "image",
-                }
-            payload_scenes.append(
-                {
-                    "scene_id": scene["scene_id"],
-                    "start": scene["start"],
-                    "end": scene["end"],
-                    "duration": scene["duration"],
-                    "text": scene["text"],
-                    "asset_type": scene["asset_type"],
-                    "asset": asset_payload,
-                }
-            )
+            payload_scenes.append(self._serialize_episode_scene(scene, asset))
 
         return {
             "scenes": payload_scenes,
             "total_scenes": len(payload_scenes),
             "uploaded_count": uploaded_count,
         }
+
+    def get_single_scene(self, episode_id: str, scene_id: str) -> dict[str, Any]:
+        _, scenes = self._load_master_timeline_scenes(episode_id)
+        scene = next((item for item in scenes if item["scene_id"] == scene_id), None)
+        if scene is None:
+            raise FileNotFoundError(f"Scene {scene_id} not found.")
+        asset = self.db.get_scene_asset(episode_id, scene_id)
+        return self._serialize_episode_scene(scene, asset)
 
     def upload_scene_asset(
         self,
