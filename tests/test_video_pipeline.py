@@ -2998,6 +2998,129 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertIsInstance(timeline, list)
                 self.assertGreater(len(timeline), 0)
 
+    def test_scene_planning_repairs_small_overlap_and_persists_validation(self) -> None:
+        class SmallOverlapCliRunner(FakeCliRunner):
+            def run_structured(self, *, provider, model, api_key=None, system_prompt, user_prompt, schema, workdir, artifact_dir):
+                if "scenes" not in schema.get("properties", {}):
+                    return super().run_structured(
+                        provider=provider,
+                        model=model,
+                        api_key=api_key,
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        schema=schema,
+                        workdir=workdir,
+                        artifact_dir=artifact_dir,
+                    )
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                self.calls.append({"provider": provider, "model": model, "schema": schema})
+                stdout_path = artifact_dir / "stdout.txt"
+                stderr_path = artifact_dir / "stderr.txt"
+                stdout_path.write_text("small-overlap stdout", encoding="utf-8")
+                stderr_path.write_text("", encoding="utf-8")
+                return {
+                    "parsed": {
+                        "scenes": [
+                            {"start": 0.0, "end": 3.0, "duration": 3.0, "text": "First repaired scene."},
+                            {"start": 2.91, "end": 6.0, "duration": 3.09, "text": "Second repaired scene."},
+                        ]
+                    },
+                    "stdout_path": str(stdout_path),
+                    "stderr_path": str(stderr_path),
+                    "command_payload": {"fake": True},
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=SmallOverlapCliRunner())
+                project = service.create_niche_project(name="Repair Planning", master_language="en", configured_languages=["en"])
+                episode_result = service.submit_episode(project["project"]["id"], title="Repair Planning", script_text="Test")
+                episode_id = episode_result["episode"]["id"]
+                workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+
+                srt_content = (
+                    "1\n00:00:00,000 --> 00:00:03,000\nFirst subtitle.\n\n"
+                    "2\n00:00:03,000 --> 00:00:06,000\nSecond subtitle.\n"
+                )
+                srt_path = workspace / "final_en.srt"
+                srt_path.write_text(srt_content, encoding="utf-8")
+                service.db.update_episode_language_status(
+                    episode_id, "en", srt_status="done", srt_path=str(srt_path),
+                )
+                service._episode_run_chunking(episode_id)
+                service._episode_run_scene_planning(episode_id)
+
+                episode = service.db.get_episode(episode_id)
+                timeline = json.loads(Path(episode["timeline_draft_path"]).read_text(encoding="utf-8"))
+                report = json.loads(Path(episode["timeline_validation_path"]).read_text(encoding="utf-8"))
+                self.assertEqual(timeline[1]["start"], 3.0)
+                self.assertEqual(timeline[1]["duration"], 3.0)
+                self.assertEqual(report["status"], "valid")
+                self.assertEqual(report["overlap_adjustments"], 1)
+
+    def test_scene_planning_rejects_large_overlap_and_persists_invalid_report(self) -> None:
+        class LargeOverlapCliRunner(FakeCliRunner):
+            def run_structured(self, *, provider, model, api_key=None, system_prompt, user_prompt, schema, workdir, artifact_dir):
+                if "scenes" not in schema.get("properties", {}):
+                    return super().run_structured(
+                        provider=provider,
+                        model=model,
+                        api_key=api_key,
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        schema=schema,
+                        workdir=workdir,
+                        artifact_dir=artifact_dir,
+                    )
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                stdout_path = artifact_dir / "stdout.txt"
+                stderr_path = artifact_dir / "stderr.txt"
+                stdout_path.write_text("large-overlap stdout", encoding="utf-8")
+                stderr_path.write_text("", encoding="utf-8")
+                return {
+                    "parsed": {
+                        "scenes": [
+                            {"start": 0.0, "end": 3.0, "duration": 3.0, "text": "First invalid scene."},
+                            {"start": 2.4, "end": 6.0, "duration": 3.6, "text": "Second invalid scene."},
+                        ]
+                    },
+                    "stdout_path": str(stdout_path),
+                    "stderr_path": str(stderr_path),
+                    "command_payload": {"fake": True},
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=LargeOverlapCliRunner())
+                project = service.create_niche_project(name="Reject Planning", master_language="en", configured_languages=["en"])
+                episode_result = service.submit_episode(project["project"]["id"], title="Reject Planning", script_text="Test")
+                episode_id = episode_result["episode"]["id"]
+                workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+
+                srt_content = (
+                    "1\n00:00:00,000 --> 00:00:03,000\nFirst subtitle.\n\n"
+                    "2\n00:00:03,000 --> 00:00:06,000\nSecond subtitle.\n"
+                )
+                srt_path = workspace / "final_en.srt"
+                srt_path.write_text(srt_content, encoding="utf-8")
+                service.db.update_episode_language_status(
+                    episode_id, "en", srt_status="done", srt_path=str(srt_path),
+                )
+                service._episode_run_chunking(episode_id)
+
+                with self.assertRaises(ValueError) as ctx:
+                    service._episode_run_scene_planning(episode_id)
+
+                self.assertIn("Timeline draft is invalid", str(ctx.exception))
+                episode = service.db.get_episode(episode_id)
+                self.assertFalse(episode["timeline_draft_path"])
+                self.assertTrue(episode["timeline_validation_path"])
+                report = json.loads(Path(episode["timeline_validation_path"]).read_text(encoding="utf-8"))
+                self.assertEqual(report["status"], "invalid")
+                self.assertTrue(report["errors"])
+
     def test_save_master_scenes_copies_timeline(self) -> None:
         """Save master scenes creates a copy of the timeline draft."""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3142,6 +3265,137 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 it_status = service.db.get_episode_language_status(episode_id, "it")
                 self.assertEqual(it_status["timeline_status"], "skipped")
                 self.assertEqual(it_status["error_message"], "Alignment failed: missing Italian MFA model")
+
+    def test_retry_single_timeline_mapping_marks_language_failed_when_master_timeline_is_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                project = service.create_niche_project(
+                    name="TL Invalid",
+                    master_language="en",
+                    configured_languages=["en", "pt-BR"],
+                )
+                pid = project["project"]["id"]
+                episode_result = service.submit_episode(pid, title="TL Invalid Video", script_text="Test")
+                episode_id = episode_result["episode"]["id"]
+                workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+
+                from tool1_dashboard.runtime import write_json
+                timeline_data = [
+                    {"scene_id": "s01", "start": 0.0, "end": 5.0, "duration": 5.0, "asset_type": "video", "text": "first"},
+                    {"scene_id": "s02", "start": 4.0, "end": 8.0, "duration": 4.0, "asset_type": "image", "text": "second"},
+                ]
+                timeline_path = write_json(workspace / "timeline_draft.json", timeline_data)
+                service.db.update_episode(episode_id, timeline_draft_path=str(timeline_path))
+
+                master_srt = (
+                    "1\n00:00:00,000 --> 00:00:05,000\nFirst subtitle.\n\n"
+                    "2\n00:00:05,000 --> 00:00:08,000\nSecond subtitle.\n"
+                )
+                master_srt_path = workspace / "final_en.srt"
+                master_srt_path.write_text(master_srt, encoding="utf-8")
+                ptbr_srt_path = workspace / "final_pt-BR.srt"
+                ptbr_srt_path.write_text(master_srt, encoding="utf-8")
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "en",
+                    srt_status="done",
+                    srt_path=str(master_srt_path),
+                )
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "pt-BR",
+                    srt_status="done",
+                    srt_path=str(ptbr_srt_path),
+                )
+
+                result = service._episode_retry_single_timeline_mapping(episode_id, "pt-BR")
+                ptbr_status = service.db.get_episode_language_status(episode_id, "pt-BR")
+                self.assertEqual(result, "failed")
+                self.assertEqual(ptbr_status["timeline_status"], "failed")
+                self.assertIn("Master timeline is invalid", ptbr_status["error_message"])
+
+    def test_update_review_data_repairs_small_overlap_and_persists_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                project = service.create_niche_project(name="Review Repair", master_language="en", configured_languages=["en"])
+                episode_result = service.submit_episode(project["project"]["id"], title="Review Repair", script_text="Test")
+                episode_id = episode_result["episode"]["id"]
+                workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+
+                master_srt = (
+                    "1\n00:00:00,000 --> 00:00:05,000\nFirst subtitle.\n\n"
+                    "2\n00:00:05,000 --> 00:00:08,000\nSecond subtitle.\n"
+                )
+                master_srt_path = workspace / "final_en.srt"
+                master_srt_path.write_text(master_srt, encoding="utf-8")
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "en",
+                    srt_status="done",
+                    srt_path=str(master_srt_path),
+                )
+
+                result = service.update_review_data(
+                    episode_id,
+                    timeline_draft=[
+                        {"scene_id": "scene_001", "start": 0.0, "end": 5.0, "duration": 5.0, "text": "One", "asset_type": "image"},
+                        {"scene_id": "scene_002", "start": 4.91, "end": 8.0, "duration": 3.09, "text": "Two", "asset_type": "video"},
+                    ],
+                    prompt_list="Prompt line",
+                )
+
+                self.assertIn("timeline_draft", result["updated"])
+                episode = service.db.get_episode(episode_id)
+                timeline = json.loads(Path(episode["timeline_draft_path"]).read_text(encoding="utf-8"))
+                validation = json.loads(Path(episode["timeline_validation_path"]).read_text(encoding="utf-8"))
+                self.assertEqual(timeline[1]["start"], 5.0)
+                self.assertEqual(validation["status"], "valid")
+                self.assertEqual(validation["overlap_adjustments"], 1)
+
+    def test_update_review_data_rejects_large_overlap_without_partial_persist(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                project = service.create_niche_project(name="Review Invalid", master_language="en", configured_languages=["en"])
+                episode_result = service.submit_episode(project["project"]["id"], title="Review Invalid", script_text="Test")
+                episode_id = episode_result["episode"]["id"]
+                workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+
+                master_srt = (
+                    "1\n00:00:00,000 --> 00:00:05,000\nFirst subtitle.\n\n"
+                    "2\n00:00:05,000 --> 00:00:08,000\nSecond subtitle.\n"
+                )
+                master_srt_path = workspace / "final_en.srt"
+                master_srt_path.write_text(master_srt, encoding="utf-8")
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "en",
+                    srt_status="done",
+                    srt_path=str(master_srt_path),
+                )
+
+                with self.assertRaises(ValueError) as ctx:
+                    service.update_review_data(
+                        episode_id,
+                        consistency_guide={"rules": ["keep it tight"]},
+                        timeline_draft=[
+                            {"scene_id": "scene_001", "start": 0.0, "end": 5.0, "duration": 5.0, "text": "One", "asset_type": "image"},
+                            {"scene_id": "scene_002", "start": 4.0, "end": 8.0, "duration": 4.0, "text": "Two", "asset_type": "video"},
+                        ],
+                        prompt_list="Should not save",
+                    )
+
+                self.assertIn("Timeline draft is invalid", str(ctx.exception))
+                episode = service.db.get_episode(episode_id)
+                self.assertFalse(episode["consistency_guide_path"])
+                self.assertFalse(episode["timeline_draft_path"])
+                self.assertFalse(episode["prompt_list_draft_path"])
+                self.assertFalse((workspace / "prompt_list_draft.txt").exists())
 
     def test_retry_single_language_alignment_reruns_timeline(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

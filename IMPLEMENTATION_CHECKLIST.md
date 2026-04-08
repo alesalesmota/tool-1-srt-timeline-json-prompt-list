@@ -2,7 +2,7 @@
 
 Companion to `IMPLEMENTATION_PLAN.md`. Tick each box as the task is completed and verified. **Tags:** `[BACKEND]` = Python only, `[FRONTEND]` = JS/CSS only, `[FRONTEND-DESIGN]` = visual UI work — activate the design skill before starting.
 
-Status on 2026-04-08: implementation complete for Phases 1-6. Manual end-to-end browser verification is still pending.
+Status on 2026-04-08: implementation complete for Phases 1-7. Episode `205` timeline artifacts are repaired and stale non-completed render jobs were pruned. Manual live browser/render verification is still pending.
 
 ## Phase 1 — Backend safety net & helpers
 
@@ -63,6 +63,21 @@ Status on 2026-04-08: implementation complete for Phases 1-6. Manual end-to-end 
   - Verify: `video_render` explains localized final video rendering clearly and shows per-language render actions even before any job exists.
 - [x] **Task 6.5 [FRONTEND-DESIGN]** — Minimal styling pass for the new hierarchy (`tool1_dashboard/ui/app.css`)
   - Verify: the stepper/current-step panel/reference sections read as one ordered workspace without introducing a new design system.
+
+## Phase 7 — Timeline overlap hardening and episode 205 recovery
+
+- [x] **Task 7.1 [BACKEND]** — Add shared overlap normalization/validation in `tool1_dashboard/validators.py`
+  - Verify: repairable overlaps (`<= 0.25s`) are snapped forward and reported via `overlap_adjustments`; larger overlaps remain invalid.
+- [x] **Task 7.2 [BACKEND]** — Apply the shared validator to `scene_planning`, `timeline_mapping`, and review-data saves (`tool1_dashboard/service.py`)
+  - Verify: invalid scene-planning drafts fail before persisting `timeline_draft.json`; broken per-language mappings mark that language failed; review saves reject larger overlaps without partial writes.
+- [x] **Task 7.3 [FRONTEND-DESIGN]** — Surface `Timeline Validation` above the review timeline editor (`tool1_dashboard/ui/app.js`, `tool1_dashboard/ui/app.css`)
+  - Verify: review shows pass/fail state, overlap repair count, blocking errors, and the note that per-language timing is generated later.
+- [x] **Task 7.4 [BACKEND]** — Repair episode `205` through the production normalization path and rerun localized timelines
+  - Verify: `timeline_draft.json` and `timeline_en.json` no longer overlap; `timeline_validation.json` reports `overlap_adjustments = 2`; assembly validation passes for all configured languages.
+- [x] **Task 7.5 [BACKEND]** — Prune stale non-completed render jobs for `205` after confirming no live render process exists
+  - Verify: queued/failed/stale-rendering rows are removed, stale assembly `temp/` folders are cleaned, and the episode remains in `video_render`.
+- [ ] **Task 7.6 [MANUAL]** — Run a live English smoke render from the repaired `video_render` state
+  - Verify: render `en` from the app after reopening the dashboard, confirm the job completes, then resume the remaining languages.
 
 ## End-to-end verification (run after every phase, mandatory after Phase 5)
 

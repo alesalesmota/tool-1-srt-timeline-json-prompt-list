@@ -3444,6 +3444,43 @@ details.editor-card summary::-webkit-details-marker {
   align-items: stretch;
 }
 
+.review-validation-summary {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 16px;
+}
+
+.review-validation-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.review-validation-title {
+  margin: 2px 0 0;
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+}
+
+.review-validation-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.review-validation-errors {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--error);
+  display: grid;
+  gap: 6px;
+}
+
 .editor-col {
   display: flex;
   flex-direction: column;

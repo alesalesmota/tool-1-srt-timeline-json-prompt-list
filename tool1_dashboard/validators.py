@@ -11,6 +11,8 @@ SCENE_SOFT_MAX_DURATION_SECONDS = 18.0
 SCENE_TARGET_DURATION_SECONDS = 14.0
 SCENE_MIN_DURATION_SECONDS = 4.0
 SCENE_CUE_COVERAGE_TOLERANCE_SECONDS = 3.0
+SCENE_OVERLAP_AUTO_REPAIR_SECONDS = 0.25
+SCENE_OVERLAP_ERROR_TOLERANCE_SECONDS = 0.05
 MANDATORY_PROMPT_RULES = (
     "no text",
     "no subtitles",
@@ -682,45 +684,54 @@ def _split_long_scenes(
     return split_scenes, inserted
 
 
-def _resolve_scene_overlaps(
+def _normalize_small_scene_overlaps(
     scenes: list[dict[str, Any]],
     *,
-    min_duration: float,
+    auto_repair_seconds: float = SCENE_OVERLAP_AUTO_REPAIR_SECONDS,
 ) -> tuple[list[dict[str, Any]], int]:
     if not scenes:
         return [], 0
 
-    ordered = [dict(scene) for scene in sorted(scenes, key=lambda item: (float(item["start"]), float(item["end"])))]
-    resolved: list[dict[str, Any]] = [ordered[0]]
+    resolved: list[dict[str, Any]] = [dict(scene) for scene in scenes]
     adjusted = 0
+    previous_end: float | None = None
 
-    for scene in ordered[1:]:
-        current = dict(scene)
-        previous = resolved[-1]
-        overlap = round(float(previous["end"]) - float(current["start"]), 3)
-        if overlap > 0.25:
-            if float(previous["end"]) <= float(current["end"]):
-                new_start = round(float(previous["end"]), 3)
-                if float(current["end"]) - new_start >= min_duration:
-                    current["start"] = new_start
-                    current["duration"] = round(float(current["end"]) - float(current["start"]), 3)
-                    adjusted += 1
-                else:
-                    adjusted += 1
-                    continue
-            else:
-                new_end = round(float(current["start"]), 3)
-                if new_end - float(previous["start"]) >= min_duration:
-                    previous["end"] = new_end
-                    previous["duration"] = round(float(previous["end"]) - float(previous["start"]), 3)
-                    adjusted += 1
-                else:
-                    resolved[-1] = current
-                    adjusted += 1
-                    continue
-        resolved.append(current)
+    for scene in resolved:
+        end = float(scene["end"])
+        if previous_end is None:
+            previous_end = end
+            continue
+        start = float(scene["start"])
+        overlap = round(previous_end - start, 3)
+        if 0 < overlap <= auto_repair_seconds:
+            scene["start"] = round(previous_end, 3)
+            scene["duration"] = round(end - float(scene["start"]), 3)
+            adjusted += 1
+        previous_end = end
 
     return resolved, adjusted
+
+
+def normalize_and_validate_timeline(
+    scenes: list[dict[str, Any]],
+    *,
+    cues: list[SubtitleCue] | None = None,
+    coverage_tolerance_seconds: float = SCENE_CUE_COVERAGE_TOLERANCE_SECONDS,
+    auto_repair_seconds: float = SCENE_OVERLAP_AUTO_REPAIR_SECONDS,
+    overlap_tolerance_seconds: float = SCENE_OVERLAP_ERROR_TOLERANCE_SECONDS,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    normalized, overlap_adjustments = _normalize_small_scene_overlaps(
+        scenes,
+        auto_repair_seconds=auto_repair_seconds,
+    )
+    report = validate_timeline(
+        normalized,
+        cues=cues,
+        coverage_tolerance_seconds=coverage_tolerance_seconds,
+        overlap_tolerance_seconds=overlap_tolerance_seconds,
+    )
+    report["overlap_adjustments"] = overlap_adjustments
+    return normalized, report
 
 
 def merge_scene_chunks(
@@ -760,8 +771,6 @@ def merge_scene_chunks(
         target_duration=target_duration,
         min_duration=min_duration,
     )
-    merged, overlap_adjustments = _resolve_scene_overlaps(merged, min_duration=min_duration)
-
     finalized: list[dict[str, Any]] = []
     for index, scene in enumerate(merged, start=1):
         finalized.append(
@@ -776,11 +785,10 @@ def merge_scene_chunks(
                 **({"notes": scene["notes"]} if scene.get("notes") else {}),
             }
         )
-    report = validate_timeline(finalized, cues=cues)
+    finalized, report = normalize_and_validate_timeline(finalized, cues=cues)
     report["deduped_duplicates"] = deduped
     report["ownership_dropped"] = ownership_dropped
     report["split_insertions"] = split_insertions
-    report["overlap_adjustments"] = overlap_adjustments
     report["chunk_timestamp_rebases"] = rebased_groups
     return finalized, report
 
@@ -790,6 +798,7 @@ def validate_timeline(
     *,
     cues: list[SubtitleCue] | None = None,
     coverage_tolerance_seconds: float = SCENE_CUE_COVERAGE_TOLERANCE_SECONDS,
+    overlap_tolerance_seconds: float = SCENE_OVERLAP_ERROR_TOLERANCE_SECONDS,
 ) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -804,8 +813,8 @@ def validate_timeline(
             errors.append(f"Scene {index} duration does not match start/end.")
         if scene.get("asset_type") not in ALLOWED_ASSET_TYPES:
             errors.append(f"Scene {index} has an invalid asset_type.")
-        if previous_end is not None and start < (previous_end - 0.25):
-            warnings.append(f"Scene {index} overlaps the previous scene.")
+        if previous_end is not None and start < (previous_end - overlap_tolerance_seconds):
+            errors.append(f"Scene {index} overlaps the previous scene.")
         if duration < 1.0:
             warnings.append(f"Scene {index} is very short.")
         if duration > 18.0:

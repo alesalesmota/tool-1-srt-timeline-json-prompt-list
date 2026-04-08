@@ -1330,6 +1330,54 @@ function renderEpisodeAssemblySectionShell(episodeId, stage, className) {
   return `<div id="episode-assembly-section" class="${className}"${attrs}>${body}</div>`;
 }
 
+function renderReviewTimelineValidationSummary(validationData) {
+  const validation = validationData && typeof validationData === "object" ? validationData : {};
+  if (!Object.keys(validation).length) {
+    return `
+      <div class="surface review-validation-summary">
+        <div class="eyebrow">Timeline Validation</div>
+        <p class="helper" style="margin:0;">Timeline validation will appear here after scene planning runs or after you save timeline edits.</p>
+      </div>
+    `;
+  }
+
+  const status = String(validation.status || "").trim().toLowerCase();
+  const errors = Array.isArray(validation.errors) ? validation.errors.filter(Boolean) : [];
+  const overlapErrors = errors.filter((message) => String(message).toLowerCase().includes("overlaps the previous scene"));
+  const repairs = Math.max(0, Number(validation.overlap_adjustments) || 0);
+  const sceneCount = Math.max(0, Number(validation.scene_count) || 0);
+  const tone = status === "invalid" ? "error" : repairs > 0 ? "warn" : "success";
+  const summary = status === "invalid"
+    ? `${overlapErrors.length || errors.length} blocking timeline issue${(overlapErrors.length || errors.length) === 1 ? "" : "s"} must be fixed before render.`
+    : repairs > 0
+      ? `Auto-repaired ${repairs} small overlap${repairs === 1 ? "" : "s"} before this timeline was accepted.`
+      : "No blocking timeline overlaps were found in the master timeline.";
+  const badgeMarkup = repairs > 0
+    ? `<span class="badge" data-tone="warn">${repairs} auto-repaired</span>`
+    : `<span class="badge" data-tone="${esc(status === "invalid" ? "error" : "success")}">${esc(status === "invalid" ? "Needs fixes" : "Ready")}</span>`;
+  const errorList = errors.length
+    ? `<ul class="review-validation-errors">${errors.map((message) => `<li>${esc(message)}</li>`).join("")}</ul>`
+    : "";
+
+  return `
+    <div class="surface review-validation-summary">
+      <div class="review-validation-head">
+        <div>
+          <div class="eyebrow">Timeline Validation</div>
+          <h3 class="review-validation-title">Master timeline integrity</h3>
+        </div>
+        ${badgeMarkup}
+      </div>
+      <div class="notice" data-tone="${esc(tone)}">${esc(summary)}</div>
+      <div class="review-validation-meta">
+        <span>${esc(sceneCount)} scenes in the master timeline</span>
+        <span>Per-language timing is generated later during timeline mapping.</span>
+      </div>
+      ${errorList}
+    </div>
+  `;
+}
+
 function renderReviewSectionMarkup(episodeId, ep, data) {
   const guideStr = data.consistency_guide ? JSON.stringify(data.consistency_guide, null, 2) : "{}";
   const timelineStr = data.timeline_draft ? JSON.stringify(data.timeline_draft, null, 2) : "[]";
@@ -1346,6 +1394,8 @@ function renderReviewSectionMarkup(episodeId, ep, data) {
         ${ep.current_stage === "export" && ep.pipeline_status === "done" ? '<button type="button" class="button button-primary button-small has-icon" style="background:var(--brand);color:var(--bg)" data-start-video-assembly="' + esc(episodeId) + '">' + iconContent("play", "Start Video Assembly") + '</button>' : ''}
       </div>
     </div>
+
+    ${renderReviewTimelineValidationSummary(data.timeline_validation)}
 
     <div class="review-editors-grid">
       <div class="editor-col">

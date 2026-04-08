@@ -1,6 +1,6 @@
 # Plan: Wire the post-upload assembly continuation flow
 
-Status on 2026-04-08: implemented in code and regression tests. A follow-up UI hierarchy pass for the assembly modal/detail flow is also implemented in code. Manual end-to-end browser verification is still pending.
+Status on 2026-04-08: implemented in code and regression tests. A follow-up UI hierarchy pass for the assembly modal/detail flow is also implemented in code. Timeline-overlap hardening is now also implemented in code, and episode `205` has repaired timeline artifacts plus stale non-completed render jobs cleared. Manual live browser/render verification is still pending.
 
 ## Context
 
@@ -226,6 +226,34 @@ The original continuation fix solved the destructive rerun path, but the user st
 - Later stages preserve earlier context as read-only reference: validation stays visible during render/review, and the scene/assets preview stays visible beyond `asset_upload`.
 - `video_render` now exposes render entrypoints even before any render job exists, so “render one language” is concretely presented as rendering one localized final video.
 - `final_review` now shows finished-video playback/download first while preserving render/validation/scene context below.
+
+## 2026-04-08 Timeline overlap hardening execution note
+
+The render-only overlap failure on episode `205` exposed an inconsistent rule: early timeline validation treated overlapping scenes as warnings, but final render treated the same condition as fatal. The implementation now hardens that path before render:
+
+- `tool1_dashboard/validators.py` now exposes `normalize_and_validate_timeline(...)`, which auto-repairs only small positive overlaps (`<= 0.25s`) by snapping the later scene start to the previous scene end, then re-validates with a stricter overlap error tolerance.
+- `tool1_dashboard/service.py` now applies that shared validator in `scene_planning`, `timeline_mapping`, `get_review_data`, and `update_review_data`, so invalid master/per-language timelines fail earlier instead of surfacing only in `video_render`.
+- `scene_planning` now persists `timeline_validation.json` even when a draft is invalid, and large overlaps block `timeline_draft.json` persistence entirely.
+- The review surface now renders a compact `Timeline Validation` summary above the timeline editor with pass/fail state, blocking errors, and overlap repair count.
+- Targeted regression coverage now lives in `tests/test_chunking_and_validation.py` and `tests/test_video_pipeline.py` for auto-repair, hard-fail overlaps, scene-planning persistence, timeline-mapping rejection, and review-save behavior.
+
+Episode `205` was repaired through the production code path instead of a one-off edit:
+
+- Re-saved the master `timeline_draft.json` through `update_review_data(...)`, which rewrote `timeline_validation.json` with `overlap_adjustments = 2`.
+- Re-ran `timeline_mapping` for `de`, `en`, `es`, `fr`, and `it`, so all localized timelines reflect the repaired master timeline.
+- Re-ran assembly validation and confirmed all configured languages pass again with all shared assets present.
+- Cleared the stale non-completed render jobs left from the pre-repair batch (`en` failed, `de` stale rendering, `fr/it` queued) after confirming there was no live `python/pythonw/ffmpeg` render process, then cleaned stale assembly `temp/` folders.
+
+Verification completed:
+
+1. `python -m py_compile tool1_dashboard\\validators.py tool1_dashboard\\service.py`
+2. `node --check tool1_dashboard\\ui\\app.js`
+3. `python -m pytest tests\\test_chunking_and_validation.py -k "timeline_validation or merge_scene_chunks_repairs_small_overlap_before_report" -q`
+4. `python -m pytest tests\\test_video_pipeline.py -k "scene_planning_repairs_small_overlap_and_persists_validation or scene_planning_rejects_large_overlap_and_persists_invalid_report or retry_single_timeline_mapping_marks_language_failed_when_master_timeline_is_invalid or update_review_data_repairs_small_overlap_and_persists_validation or update_review_data_rejects_large_overlap_without_partial_persist" -q`
+
+Still pending:
+
+- A live English smoke render from the repaired `video_render` state. The stale batch is gone, but no dashboard render process was running in this session, so the next safe step is to open the app and render `en` first from the UI.
 
 ## End-to-end verification
 

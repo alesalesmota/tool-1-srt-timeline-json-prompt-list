@@ -89,12 +89,12 @@ from .validators import (
     apply_default_asset_types,
     image_prompt_output_schema,
     merge_scene_chunks,
+    normalize_and_validate_timeline,
     normalize_prompt_payloads,
     normalize_scene_payload,
     normalize_visual_bible,
     scene_output_schema,
     validate_prompt_payloads,
-    validate_timeline,
     video_prompt_output_schema,
     visual_bible_output_schema,
 )
@@ -3256,6 +3256,39 @@ class Tool1Service:
         total_duration = max((float(scene["end"]) for scene in scenes), default=0.0)
         return len(scenes), round(total_duration, 3)
 
+    @staticmethod
+    def _load_srt_cues_from_path(srt_path: str | None) -> list[Any] | None:
+        path_value = str(srt_path or "").strip()
+        if not path_value:
+            return None
+        path = Path(path_value)
+        if not path.exists():
+            return None
+        return parse_srt_text(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _timeline_validation_error_message(label: str, errors: list[str]) -> str:
+        if not errors:
+            return label
+        first = str(errors[0]).strip() or label
+        remaining = len(errors) - 1
+        if remaining > 0:
+            return f"{label}: {first} (+{remaining} more)"
+        return f"{label}: {first}"
+
+    def _normalize_and_validate_timeline_or_raise(
+        self,
+        scenes: list[dict[str, Any]],
+        *,
+        cues: list[Any] | None = None,
+        label: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        normalized_scenes, report = normalize_and_validate_timeline(scenes, cues=cues)
+        errors = [str(item) for item in report.get("errors") or [] if str(item).strip()]
+        if errors:
+            raise ValueError(self._timeline_validation_error_message(label, errors))
+        return normalized_scenes, report
+
     def validate_assembly(
         self,
         episode_id: str,
@@ -4028,7 +4061,7 @@ class Tool1Service:
     def _load_timeline_mapping_context(
         self,
         episode_id: str,
-    ) -> tuple[dict[str, Any], Path, str, list[dict[str, Any]], float]:
+    ) -> tuple[dict[str, Any], Path, str, list[dict[str, Any]], float, list[Any]]:
         episode = self.db.get_episode(episode_id)
         if episode is None:
             raise FileNotFoundError("Episode not found.")
@@ -4047,18 +4080,23 @@ class Tool1Service:
         if not master_srt_path or not Path(master_srt_path).exists():
             raise ValueError("Master SRT not available.")
         master_cues = parse_srt_text(Path(master_srt_path).read_text(encoding="utf-8"))
+        master_scenes, _ = self._normalize_and_validate_timeline_or_raise(
+            master_scenes,
+            cues=master_cues,
+            label="Master timeline is invalid",
+        )
         master_total = master_cues[-1].end_ms / 1000.0 if master_cues else 0.0
         if master_total <= 0:
             raise ValueError("Master SRT has zero duration.")
 
-        return episode, workspace, master_lang, master_scenes, master_total
+        return episode, workspace, master_lang, master_scenes, master_total, master_cues
 
     def _episode_retry_single_timeline_mapping(
         self,
         episode_id: str,
         lang: str,
         *,
-        context: tuple[dict[str, Any], Path, str, list[dict[str, Any]], float] | None = None,
+        context: tuple[dict[str, Any], Path, str, list[dict[str, Any]], float, list[Any]] | None = None,
     ) -> str:
         """Retry timeline mapping for a single language."""
         lang_status = self.db.get_episode_language_status(episode_id, lang)
@@ -4068,10 +4106,15 @@ class Tool1Service:
         try:
             if context is None:
                 context = self._load_timeline_mapping_context(episode_id)
-            _, workspace, master_lang, master_scenes, master_total = context
+            _, workspace, master_lang, master_scenes, master_total, master_cues = context
             self.db.update_episode_language_status(episode_id, lang, timeline_status="running")
 
             if lang == master_lang:
+                master_scenes, _ = self._normalize_and_validate_timeline_or_raise(
+                    master_scenes,
+                    cues=master_cues,
+                    label=f"Timeline mapping is invalid for {lang}",
+                )
                 lang_timeline_path = workspace / f"timeline_{lang}.json"
                 write_json(lang_timeline_path, master_scenes)
                 self.db.update_episode_language_status(
@@ -4138,6 +4181,11 @@ class Tool1Service:
                 mapped["duration"] = round(mapped_end - mapped_start, 3)
                 lang_scenes.append(mapped)
 
+            lang_scenes, _ = self._normalize_and_validate_timeline_or_raise(
+                lang_scenes,
+                cues=lang_cues,
+                label=f"Timeline mapping is invalid for {lang}",
+            )
             lang_timeline_path = workspace / f"timeline_{lang}.json"
             write_json(lang_timeline_path, lang_scenes)
             self.db.update_episode_language_status(
@@ -4254,8 +4302,13 @@ class Tool1Service:
         timeline_draft = read_json(Path(timeline_path), default=[]) if timeline_path and Path(timeline_path).exists() else []
 
         # Timeline validation
-        validation_path = episode.get("timeline_validation_path")
-        timeline_validation = read_json(Path(validation_path), default={}) if validation_path and Path(validation_path).exists() else {}
+        validation_path_value = str(episode.get("timeline_validation_path") or "").strip()
+        validation_path = Path(validation_path_value) if validation_path_value else workspace / "timeline_validation.json"
+        timeline_validation = read_json(validation_path, default={}) if validation_path.exists() else {}
+        if not timeline_validation and timeline_draft:
+            master_status = self.db.get_episode_language_status(episode_id, episode["master_language"])
+            master_cues = self._load_srt_cues_from_path(master_status.get("srt_path") if master_status else None)
+            _, timeline_validation = normalize_and_validate_timeline(timeline_draft, cues=master_cues)
 
         # Prompts
         prompt_path = episode.get("prompt_list_draft_path")
@@ -4296,6 +4349,23 @@ class Tool1Service:
             raise FileNotFoundError("Episode not found.")
         workspace = self._episode_workspace(episode)
 
+        normalized_timeline_draft: list[dict[str, Any]] | None = None
+        timeline_validation_report: dict[str, Any] | None = None
+        if timeline_draft is not None:
+            master_status = self.db.get_episode_language_status(episode_id, episode["master_language"])
+            master_cues = self._load_srt_cues_from_path(master_status.get("srt_path") if master_status else None)
+            normalized_timeline_draft, timeline_validation_report = normalize_and_validate_timeline(
+                timeline_draft,
+                cues=master_cues,
+            )
+            timeline_errors = [
+                str(item)
+                for item in timeline_validation_report.get("errors") or []
+                if str(item).strip()
+            ]
+            if timeline_errors:
+                raise ValueError(self._timeline_validation_error_message("Timeline draft is invalid", timeline_errors))
+
         updated = []
         if consistency_guide is not None:
             path = workspace / "consistency_guide.json"
@@ -4305,8 +4375,14 @@ class Tool1Service:
 
         if timeline_draft is not None:
             path = workspace / "timeline_draft.json"
-            write_json(path, timeline_draft)
-            self.db.update_episode(episode_id, timeline_draft_path=str(path))
+            validation_path = workspace / "timeline_validation.json"
+            write_json(path, normalized_timeline_draft)
+            write_json(validation_path, timeline_validation_report)
+            self.db.update_episode(
+                episode_id,
+                timeline_draft_path=str(path),
+                timeline_validation_path=str(validation_path),
+            )
             updated.append("timeline_draft")
 
         if prompt_list is not None:
@@ -5175,14 +5251,25 @@ class Tool1Service:
         )
         timeline = apply_default_asset_types(timeline, config["leading_video_scene_count"])
         report["warnings"].extend(warnings)
+        validation_path = write_json(workspace / "timeline_validation.json", report)
         if report["errors"]:
-            raise ValueError("; ".join(report["errors"]))
+            self.db.update_episode(
+                episode_id,
+                timeline_validation_path=str(validation_path),
+                updated_at=utc_now(),
+            )
+            raise ValueError(
+                self._timeline_validation_error_message(
+                    "Timeline draft is invalid",
+                    [str(item) for item in report["errors"] if str(item).strip()],
+                )
+            )
 
         timeline_path = write_json(workspace / "timeline_draft.json", timeline)
-        write_json(workspace / "timeline_validation.json", report)
         self.db.update_episode(
             episode_id,
             timeline_draft_path=str(timeline_path),
+            timeline_validation_path=str(validation_path),
             updated_at=utc_now(),
         )
 
@@ -5429,7 +5516,7 @@ class Tool1Service:
 
     def _episode_run_timeline_mapping(self, episode_id: str) -> None:
         """Map master scene structure to each language's duration proportionally."""
-        episode, _, _, _, _ = self._load_timeline_mapping_context(episode_id)
+        episode, _, _, _, _, _ = self._load_timeline_mapping_context(episode_id)
         langs = json.loads(episode.get("configured_languages") or "[]")
         context = self._load_timeline_mapping_context(episode_id)
 

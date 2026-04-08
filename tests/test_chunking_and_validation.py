@@ -7,6 +7,7 @@ from tool1_dashboard.srt_chunker.models import SubtitleCue
 from tool1_dashboard.validators import (
     apply_default_asset_types,
     merge_scene_chunks,
+    normalize_and_validate_timeline,
     normalize_scene_payload,
     normalize_visual_bible,
     validate_prompt_payloads,
@@ -99,15 +100,41 @@ class ChunkingValidationTests(unittest.TestCase):
         self.assertEqual(report["status"], "invalid")
         self.assertTrue(report["errors"])
 
-    def test_timeline_validation_flags_overlap(self) -> None:
+    def test_timeline_validation_repairs_small_overlap(self) -> None:
+        scenes, report = normalize_and_validate_timeline(
+            [
+                {"scene_id": "scene_001", "start": 0.0, "end": 5.0, "duration": 5.0, "text": "One", "asset_type": "image"},
+                {"scene_id": "scene_002", "start": 4.91, "end": 8.0, "duration": 3.09, "text": "Two", "asset_type": "video"},
+            ]
+        )
+        self.assertEqual(report["status"], "valid")
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["overlap_adjustments"], 1)
+        self.assertEqual(scenes[1]["start"], 5.0)
+        self.assertEqual(scenes[1]["duration"], 3.0)
+
+    def test_timeline_validation_fails_large_overlap(self) -> None:
         report = validate_timeline(
             [
                 {"scene_id": "scene_001", "start": 0.0, "end": 5.0, "duration": 5.0, "text": "One", "asset_type": "image"},
                 {"scene_id": "scene_002", "start": 4.0, "end": 8.0, "duration": 4.0, "text": "Two", "asset_type": "video"},
             ]
         )
+        self.assertEqual(report["status"], "invalid")
+        self.assertTrue(report["errors"])
+
+    def test_merge_scene_chunks_repairs_small_overlap_before_report(self) -> None:
+        scenes, report = merge_scene_chunks(
+            [
+                [
+                    {"start": 0.0, "end": 5.0, "duration": 5.0, "text": "One", "asset_type": "image"},
+                    {"start": 4.91, "end": 8.0, "duration": 3.09, "text": "Two", "asset_type": "video"},
+                ]
+            ]
+        )
         self.assertEqual(report["status"], "valid")
-        self.assertTrue(report["warnings"])
+        self.assertEqual(report["overlap_adjustments"], 1)
+        self.assertEqual(scenes[1]["start"], 5.0)
 
     def test_prompt_batches_group_by_size(self) -> None:
         scenes = [{"scene_id": f"scene_{index:03d}"} for index in range(1, 8)]
