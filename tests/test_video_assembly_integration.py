@@ -364,6 +364,80 @@ class TestVideoAssemblyIntegration(unittest.TestCase):
         episode = self.service.db.get_episode(self.episode_id)
         self.assertEqual(episode["current_stage"], "asset_upload")
 
+    def test_advance_to_assembly_validation_requires_uploaded_assets(self) -> None:
+        self.service.start_assembly(self.episode_id)
+
+        with self.assertRaises(ValueError) as ctx:
+            self.service.advance_assembly_stage(self.episode_id, "assembly_validation")
+
+        self.assertIn("Upload assets for all scenes", str(ctx.exception))
+        episode = self.service.db.get_episode(self.episode_id)
+        self.assertEqual(episode["current_stage"], "asset_upload")
+
+    def test_advance_to_assembly_validation_succeeds_when_assets_exist(self) -> None:
+        _upload_test_assets(self.service, self.episode_id)
+        self.service.start_assembly(self.episode_id)
+
+        result = self.service.advance_assembly_stage(self.episode_id, "assembly_validation")
+
+        self.assertTrue(result["advanced"])
+        self.assertEqual(result["current_stage"], "assembly_validation")
+        episode = self.service.db.get_episode(self.episode_id)
+        self.assertEqual(episode["current_stage"], "assembly_validation")
+
+    def test_final_review_requires_completed_render(self) -> None:
+        self.service.db.update_episode(
+            self.episode_id,
+            current_stage="video_render",
+            pipeline_status="paused",
+            board_status="Paused",
+            queued_from_stage="video_render",
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            self.service.advance_assembly_stage(self.episode_id, "final_review")
+
+        self.assertIn("completed render", str(ctx.exception).lower())
+
+    def test_final_review_accepts_completed_render(self) -> None:
+        self.service.db.update_episode(
+            self.episode_id,
+            current_stage="video_render",
+            pipeline_status="paused",
+            board_status="Paused",
+            queued_from_stage="video_render",
+        )
+        self.service.db.create_render_job({
+            "id": "rj-complete-en",
+            "episode_id": self.episode_id,
+            "language_code": "en",
+            "state": "completed",
+            "stage": "completed",
+            "completed_scenes": 3,
+            "total_scenes": 3,
+            "outputs_json": json.dumps({"final_video": "final.mp4"}),
+        })
+
+        result = self.service.advance_assembly_stage(self.episode_id, "final_review")
+
+        self.assertTrue(result["advanced"])
+        self.assertEqual(result["current_stage"], "final_review")
+        episode = self.service.db.get_episode(self.episode_id)
+        self.assertEqual(episode["current_stage"], "final_review")
+
+    def test_episode_detail_includes_assembly_progress(self) -> None:
+        self.service.start_assembly(self.episode_id)
+
+        detail = self.service.get_episode_detail(self.episode_id)
+        progress = detail["episode"]["assembly_progress"]
+
+        self.assertEqual(progress["stage"], "asset_upload")
+        self.assertEqual(progress["next_stage"], "assembly_validation")
+        self.assertEqual(progress["assets_total"], 3)
+        self.assertEqual(progress["assets_uploaded"], 0)
+        self.assertFalse(progress["all_assets_uploaded"])
+        self.assertIsNone(progress["validation_ok"])
+
     def test_scene_list_returns_correct_count(self) -> None:
         scenes = self.service.list_episode_scenes(self.episode_id)
         self.assertEqual(scenes["total_scenes"], 3)

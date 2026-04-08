@@ -349,6 +349,28 @@ class Tool1Service:
                 normalized_languages.append(normalized)
         payload["configured_languages"] = normalized_languages
         payload["pause_requested"] = bool(int(payload.get("pause_requested") or 0))
+        current_stage = str(payload.get("current_stage") or "").strip()
+        if current_stage in self._assembly_stage_sequence():
+            next_stage = self._next_assembly_stage(current_stage)
+            assets_total = 0
+            assets_uploaded = 0
+            all_assets_uploaded = False
+            try:
+                shared, scenes = self._assembly_shared_validation(str(payload.get("id") or ""))
+                assets_total = len(scenes)
+                missing_scenes = set(shared.get("missing_scenes") or [])
+                assets_uploaded = max(0, assets_total - len(missing_scenes))
+                all_assets_uploaded = bool(shared.get("all_assets_uploaded"))
+            except (FileNotFoundError, ValueError, OSError):
+                pass
+            payload["assembly_progress"] = {
+                "stage": current_stage,
+                "next_stage": next_stage,
+                "assets_uploaded": assets_uploaded,
+                "assets_total": assets_total,
+                "all_assets_uploaded": all_assets_uploaded,
+                "validation_ok": None,
+            }
         return payload
 
     @staticmethod
@@ -3165,6 +3187,17 @@ class Tool1Service:
     def _assembly_stage_sequence() -> tuple[str, ...]:
         return (*VIDEO_ASSEMBLY_STAGES, "final_review")
 
+    @classmethod
+    def _next_assembly_stage(cls, current_stage: str) -> str | None:
+        sequence = cls._assembly_stage_sequence()
+        if current_stage not in sequence:
+            return None
+        current_index = sequence.index(current_stage)
+        next_index = current_index + 1
+        if next_index >= len(sequence):
+            return None
+        return sequence[next_index]
+
     def _assembly_target_languages(self, episode: dict[str, Any]) -> list[str]:
         configured = [
             str(language_code or "").strip()
@@ -3491,7 +3524,13 @@ class Tool1Service:
             raise ValueError(f"Invalid assembly target stage: {target_stage}")
 
         current_stage = str(episode.get("current_stage") or "").strip()
-        expected_previous = sequence[sequence.index(target_stage) - 1]
+        expected_previous = None
+        for stage_name in sequence:
+            if self._next_assembly_stage(stage_name) == target_stage:
+                expected_previous = stage_name
+                break
+        if expected_previous is None:
+            raise ValueError(f"Invalid assembly target stage: {target_stage}")
         if current_stage != expected_previous:
             raise ValueError(f"Cannot move to {target_stage} from {current_stage or 'unknown stage'}.")
 
@@ -3550,6 +3589,10 @@ class Tool1Service:
         if str(episode.get("pipeline_status") or "").lower() in {"queued", "running", "paused_for_tts"}:
             raise ValueError("Episode workflow is already active. Pause it or wait for it to finish.")
         stage = start_stage or self._default_episode_start_stage(episode)
+        assembly_stages = self._assembly_stage_sequence()
+        current_stage = str(episode.get("current_stage") or "").strip()
+        if stage in assembly_stages or current_stage in assembly_stages:
+            raise ValueError("Assembly stages must be advanced via /assembly/advance, not queued.")
         if stage not in EPISODE_RUNNABLE_STAGES:
             raise ValueError(f"Invalid start stage: {stage}")
         project = self._hydrate_project_record(self.db.get_niche_project(episode["niche_project_id"]))

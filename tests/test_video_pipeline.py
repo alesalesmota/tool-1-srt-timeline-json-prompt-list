@@ -1585,6 +1585,66 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                 finally:
                     self.app_module.service = original
 
+    def test_queue_episode_rejects_assembly_stage_without_deleting_stage_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client)
+                    episode_id = episode["id"]
+
+                    stdout_path = temp_path / "stage-run-stdout.txt"
+                    stderr_path = temp_path / "stage-run-stderr.txt"
+                    stdout_path.write_text("ok", encoding="utf-8")
+                    stderr_path.write_text("", encoding="utf-8")
+
+                    first_run = service.db.start_stage_run(
+                        episode_id,
+                        "consistency_guide",
+                        "codex",
+                        None,
+                        str(temp_path),
+                        {"command": "test-consistency-guide"},
+                        str(stdout_path),
+                        str(stderr_path),
+                    )
+                    service.db.finish_stage_run(first_run, status="completed", exit_code=0)
+                    second_run = service.db.start_stage_run(
+                        episode_id,
+                        "translation",
+                        "openai",
+                        None,
+                        str(temp_path),
+                        {"command": "test-translation"},
+                        str(stdout_path),
+                        str(stderr_path),
+                    )
+                    service.db.finish_stage_run(second_run, status="completed", exit_code=0)
+                    before_run_ids = [run["id"] for run in service.db.list_stage_runs(episode_id)]
+
+                    service.db.update_episode(
+                        episode_id,
+                        board_status="Paused",
+                        pipeline_status="paused",
+                        current_stage="asset_upload",
+                        queued_from_stage="asset_upload",
+                        updated_at=utc_now(),
+                    )
+
+                    resp = client.post(f"/api/episodes/{episode_id}/queue", json={})
+                    self.assertEqual(resp.status_code, 400)
+                    self.assertEqual(
+                        resp.json()["detail"],
+                        "Assembly stages must be advanced via /assembly/advance, not queued.",
+                    )
+
+                    after_run_ids = [run["id"] for run in service.db.list_stage_runs(episode_id)]
+                    self.assertEqual(after_run_ids, before_run_ids)
+                finally:
+                    self.app_module.service = original
+
     def test_queue_episode_custom_stage(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
