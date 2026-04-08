@@ -69,8 +69,12 @@
   - Plan: `plans/completed/PERF_PLAN_HIGH_FINDINGS.md`
 
 - [ ] **F7 — Assembly Cache Unbounded Growth**
-  - [ ] Add LRU eviction (keep max 5 episodes cached)
-  - Plan: *(to be designed)*
+  - [x] F7.1: Convert `episodeAssemblyCache` from `{}` to `new Map()`
+  - [x] F7.2: Update writer to enforce LRU + `MAX_ASSEMBLY_CACHE_SIZE = 5`
+  - [x] F7.3: Update `renderEpisodeAssemblySectionShell()` reader to use `Map.get`
+  - [x] F7.4: Update the 3 delete sites (`app.js:582`, `584`, `6245`) to `Map` API
+  - [x] Verify with `node --check tool1_dashboard/ui/app.js` and inline Node smoke exercising `Map` reads/writes, 5-entry eviction, and read-bump LRU ordering (`assembly-cache-lru-ok`)
+  - Plan: `PERF_PLAN_MEDIUM_FINDINGS.md`
 
 - [ ] **B3 — Worker DB Polling Every 1s When Idle**
   - [ ] Increase idle poll interval to 5-10 seconds

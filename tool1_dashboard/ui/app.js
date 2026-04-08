@@ -64,6 +64,7 @@ const TRANSLATION_PROFILE_PROVIDER_CATALOG = [
 const REFRESH_INTERVAL_MS = 10000;
 const ACTIVE_REFRESH_INTERVAL_MS = 3000;
 const ASSEMBLY_PAGE_SIZE = 20;
+const MAX_ASSEMBLY_CACHE_SIZE = 5;
 const EPISODE_FILES_CACHE_TTL_MS = 3000;
 const HEALTH_CACHE_TTL_MS = 15000;
 const SETTINGS_CACHE_TTL_MS = 30000;
@@ -146,7 +147,7 @@ const state = {
   lastEpisodeFilesLoadedFor: null,
   lastEpisodeReviewLoadedFor: null,
   episodeAssemblyActiveRenderLanguage: {},
-  episodeAssemblyCache: {},
+  episodeAssemblyCache: new Map(),
   episodeAssemblyVisibleCounts: {},
   episodeAssemblyInteractionHoldUntil: 0,
   episodeAssemblyUploadsInFlight: 0,
@@ -581,9 +582,9 @@ function resetEpisodeSupplementalState(episodeId = null) {
     state.cachedReviewEpisodeId = null;
   }
   if (!episodeId) {
-    state.episodeAssemblyCache = {};
+    state.episodeAssemblyCache.clear();
   } else {
-    delete state.episodeAssemblyCache[episodeId];
+    state.episodeAssemblyCache.delete(episodeId);
   }
   clearEpisodeWorkflowActionState(episodeId);
 }
@@ -1093,18 +1094,30 @@ function renderAssemblyLoadingMarkup(stage) {
 function updateEpisodeAssemblyCache(episodeId, stage, html) {
   if (!episodeId || !stage || !ASSEMBLY_STAGE_IDS.includes(stage)) return;
   const cleanHtml = String(html || "").replace(/ data-change-bound="true"/g, "");
-  state.episodeAssemblyCache[episodeId] = {
+  if (state.episodeAssemblyCache.has(episodeId)) {
+    state.episodeAssemblyCache.delete(episodeId);
+  }
+  state.episodeAssemblyCache.set(episodeId, {
     stage,
     html: cleanHtml,
-  };
+  });
+  while (state.episodeAssemblyCache.size > MAX_ASSEMBLY_CACHE_SIZE) {
+    const oldestEpisodeId = state.episodeAssemblyCache.keys().next().value;
+    if (!oldestEpisodeId) break;
+    state.episodeAssemblyCache.delete(oldestEpisodeId);
+  }
 }
 
 function renderEpisodeAssemblySectionShell(episodeId, stage, className) {
   if (!ASSEMBLY_STAGE_IDS.includes(stage)) {
     return `<div id="episode-assembly-section" class="${className}" style="display:none;"></div>`;
   }
-  const cached = state.episodeAssemblyCache[episodeId];
+  const cached = state.episodeAssemblyCache.get(episodeId);
   const hasCachedHtml = cached?.stage === stage && String(cached.html || "").trim();
+  if (hasCachedHtml) {
+    state.episodeAssemblyCache.delete(episodeId);
+    state.episodeAssemblyCache.set(episodeId, cached);
+  }
   const attrs = hasCachedHtml
     ? ` data-assembly-episode-id="${esc(episodeId)}" data-assembly-stage="${esc(stage)}" data-assembly-ready="true"`
     : "";
@@ -6248,7 +6261,7 @@ async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
     delete container.dataset.assemblyReady;
     delete container.dataset.visibleCount;
     delete container.dataset.visibleCountEpisodeId;
-    delete state.episodeAssemblyCache[episodeId];
+    state.episodeAssemblyCache.delete(episodeId);
     return;
   }
 
