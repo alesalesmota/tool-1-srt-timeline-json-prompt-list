@@ -10,6 +10,7 @@
 | `PERFORMANCE_AUDIT.md` | Full audit — 17 findings with root cause, impact, line refs | Reference |
 | `PERFORMANCE_CHECKLIST.md` | Master checklist tracking all findings | Active |
 | `../completed/ASSEMBLY_LIGHTWEIGH_PLAN.md` | Assembly upload pagination + chunked upload + incremental DOM | Done |
+| `../completed/PERF_PLAN_HIGH_FINDINGS.md` | F4 elapsed timer + F5 SSE log growth + F6 SSE leaks + B2 ffprobe caching | Done |
 | `../completed/PERF_PLAN_SMART_REFRESH.md` | Smart polling: fingerprint guard + route-aware fetch + slower intervals | Done |
 | `../completed/PERF_PLAN_VIDEO_ENCODING.md` | Eliminate redundant re-encoding: stream-copy concat + fast presets | Done |
 
@@ -18,4 +19,4 @@
 1. ~~Assembly upload~~ (done, moved to `../completed/`)
 2. ~~Smart Refresh~~ (done, moved to `../completed/`)
 3. ~~Video Re-encoding~~ (done, moved to `../completed/`)
-4. Remaining HIGH/MEDIUM/LOW — plans to be designed as needed
+4. ~~HIGH + B2/F6 batch~~ (done, moved to `../completed/`)

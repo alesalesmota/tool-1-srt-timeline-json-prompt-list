@@ -3,7 +3,7 @@
 > **Date:** 2026-04-08  
 > **Audit ref:** `PERFORMANCE_AUDIT.md` findings F4, F5, F6, B2  
 > **Checklist ref:** `PERFORMANCE_CHECKLIST.md`  
-> **Status:** In progress (`F4` + `F5` + `B2` complete on 2026-04-08; `F6` still pending)
+> **Status:** Complete (`F4` + `F5` + `F6` + `B2` shipped on 2026-04-08)
 
 These are 4 independent fixes. Each is small and self-contained. Implement in any order.
 
@@ -323,9 +323,9 @@ This is a **read-only investigation task** — don't change code, just verify th
 - [x] F5.2: Batch log appends using DocumentFragment for single reflow
 
 ### F6 — SSE Connection Leaks
-- [ ] F6.1: Remove duplicate handler (either `addEventListener("update")` or `onmessage`)
-- [ ] F6.2: Add `closeAllRenderSSE()` and call it on navigation away
-- [ ] F6.3: Add 5-minute inactivity timeout per SSE connection
+- [x] F6.1: Remove duplicate handler (backend confirmed `event: update`, so keep `addEventListener("update")`)
+- [x] F6.2: Add `closeAllRenderSSE()` and call it on episode close / route + episode switches
+- [x] F6.3: Add 5-minute inactivity timeout per SSE connection
 
 ### B2 — ffprobe Re-probing
 - [x] B2.3: Investigate `asset_id` key format in `timeline.py` (do this first — read-only)

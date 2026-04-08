@@ -69,6 +69,7 @@ const HEALTH_CACHE_TTL_MS = 15000;
 const SETTINGS_CACHE_TTL_MS = 30000;
 const TARGET_LANGUAGES_CACHE_TTL_MS = 60000;
 const MAX_RENDER_LOG_LINES = 300;
+const RENDER_SSE_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
 const FALLBACK_VOICE_TTS_PRESETS = {
   natural_stable: {
     preset: "natural_stable",
@@ -5097,11 +5098,13 @@ async function syncRouteAndRender() {
   state.route = nextRoute;
   if (nextEpisodeId) {
     if (state.episodeDetail?.episode?.id !== nextEpisodeId) {
+      closeAllRenderSSE();
       state.episodeDetail = null;
       resetEpisodeSupplementalState();
     }
     state.episodeOverlayId = nextEpisodeId;
   } else if (!["niche-project", "episode"].includes(state.route.view)) {
+    closeAllRenderSSE();
     state.episodeOverlayId = null;
     state.episodeDetail = null;
     state.translationPreview = null;
@@ -5119,6 +5122,7 @@ async function syncRouteAndRender() {
 
 async function openEpisodeOverlay(episodeId, projectId = null) {
   if (state.episodeDetail?.episode?.id !== episodeId) {
+    closeAllRenderSSE();
     state.episodeDetail = null;
     resetEpisodeSupplementalState();
   }
@@ -5138,6 +5142,7 @@ async function openEpisodeOverlay(episodeId, projectId = null) {
 
 function closeEpisodeOverlay() {
   const projectId = state.nicheProjectDetail?.project?.id || state.episodeDetail?.episode?.niche_project_id;
+  closeAllRenderSSE();
   resetEpisodeSupplementalState(state.episodeOverlayId);
   state.episodeOverlayId = null;
   state.episodeDetail = null;
@@ -6766,11 +6771,51 @@ function appendRenderLogMessages(logOut, newLogs) {
   logOut.scrollTop = logOut.scrollHeight;
 }
 
+function closeRenderSSE(jobId) {
+  const entry = renderEventSources[jobId];
+  if (!entry) return;
+  if (entry.timeoutId) {
+    window.clearTimeout(entry.timeoutId);
+  }
+  entry.source.close();
+  delete renderEventSources[jobId];
+}
+
+function closeAllRenderSSE() {
+  Object.keys(renderEventSources).forEach((jobId) => closeRenderSSE(jobId));
+}
+
+function episodeRenderViewIsActive(episodeId) {
+  return (
+    state.episodeOverlayId === episodeId ||
+    (state.route.view === "episode" && state.route.episodeId === episodeId)
+  );
+}
+
 function startRenderSSE(episodeId, jobId, lang) {
-  if (renderEventSources[jobId]) return;
+  if (renderEventSources[jobId] || !episodeRenderViewIsActive(episodeId)) return;
   const es = new EventSource(`/api/episodes/${encodeURIComponent(episodeId)}/assembly/render/${encodeURIComponent(jobId)}/events`);
-  renderEventSources[jobId] = es;
+  renderEventSources[jobId] = {
+    source: es,
+    timeoutId: null,
+  };
+  const resetInactivityTimeout = () => {
+    const entry = renderEventSources[jobId];
+    if (!entry) return;
+    if (entry.timeoutId) {
+      window.clearTimeout(entry.timeoutId);
+    }
+    entry.timeoutId = window.setTimeout(() => {
+      closeRenderSSE(jobId);
+    }, RENDER_SSE_INACTIVITY_TIMEOUT_MS);
+  };
+  resetInactivityTimeout();
   const handleUpdate = (e) => {
+    if (!episodeRenderViewIsActive(episodeId)) {
+      closeRenderSSE(jobId);
+      return;
+    }
+    resetInactivityTimeout();
     try {
       const data = JSON.parse(e.data);
       let bar = $(`render-progress-fill-${lang}`);
@@ -6787,8 +6832,7 @@ function startRenderSSE(episodeId, jobId, lang) {
       }
       appendRenderLogMessages(logOut, data.new_logs);
       if (data.job && (data.job.state === "completed" || data.job.state === "failed")) {
-        es.close();
-        delete renderEventSources[jobId];
+        closeRenderSSE(jobId);
         loadAssemblyUI(episodeId, { activeRenderLanguage: lang }).catch((error) => console.error(error));
       }
     } catch(err) {
@@ -6796,10 +6840,8 @@ function startRenderSSE(episodeId, jobId, lang) {
     }
   };
   es.addEventListener("update", handleUpdate);
-  es.onmessage = handleUpdate;
   es.onerror = () => {
-    es.close();
-    delete renderEventSources[jobId];
+    closeRenderSSE(jobId);
   };
 }
 

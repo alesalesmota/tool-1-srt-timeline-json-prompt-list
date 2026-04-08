@@ -5,5 +5,6 @@ Finished implementation plans live here so the active folders stay focused on un
 ## Current Completed Plans
 
 - `ASSEMBLY_LIGHTWEIGH_PLAN.md`
+- `PERF_PLAN_HIGH_FINDINGS.md`
 - `PERF_PLAN_SMART_REFRESH.md`
 - `PERF_PLAN_VIDEO_ENCODING.md`

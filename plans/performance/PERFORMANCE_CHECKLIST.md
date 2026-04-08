@@ -42,30 +42,31 @@
 - [x] **F4 — Elapsed Timer DOM Scan** (2026-04-08)
   - [x] F4.1: Make `resetElapsedTimer()` start-once (remove `clearInterval` + recreate pattern)
   - [x] Verify with `node --check tool1_dashboard/ui/app.js` and inline Node smoke covering single-interval registration plus preserved elapsed text updates (`elapsed-timer-start-once-ok`)
-  - Plan: `PERF_PLAN_HIGH_FINDINGS.md`
+  - Plan: `plans/completed/PERF_PLAN_HIGH_FINDINGS.md`
 
 - [x] **F5 — Unbounded SSE Log Growth** (2026-04-08)
   - [x] F5.1: Cap log DOM to last 300 lines (remove oldest child nodes when exceeded)
   - [x] F5.2: Batch `appendChild` via `DocumentFragment` for single reflow
   - [x] Verify with `node --check tool1_dashboard/ui/app.js` and inline Node smoke covering placeholder clear, `DocumentFragment` append, and 300-line cap (`render-log-helper-ok`)
-  - Plan: `PERF_PLAN_HIGH_FINDINGS.md`
+  - Plan: `plans/completed/PERF_PLAN_HIGH_FINDINGS.md`
 
 - [x] **B2 — Sequential ffprobe Re-probing All Assets** (2026-04-08)
   - [x] B2.3: Investigate `SceneSpec.asset_id` key format in `timeline.py` (read-only)
   - [x] B2.1: Write `cached_probes.json` during `_stage_assets_for_render()` from DB metadata
   - [x] B2.2: Modify `probe_assets()` to read cache and skip ffprobe for complete entries
   - [x] Verify with `python -m pytest tests/test_video_assembly/test_probe_assets.py -q` (`2` passing), `python -m pytest tests/test_video_pipeline.py -k "prepare_assembly_project_copies_language_specific_inputs or stage_assets_for_render_writes_cached_probes_with_timeline_asset_ids" -q` (`2` passing), and `python -m pytest tests/test_video_assembly_integration.py -q` (`16` passing)
-  - Plan: `PERF_PLAN_HIGH_FINDINGS.md`
+  - Plan: `plans/completed/PERF_PLAN_HIGH_FINDINGS.md`
 
 ---
 
 ## MEDIUM
 
-- [ ] **F6 — SSE Connection Leaks**
-  - [ ] F6.1: Remove duplicate handler (`addEventListener("update")` vs `onmessage`) — verify backend event format first
-  - [ ] F6.2: Add `closeAllRenderSSE()` and call it on navigation away from episode view
-  - [ ] F6.3: Add 5-minute inactivity timeout per SSE connection
-  - Plan: `PERF_PLAN_HIGH_FINDINGS.md`
+- [x] **F6 — SSE Connection Leaks** (2026-04-08)
+  - [x] F6.1: Remove duplicate handler (`addEventListener("update")` vs `onmessage`) after backend verification of `event: update`
+  - [x] F6.2: Add `closeAllRenderSSE()` and call it on navigation away from episode view
+  - [x] F6.3: Add 5-minute inactivity timeout per SSE connection
+  - [x] Verify with `node --check tool1_dashboard/ui/app.js`, `python -m pytest tests/test_video_pipeline.py -k "render_job_events_endpoint_streams_named_update_events" -q` (`1` passing), and inline Node smoke covering the SSE timeout/cleanup wiring (`render-sse-lifecycle-ok`)
+  - Plan: `plans/completed/PERF_PLAN_HIGH_FINDINGS.md`
 
 - [ ] **F7 — Assembly Cache Unbounded Growth**
   - [ ] Add LRU eviction (keep max 5 episodes cached)

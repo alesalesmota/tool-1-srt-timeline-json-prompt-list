@@ -1374,6 +1374,57 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                 finally:
                     self.app_module.service = original
 
+    def test_render_job_events_endpoint_streams_named_update_events(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en"])
+                    episode_id = episode["id"]
+                    render_job_id = "render-job-events-1"
+                    now = utc_now()
+                    service.db.create_render_job(
+                        {
+                            "id": render_job_id,
+                            "episode_id": episode_id,
+                            "language_code": "en",
+                            "state": "completed",
+                            "stage": "complete",
+                            "current_scene_id": "scene_001",
+                            "total_scenes": 1,
+                            "completed_scenes": 1,
+                            "started_at": now,
+                            "finished_at": now,
+                            "outputs_json": "{}",
+                            "project_dir": str(temp_path / "assembly" / "en"),
+                            "created_at": now,
+                            "updated_at": now,
+                        }
+                    )
+                    service.db.append_render_log(
+                        render_job_id=render_job_id,
+                        timestamp=now,
+                        level="info",
+                        stage="rendering",
+                        message="Rendered scene_001",
+                        scene_id="scene_001",
+                    )
+
+                    with client.stream(
+                        "GET",
+                        f"/api/episodes/{episode_id}/assembly/render/{render_job_id}/events",
+                    ) as response:
+                        self.assertEqual(response.status_code, 200)
+                        body = "".join(response.iter_text())
+
+                    self.assertIn("event: update", body)
+                    self.assertIn('"state": "completed"', body)
+                    self.assertIn("Rendered scene_001", body)
+                finally:
+                    self.app_module.service = original
+
     def test_delete_render_job_endpoint_removes_temp_and_record(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
