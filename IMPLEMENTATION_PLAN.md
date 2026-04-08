@@ -1,569 +1,241 @@
-# Tool 1 Creator Studio — Reconstruction Plan
-> Last updated: 2026-04-04
+# Plan: Wire the post-upload assembly continuation flow
 
-> [!IMPORTANT]
-> Historical migration record. This plan is complete and intentionally preserves the old cleanup context from the transition period. Do not treat the phase narrative below as the current architecture source of truth; use `README.md` and `PROJECT_REGISTRY.md` for the live product shape.
+Status on 2026-04-08: implemented in code and regression tests. Manual end-to-end browser verification is still pending.
 
 ## Context
 
-Tool 1 is the multilingual video planning pipeline for Creator Studio. The user (Blue) creates niche-based YouTube content (e.g., Religion) and produces the **same episode in multiple languages** for different YouTube channels.
-
-**The problem:** A previous comprehensive implementation plan was lost between conversations. The project has accumulated three overlapping workflow models (legacy Jobs, legacy Projects/Builds, and the target Episodes model), standalone tools that duplicate integrated modules, and uncommitted work across the entire codebase. We need to clean up, consolidate, and finish what was started.
-
-**Intended outcome:** A clean, episode-first pipeline where submitting a script to a Niche Project creates a Draft episode on the project board, queueing is explicit, failures are visible, and the Kanban shows every stage without hiding provider/configuration problems.
-
----
-
-## Current State Summary
-
-### French-First Subtitle Density Cleanup (2026-04-05)
-- Added a fast segmentation-only benchmark path in [tool1_dashboard/alignment_tool/benchmark_segmentation.py](C:/Users/Blue_/Desktop/PROJETOS/CREATOR%20STUDIO/TOOL%201%20SRT-TIMELINE.JSON-PROMPT%20LIST/tool1_dashboard/alignment_tool/benchmark_segmentation.py) that reuses existing `words.json` plus baseline `segments.json`, then repairs only the current cue layout instead of rerunning full MFA.
-- Subtitle repair is now explicitly neighborhood-based: the segmenter can seed from existing cue blocks, re-segment a 3-block window around the worst dense block, and then redistribute silence-gap timing between adjacent cues with a local pair optimizer.
-- French/Italian subtitle rulepacks were tightened for clause/reference breaking and awkward block-start avoidance without reopening translation or the core aligner.
-- Verification on 2026-04-05:
-  - `python -m unittest tests.test_alignment_tool -q` via `C:\Users\Blue_\AppData\Local\Programs\Python\Python312\python.exe` -> `20` tests passing
-  - full `python -m pytest tests -q` could not be rerun in the available interpreter because local packages such as `fastapi`, `httpx`, and `pytest` are missing from that Python environment
-  - non-destructive fast benchmark written to `workspace/benchmarks/alignment-20260405-fr-it-cleanup-all/summary.json`
-  - latest benchmark metrics: `de` `4` reading-speed warnings, `es` `2`, `fr` `23`, `it` `20`
-  - severe outliers improved: `fr` dropped from `5 -> 2` segments over `24 cps` and `1 -> 0` over `30 cps`; `it` dropped from `3 -> 0` and `1 -> 0`
-- Acceptance note: this pass improved the worst French/Italian outliers and added the fast low-risk cleanup path, but it did **not** clear the production gate because French stayed at `23` warnings and Italian rose to `20`. No live episode `205` French/Italian rerun was promoted.
-
-### Subtitle Density Hardening (2026-04-04)
-- Subtitle segmentation is no longer a greedy splitter. The tool now uses a deterministic DP segmenter that optimizes readability first, then runs a repair pass for remaining dense cues.
-- Subtitle break behavior now comes from the shared language rulepacks (`de/es/fr/it`) instead of hardcoded punctuation-only logic.
-- Alignment reports now expose subtitle-density diagnostics (`segment_profile`, `segments_over_18/24/30_cps`, fast-segment buckets, averages, optimization passes) so regressions are visible without manual SRT inspection.
-- Validation on 2026-04-04:
-  - `python -m pytest tests -q` -> `214` passing, `4` subtests passing
-  - non-destructive benchmark written to `workspace/benchmarks/alignment-20260404-density-v2/summary.json`
-  - latest benchmark metrics: `de` `2` reading-speed warnings, `es` `2`, `fr` `23`, `it` `12`
-- Acceptance note: the code-side subtitle hardening is implemented, but the strict French benchmark gate is not fully cleared yet (`fr segments_over_24_cps = 5`, `segments_over_30_cps = 1`), so live French promotion for episode `205` remains intentionally blocked.
-
-### Drawbridge Live-Activity Follow-Up (2026-03-28)
-- Stage-run payloads now expose preview-file timestamps and sizes for both stdout and stderr.
-- The episode live-activity surface now distinguishes real preview-file output from fallback execution snapshots using separate `Run age`, `Output source`, and `Last preview write` cards plus dedicated preview blocks.
-- Regression coverage now protects the preview-file metadata contract that feeds this UI.
-
-### Post-Phase Refinement (2026-03-28)
-- Workflow controls now support resume-from-stop, pause-at-safe-boundary, and selected-step reruns from the episode detail/overlay UI.
-- Backend queueing now defaults failed/paused episodes to their actual stopped stage instead of always falling back to `consistency_guide`.
-- Selected-step reruns can reset downstream outputs safely, and mid-pipeline starts now validate that prerequisite assets exist before queueing.
-
-### Episode 205 Repair Pass (2026-04-04)
-- Scene-planning now requires absolute episode seconds, rebases late chunk-local timestamps when they slip through, and fails fast when merged coverage stops materially before the final master cue.
-- Translation retries now preserve the original source script text instead of relying only on lossy `master_scenes` text, so CTA/opening paragraphs are not dropped during single-language repairs.
-- Translation audits now explicitly reject mixed-language CTA leakage while preserving configured per-language channel names such as `Biblo Viral` and `Orizzonte`.
-- Episode `205` was reprocessed through shared scene planning plus localized ES/IT regeneration. Shared review assets now cover `378` scenes through `3361.6s`.
-- French-specific outcome changed after the multilingual QA upgrade: a fresh French rerun is now rejected by the stricter deterministic + reviewer gate under the current `openai / gpt-5-nano` profile, so the previous French review artifacts were preserved and backfilled with a spoken-script sidecar instead of being overwritten by low-quality output.
-
-### Multilingual Translation Quality Upgrade (2026-04-04)
-- Translation now uses shared language rulepacks to carry per-language CTA/channel/reference guidance, protected terms, and known bad literal patterns.
-- Deterministic translation QA now runs at chunk level and script level before output is accepted.
-- Script-level quality review now uses a fixed OpenAI reviewer model (`gpt-5.4-mini`) and fails the language after one repair attempt if the script is still weak.
-- Readable and spoken scripts are now distinct artifacts. TTS/alignment prefer the spoken script; review/export keep the readable script primary.
-- OpenAI translation calls now retry once with a larger output budget when `Responses API` returns `status = incomplete` because of `max_output_tokens`.
-- Operational implication: lower-quality translation profiles that previously slipped through can now fail closed. Episode `205` French is the first confirmed case.
-- Reviewer follow-up on 2026-04-04: the judge path now prunes unsupported source-channel complaints and treats all-`4+` score outputs as pass-with-suggestions rather than hard failures, which was necessary to keep French acceptance focused on real issues instead of reviewer hallucinations.
-
-### What works (backend)
-- FastAPI app with ~50+ endpoints, SQLite database, service layer with worker loop
-- Translation module (`tool1_dashboard/translation/`) — adapter, chunker, prompts, service
-- TTS module (`tool1_dashboard/tts/`) — manager, worker subprocess, XTTS-v2
-- Alignment tool (`tool1_dashboard/alignment_tool/`)
-- Episode pipeline (`_process_episode()` in service.py) — all 10 stages implemented
-- 8 agent prompt templates (scene planning, visual bible, video/image prompts)
-- Validators, CLI runner, template store
-
-### What works (frontend)
-- Kanban board with pipeline columns, dark/light theme
-- Episode views, Niche Project views, Voice/Translation profiles, Settings, Templates
-- But: ~2000 lines of legacy views still present (Jobs, Projects/Builds)
-
-### Three coexisting workflow models (problem)
-1. **Jobs** (legacy v1) — single-language, requires audio upload
-2. **Projects/Builds** (legacy v2) — master + localization builds
-3. **Niche Projects/Episodes** (target v3) — TTS-first, multi-language, script-only input
-
-### Key decisions
-- **Consistency guide is per-episode** (not shared at niche project level)
-- **All legacy code (Jobs, Projects/Builds) will be removed** — Episodes is the final model
-- **4 standalone tools deleted** — all duplicated by integrated modules
-
----
-
-## Unified Pipeline Flow (Target)
-
-```
-Submit Script to Niche Project → Episode Created (Draft)
-  │
-  ├─ 1. CONSISTENCY GUIDE    (LLM, per episode — each episode gets its own guide)
-  ├─ 2. TRANSLATION           (per target language, sequential)
-  ├─ 3. TTS                   (per language incl. master, sequential, GPU-bound)
-  ├─ 4. ALIGNMENT             (per language, generates SRT from audio+script)
-  ├─ 5. CHUNKING              (master language SRT → planning chunks)
-  ├─ 6. SCENE PLANNING        (LLM, master language, chunk by chunk)
-  ├─ 7. VIDEO PROMPT GEN      (LLM, batch by batch, leading scenes)
-  ├─ 8. IMAGE PROMPT GEN      (LLM, batch by batch, remaining scenes)
-  ├─ 9. TIMELINE MAPPING      (per language, stretch scenes to fit narration)
-  │
-  └─ REVIEW → EXPORT (zip for Tool 2 handoff)
-```
-
----
-
-## Phase Plan
-
-See `IMPLEMENTATION_CHECKLIST.md` for progress tracking.
-
-### Phase 1: Cleanup & Git Hygiene
-**Goal:** Remove dead files, set up .gitignore, commit clean baseline
-
-- Delete all 4 standalone tools: `TRADUTOR/`, `TTS -NARRAÇAO/`, `QUEBRADOR DE SRT/`, `UI for Open AI Whisper/`
-- Archive outdated docs to `archive/`: `tool_1_multilingual_implementation.md`, `tool_1_prd_readme_revised.md`
-- Delete `WORKFLOW_STATUS.md`
-- Add to `.gitignore`: `.playwright-cli/`, `__pycache__/`, `*.db`, `workspace/`, `venv/`
-- Commit all uncommitted work (feature branch `feat/cleanup-and-consolidation`)
-
-### Phase 2: Database Consolidation
-**Goal:** Dedicated `niche_projects` table, drop legacy tables
-
-- Create proper `niche_projects` table
-- Add `episode_id` column to `stage_runs`
-- Drop legacy tables (`jobs`, `projects`, `builds`)
-- Update all DB methods
-
-### Phase 3: Service Layer — Remove Legacy Processing
-**Goal:** Remove ~2000 lines of dead code from service.py
-
-- Remove all legacy job/project/build processing methods
-- Update `_worker_loop()` to only process episodes
-- Rename niche methods to primary
-
-### Phase 4: API Layer Consolidation
-**Goal:** Clean API surface — episodes and niche projects only
-
-- Remove ~30 legacy endpoints
-- Rename routes: `/api/niche-projects` → `/api/projects`
-- Write consolidated API tests
-
-### Phase 5: Frontend — Remove Legacy Views
-**Goal:** Episode-first navigation, remove ~2000 lines of dead frontend code
-
-- Remove all job/project/build render functions
-- Target sidebar: Board | Projects | Voice Profiles | Translation Profiles | Settings | Templates
-
-### Phase 6: Episode Pipeline Board Enhancement
-**Goal:** Rich, transparent Kanban showing real-time progress
-
-- Per-language progress indicators
-- Quick actions, stage run history, output previews
-- Pipeline progress bar
-
-### Phase 7: Niche Project Detail Enhancement
-**Goal:** Complete project management
-
-- Language config, episode list, batch ops
-- "Submit New Episode" form
-- Project stats
-
-### Phase 8: TTS & Translation Integration Polish
-**Goal:** Smooth TTS + Translation workflow
-
-- Fix pause/resume logic, progress display
-- Per-language retry, error handling
-
-### Phase 9: Review & Export Phase
-**Goal:** Complete review-to-export workflow
-
-- Timeline editor, prompt list editor
-- Export zip for Tool 2 handoff
-
-### Phase 10: Final Cleanup & Documentation
-**Goal:** Final polish, full test pass, E2E validation
-
----
-
-## 2026-03-26 Workflow Repair Addendum
-
-This addendum supersedes the remaining board/queue UX assumptions from the original reconstruction plan.
-
-### Workflow shape
-
-The intended flow is now:
-
-`Niche Projects -> Project Kanban -> Draft episode -> Episode Details overlay -> explicit queue`
-
-### Completed repair items
-
-- Made `#/niche-projects` the landing flow and `#/niche-projects/:id` the primary workspace
-- Redirected legacy `#/pipeline-board` access back into the project-scoped flow
-- Replaced the flat per-project episode list with a real project Kanban grouped by pipeline stage
-- Renamed the first column to `Draft` and moved episode creation into that column
-- Removed frontend auto-queueing from draft submission
-- Switched episode details to an overlay on top of the project board, while keeping direct `#/episodes/:id` routing working
-- Added shared queue readiness validation for queue and requeue
-- Blocked queueing when languages, voice profiles, translation profiles, or provider auth/config are missing
-- Returned structured `queue_readiness` in project and episode payloads and structured 400 errors from queue attempts
-- Preserved full provider-stage failure logs without adding automatic Claude-to-Codex fallback
-- Made template/settings reads side-effect free
-
-### Verification baseline
-
-- `python -m unittest discover -s tests -v` -> 93 passing tests
-- `node --check tool1_dashboard/ui/app.js`
-- Browser smoke for:
-  - project board rendering
-  - draft episode creation
-  - direct episode route opening the overlay over the board
-- blocked queue actions showing readiness blockers
-
----
-
-## 2026-03-26 Per-Voice TTS Pacing Control Addendum
-
-This addendum captures the narration-stability pass that followed the voice-profile UX simplification and automatic voice-engine lifecycle work.
-
-### Goals
-
-- keep natural voice variation while reducing obviously slow or unrealistic narration takes
-- make the app-owned TTS chunker the single authoritative split layer for long-form narration
-- expose pacing controls per voice profile so preview behavior matches production behavior
-- avoid automatic quality retries, which are too expensive for hour-long narration workflows
-
-### Implemented shape
-
-- Voice profiles now store a resolved `tts_config` seeded from the `natural_stable` preset and editable per profile
-- The Voice Profiles UI keeps the card minimal and exposes pacing controls through a compact `Tuning` modal with presets plus advanced fields
-- `Play test` and production `generate` jobs both snapshot the same per-profile `tts_config` at queue time
-- Production narration is pre-chunked with the repo TTS chunker before queueing, and XTTS internal text splitting is disabled
-- XTTS inference is now called with explicit sampling controls (`do_sample=True`, `num_beams=1`, `temperature`, `top_p`, `top_k`, `speed`)
-- Job payloads now preserve explicit chunk text plus the original filename needed for resumable long-form output assembly
-
-### Preset baseline
-
-- `natural_stable`: safe default narration band
-- `balanced`: modestly looser variation
-- `expressive`: widest allowed variation in the first pass
-
-### Guardrails
-
-- Per-profile tuning stays within constrained narration-safe ranges for sampling, speed, chunk size, and inter-chunk silence
-- No automatic pacing retry is introduced in this pass
-- Scene chunking remains separate; TTS chunking controls narration generation before downstream planning/alignment stages
-
-## 2026-03-29 TTS Throughput Stabilization Addendum
-
-This addendum captures the throughput and stuck-queue repair after the user reported that the current TTS step was much slower than the preview TTS tool.
-
-### Goals
-
-- move the dashboard runtime back onto CUDA without changing the pinned `torch==2.3.1` / `torchaudio==2.3.1` versions
-- make long-form `generate` work materially cheaper than preview/test mode without changing the downstream alignment/output contract
-- recover orphaned `processing` narration jobs even when another worker heartbeat is still fresh
-- make CPU-vs-GPU state and queue depth visible in the existing worker-health surfaces
-
-### Decisions
-
-- `test_voice` stays on the saved per-profile chunk sizing so preview tuning remains representative
-- production `generate` keeps the same per-profile tuning path but enforces `chunk_max_chars >= 260`
-- worker health is extended instead of adding new endpoints
-- throttled progress updates reduce SQLite churn, but final completed job payloads must still resolve to `current_chunk == total_chunks` and `percent == 100`
-
-### Verification
-
-- targeted backend regression: `python -m pytest tests/test_tts.py -q`
-- runtime verification: `torch 2.3.1+cu121`, `torchaudio 2.3.1+cu121`, `cuda_available = True`, `gpu_name = NVIDIA GeForce RTX 3050 Laptop GPU`
-- worker smoke on a temporary DB: one `test_voice` job and one multi-chunk `generate` job both completed on CUDA
-
-### Verification baseline
-
-- `python -m unittest discover -s tests -v` -> 115 passing tests
-- `node --check tool1_dashboard/ui/app.js`
-- Browser smoke for:
-  - opening the `Tuning` modal from a voice-profile card
-  - switching presets and seeing advanced controls rewrite to preset values
-  - `Save and play test` closing the modal and moving the card into inline `Generating sample`
-
----
-
-## 2026-03-26 Translation Profile Setup Rework Addendum
-
-This addendum captures the Drawbridge pass that rebuilt Translation Profiles around the actual runnable provider path instead of the shared CLI stage-provider catalog.
-
-### Goals
-
-- clarify API vs CLI provider modes inside Translation Profiles
-- make OpenAI API the only runnable/savable translation profile in this pass
-- load the available OpenAI models from the pasted or saved API key instead of asking for a free-text model id
-- expose model sorting, filtering, and hover metadata so model choice is understandable at setup time
-- keep future CLI modes visible as placeholders without allowing invalid persistence
-
-### Implemented shape
-
-- Translation Profiles now use a dedicated provider catalog with:
-  - `OpenAI API` as the live runnable mode
-  - `Codex CLI` and `Claude Code CLI` as placeholder preview tabs
-- Added `POST /api/translation-profiles/openai/discover`
-  - accepts a pasted `api_key` for create flow or `profile_id` for edit flow
-  - calls OpenAI `GET /v1/models`
-  - filters for text-capable models
-  - merges live ids with local metadata for labels, price/speed scores, capability labels, and `best for` hover copy
-  - returns a normalized model list plus a recommended default
-- Translation-profile API payloads are now sanitized for the frontend
-  - raw key refs are no longer returned
-  - responses expose `has_api_key`, `api_key_masked`, `provider_label`, `provider_mode`, and `provider_placeholder`
-- The Translation Profiles UI now uses a shared create/edit modal with:
-  - provider mode tabs/cards
-  - explicit OpenAI key check / model refresh action
-  - searchable and sortable discovered model picker
-  - hover detail tooltips for model cost/speed/capability hints
-  - saved-key masking for edit flow
-  - disabled save path for placeholder CLI tabs
-- Existing legacy providers remain visible and deletable, but the new editor only supports OpenAI updates in this pass
-
-### Guardrails
-
-- Only `openai` can be created or updated through the current setup flow
-- Placeholder CLI provider ids are rejected server-side if posted directly
-- Edit-mode model discovery can reuse the stored secret without exposing it back to the browser
-
-### Verification baseline
-
-- `python -m unittest discover -s tests -v` -> 124 passing tests
-- `node --check tool1_dashboard/ui/app.js`
-- Browser smoke on `http://127.0.0.1:8032/#/translation-profiles` covering:
-  - placeholder tab rendering and disabled save
-  - mocked OpenAI model discovery during create flow
-  - saved-key rediscovery during edit flow
-  - model search/filter interaction
-  - editing a profile and saving a changed model
-
----
-
-## 2026-03-27 Translation Profile Card Simplification Addendum
-
-This addendum captures the follow-up Drawbridge pass that trimmed the translation-profiles page down to a compact default view.
-
-### Goals
-
-- stop repeating `Translation Profiles` in both the page title and section body
-- remove the long helper and key/meta copy that made the cards visually noisy
-- keep the default card focused on the few details the user needs to scan quickly
-- reuse the existing modal for deeper details instead of introducing a second inline expansion pattern
-
-### Implemented shape
-
-- The translation-profiles page header now keeps only a compact count plus the `Create profile` action
-- The default card summary now shows:
-  - profile name
-  - provider label
-  - selected model
-  - readiness badge derived from `provider_runnable`
-- The masked API-key badge, provider-description paragraph, and extra meta line are removed from the default card view
-- The card summary is now the primary details trigger and reuses the existing translation-profile editor modal on click
-- Edit/delete icon actions remain available as independent controls beside the summary region
-
-### Verification baseline
-
-- `node --check tool1_dashboard/ui/app.js`
-- Playwright smoke on `http://127.0.0.1:8020/#/translation-profiles` covering:
-  - compact card summaries for all profiles
-  - summary click opening the existing edit modal
-  - delete icon opening only the confirm dialog
-  - mobile-width snapshot confirming the compact cards remain readable
-
----
-
-## 2026-03-27 Sidebar Utility Relocation Addendum
-
-This addendum captures the next Drawbridge pass that moved the two global shell controls out of the top-right chrome and into the lateral menu.
-
-### Goals
-
-- remove the refresh/theme buttons from the page header so the topbar stays focused on title and notices
-- keep both controls easy to reach even when the sidebar is collapsed
-- preserve hover labels and existing `data-refresh` / `data-theme-toggle` behavior without introducing a second control path
-
-### Implemented shape
-
-- The topbar now renders only the page title plus sync/notice meta
-- The sidebar includes a new compact quick-actions group with:
-  - `Refresh data`
-  - `Light mode` / `Dark mode`
-- The quick-action buttons reuse the existing sidebar visual language so they work in both collapsed icon-only mode and expanded labeled mode
-
-### Verification baseline
-
-- `node --check tool1_dashboard/ui/app.js`
-- Playwright smoke on `http://127.0.0.1:8021/#/translation-profiles` covering:
-  - no refresh/theme buttons in the topbar
-  - both controls present in the sidebar
-  - translation-profile page still opening and rendering correctly after the shell move
-
----
-
-## 2026-03-27 Episode Start UX Cleanup Addendum
-
-This addendum captures the workflow-launch cleanup that followed the earlier project-board repair.
-
-### Goals
-
-- replace ambiguous `Queue` / `Requeue` wording with explicit workflow language
-- keep episode start controls compact and icon-only while preserving hover explanations and `aria-label`s
-- make readiness panels reflect ready, blocked, queued, and running states instead of always reading like blockers
-- keep the episode overlay open after a start attempt and show inline local feedback immediately
-- preserve the existing `/api/episodes/{id}/queue` and `queue_readiness` backend contract
-
-### Implemented shape
-
-- Episode workflow actions now use state-specific labels:
-  - `Start workflow`
-  - `Restart workflow`
-  - `Run again`
-- Board cards and episode overlay/detail actions now share compact icon-only controls with tooltip shells that still explain disabled states
-- Project and episode readiness panels now switch between:
-  - `Ready to start`
-  - `Ready to restart`
-  - `Ready to run again`
-  - `Workflow blockers`
-  - `Workflow in progress`
-- Starting a workflow now applies optimistic local episode state, disables repeated clicks, and shows inline overlay feedback
-- Frontend action state is reconciled on refresh, so if the workflow fails moments after a start request the overlay swaps the optimistic success copy for an inline error
-- Readiness blocker copy is normalized on the frontend from queue language into workflow language without changing the backend payload schema
-
-### Verification baseline
-
-- `node --check tool1_dashboard/ui/app.js`
-- `python -m unittest discover -s tests -v` -> 124 passing tests
-- Playwright smoke on:
-  - `http://127.0.0.1:8020/#/niche-projects/niche-20260327-160221-bridge-smoke-ready-638141`
-  - `http://127.0.0.1:8020/#/niche-projects/niche-20260327-160221-bridge-smoke-blocked-638141`
-- Verified:
-  - ready/review/done/failed cards expose the new workflow wording
-  - blocked episodes keep disabled start controls with blocker tooltips and blocker panels
-  - mobile-width overlay and card controls remain icon-only with accessible labels
-  - the real restart flow keeps the overlay open and flips the inline message to `Workflow failed in Consistency Guide.` after the backend failure refresh
-- Live environment note:
-  - the smoke restart hit a provider-side Claude quota error: `Claude limit reached. You've hit your limit · resets Mar 28, 5pm (America/Sao_Paulo)`
-  - this is an environment/runtime limitation, not a frontend regression; the UI now surfaces it correctly inline
-
----
-
-## 2026-03-27 Real Workflow Feedback On Project Kanban Addendum
-
-This addendum captures the follow-up Drawbridge pass that made the project board itself explain live workflow state instead of relying on hover-only controls or detail overlays.
-
-### Goals
-
-- move started cards out of `Draft` immediately on the board
-- keep card column placement and card copy derived from the same real workflow state
-- show a compact, always-visible in-card status line that reflects actual backend progress
-- tighten active-board polling so queue/running states feel live instead of delayed
-- avoid API-contract changes unless absolutely necessary
-
-### Implemented shape
-
-- Added a compact inline status row on every episode card that derives its copy from:
-  - `pipeline_status`
-  - `current_stage`
-  - `updated_at`
-  - `language_statuses`
-- Added a shared computed display-stage helper for cards and kanban placement
-  - if an episode is active and backend `current_stage` is still `draft`, the board now falls back to the real queued start stage so the card no longer appears stuck
-- Fixed per-language stage summaries to use the actual backend keys:
-  - `translation -> translation_status`
-  - `tts -> tts_status`
-  - `alignment -> srt_status`
-  - `timeline_mapping -> timeline_status`
-- Added active-board refresh throttling:
-  - `1000ms` while any episode is `queued`, `running`, or `paused_for_tts`
-  - `5000ms` otherwise
-- Synced the refresh throttle immediately after optimistic workflow start so the faster poll rate begins as soon as the user starts a workflow
-- Styled the inline workflow status and error surfaces directly on the card so critical state is readable without hover
-
-### Verification baseline
-
-- `node --check tool1_dashboard/ui/app.js`
-- `python -m pytest tests/test_video_pipeline.py -k "queue_episode and not missing and not provider and not translation_profile and not voice_profile" -q`
-- `python -m pytest tests/test_video_pipeline.py -k "requeue_after_provider_config_change_restarts_from_failed_stage" -q`
-- Playwright smoke on `http://127.0.0.1:8021/#/niche-projects/niche-20260326-133703-religi-o`
-- Live browser verification confirmed:
-  - a fresh draft card initially rendered `Ready to start workflow.` in the `Draft` column
-  - after workflow start, that same card moved out of `Draft` within roughly 100ms
-  - the card rendered inline running state in `Consistency Guide` instead of looking idle
-
----
-
-## Files to Modify (Critical)
-
-| File | Action |
-|------|--------|
-| `tool1_dashboard/service.py` (~4500 lines) | Remove ~2000 lines legacy, keep episode pipeline |
-| `tool1_dashboard/database.py` | New `niche_projects` table, drop legacy |
-| `tool1_dashboard/app.py` | Remove ~25 legacy endpoints, rename routes |
-| `tool1_dashboard/ui/app.js` (~3900 lines) | Remove ~2000 lines legacy views, enhance episode board |
-| `tool1_dashboard/config.py` | Remove legacy pipeline constants |
-| `PROJECT_REGISTRY.md` | Update throughout |
-
-## Reuse (Don't Rebuild)
-
-| Module | Path | Status |
-|--------|------|--------|
-| Translation service | `tool1_dashboard/translation/` | Complete, keep as-is |
-| TTS module | `tool1_dashboard/tts/` | Complete, minor fixes in Phase 8 |
-| Alignment tool | `tool1_dashboard/alignment_tool/` | Complete, keep as-is |
-| SRT chunker | `tool1_dashboard/srt_chunker/` | Complete, keep as-is |
-| Validators | `tool1_dashboard/validators.py` | Complete, keep as-is |
-| CLI runner | `tool1_dashboard/providers.py` | Complete, keep as-is |
-| Agent prompts | `config/agents/` | Complete, keep as-is |
-| Template store | `tool1_dashboard/templates.py` | Complete, keep as-is |
-
----
-
-## Alignment Hardening Addendum (2026-04-04)
-
-### Goal
-
-Improve alignment quality as a tool capability without adding a new engine, changing routes, or mutating episode-specific logic.
-
-### Implemented
-
-- Keep `MFA` as the default alignment engine and `WhisperX` as fallback/guidance only.
-- Add language-aware spoken/token normalization through shared rulepacks:
-  - spoken abbreviation expansion
-  - elision-aware token splitting
-  - joined-token aliases such as `del -> de el` and `zum -> zu dem`
-- Replace the previous exact-token-only mismatch recovery with staged rescue:
-  - exact normalized-token pass
-  - local merge rescue
-  - local split rescue
-  - bounded fuzzy token rescue
-  - approximation only after rescue failure
-- Add structured report metrics to `alignment_report.json`:
-  - `strategy`
-  - `warning_summary`
-  - `reading_speed_warning_count`
-  - `max_reading_cps`
-  - `p95_reading_cps`
-  - `candidate_metrics`
-  - `chunk_count`
-- Add deterministic candidate scoring across alignment strategies using:
-  - `(dropped_word_count, approximate_word_count, mismatch_count, reading_speed_warning_count, max_reading_cps)`
-- Add guided chunk-planning helpers and chunk stitching so chunked MFA can be used safely when single-pass MFA exceeds integrity thresholds.
-- Add subtitle post-optimization that:
-  - breaks earlier when predicted CPS is too high
-  - extends segments into safe silence gaps
-  - merges very short neighboring segments when that improves readability
-- Keep integrity failures strict:
-  - fail alignment if `dropped_word_count > 0`
-  - fail alignment if `approximate_word_count > max(25, ceil(script_word_count * 0.003))`
-
-### Verification
-
-- `python -m pytest tests -q`
-  - `208 passed`
-  - `4 subtests passed`
-- Non-destructive benchmark on episode `205` using current narration assets written to `workspace/benchmarks/alignment-20260404/`
-  - `de`: approximate `15 -> 1`, reading warnings `161 -> 105`
-  - `es`: approximate `2 -> 0`, reading warnings `39 -> 12`
-  - `fr`: approximate `100 -> 4`, reading warnings `311 -> 139`
-  - `it`: approximate `8 -> 0`, reading warnings `71 -> 57`
+After exporting an episode and uploading the generated images/videos through the assembly modal, the user has no clear way to move the card forward into the next assembly stages (assembly_validation → video_render → final_review). The episode card still shows the regular **"Resume from step"** dropdown, which is built only from the upstream `EPISODE_RUNNABLE_STAGES` list. Because `asset_upload` is **not** in that list, clicking that button silently sends the card back to `translation` (the closest runnable fallback) and triggers `delete_stage_runs_for(...)`, which **looks** like the user lost all their uploaded assets.
+
+The user's actual assets are safe — they live in the `scene_assets` DB table and on disk under `workspace/episodes/{episode}/assembly/shared_assets/` — but the UX is broken and dangerous: a wrong click can erase upstream stage runs and re-queue the entire pipeline. The user needs a clear, lossless **"Continue to next assembly stage"** action on the card itself, plus a way to re-enter the assembly workspace without confusion. The backend already supports this via `service.advance_assembly_stage()` and `POST /api/episodes/{id}/assembly/advance` — they just aren't surfaced anywhere in the card UI.
+
+This plan is written for another agent (Codex / Gemini / Claude) to execute end-to-end. It says **what** to change, **why**, and **how to verify** each step, without dictating exact code.
+
+## Root cause (file:line)
+
+- `tool1_dashboard/config.py:58-68` — `EPISODE_RUNNABLE_STAGES` lists only `consistency_guide` … `timeline_mapping`. The four assembly stages (`asset_upload`, `assembly_validation`, `video_render`, `final_review`) are intentionally excluded because they are managed by a different code path.
+- `tool1_dashboard/ui/app.js:725-736` — `episodeQueueStartStage(episode)` falls through to `"consistency_guide"` (or to a stale `queued_from_stage`) when `current_stage` is `asset_upload`, because the function only knows about `EPISODE_RUNNABLE_STAGE_IDS`. This is why clicking Resume lands on `translation`.
+- `tool1_dashboard/ui/app.js:2911-2915` — `workflowStageOptions(selectedStage)` builds the dropdown strictly from `EPISODE_RUNNABLE_STAGE_IDS`, so assembly stages can never appear.
+- `tool1_dashboard/ui/app.js:2930-2993` — `renderEpisodeWorkflowControlPanel()` unconditionally renders the "Run from step" dropdown + Resume button wired to `data-queue-episode`.
+- `tool1_dashboard/ui/app.js:5826-5836` → `triggerEpisodeWorkflowStart()` → POST `/api/episodes/{id}/queue` → `service.queue_episode()` at `tool1_dashboard/service.py:3539-3603`. At line 3590, `delete_stage_runs_for(...)` wipes stage runs from the chosen start stage forward. **Nothing currently prevents this from running on an episode whose `current_stage` is an assembly stage.**
+- `tool1_dashboard/ui/app.js:6698-6767` — `renderAssemblyValidationPanel()` shows a "Validate All Languages" button but its success path **never** calls `/api/episodes/{id}/assembly/advance`, so even passing validation leaves the episode stuck on `asset_upload`.
+
+Backend support that already exists and must be reused:
+- `tool1_dashboard/service.py:3462-3482` — `start_assembly()` (already moves `export/done` → `asset_upload/paused`).
+- `tool1_dashboard/service.py:3484-3537` — `advance_assembly_stage(episode_id, target_stage)` (already enforces all preconditions: assets uploaded, validation passed, render completed).
+- `tool1_dashboard/service.py:3226-3287` — `validate_assembly()`.
+- `tool1_dashboard/service.py:3499` — `_assembly_shared_validation()` (cheap check that returns counts + missing scenes).
+- `tool1_dashboard/app.py:551-597` — REST endpoints `/assembly/validate`, `/assembly/start`, `/assembly/advance`, `/assembly/render`.
+- `tool1_dashboard/config.py:70` — `VIDEO_ASSEMBLY_STAGES = ("asset_upload", "assembly_validation", "video_render")`.
+
+## Design overview
+
+Teach the episode-card workflow panel to recognize assembly mode as a first-class state. When `episode.current_stage` is in `VIDEO_ASSEMBLY_STAGES` or equals `"final_review"`, render an **Assembly Continuation** panel instead of the runnable-stages dropdown. That panel surfaces upload progress, an "Open assembly workspace" shortcut, and a single primary **"Continue to {next stage}"** button wired to a brand-new `data-advance-assembly` click handler that POSTs `/api/episodes/{id}/assembly/advance`. Extend the existing validation panel so a successful validation also offers a one-click advance. Add a defensive backend guard so `queue_episode` refuses any episode currently sitting in an assembly stage. **No schema changes. No asset deletion. `EPISODE_RUNNABLE_STAGES` stays untouched.**
+
+## Backend vs Frontend split (read this before starting)
+
+Each task below is tagged with one of:
+
+- **[BACKEND]** — Python only (`tool1_dashboard/service.py`, `tool1_dashboard/app.py`, tests). Pure logic, DB writes, REST contract. No UI work.
+- **[FRONTEND]** — JavaScript / DOM only (`tool1_dashboard/ui/app.js`, `tool1_dashboard/ui/app.css`). Touches user-facing UI elements (panels, buttons, copy, layout, enable/disable states).
+- **[FRONTEND-DESIGN]** — Frontend tasks that introduce **new visible UI components** (new panels, new buttons, new layouts). The implementing agent should activate any available UI/design skill (e.g. design system review, component styling, accessibility checks) **before** writing the markup, and match the existing visual language documented in `tool1_dashboard/ui/app.css`.
+
+**Phase-level summary:**
+
+| Phase | Tag | Files | Notes |
+|-------|-----|-------|-------|
+| Phase 1 — Backend safety net & helpers | [BACKEND] | `service.py` | Add a guard, augment payload, add a helper. No UI. |
+| Phase 2 — JS constants & predicates | [FRONTEND] | `app.js` | Pure additive constants and helper functions. No new visible components. |
+| Phase 3 — Card and control-panel rewiring | [FRONTEND-DESIGN] | `app.js`, possibly `app.css` | New `renderEpisodeAssemblyControlPanel` component + card button variant. **Activate the design skill here.** |
+| Phase 4 — Click delegation & fetch wiring | [FRONTEND] | `app.js` | Wires existing/new buttons to fetch calls. No new components. |
+| Phase 5 — Polish & regression guards | Mixed | `app.js` (5.1, 5.2 — [FRONTEND-DESIGN]), `tests/` (5.3 — [BACKEND]) | Terminal state UI and reassurance copy are visual; tests are Python. |
+
+**REST contract between backend and frontend** (do not change unless both sides agree):
+- `GET /api/episodes` and `GET /api/episodes/{id}` may now return a new optional field `assembly_progress` on episodes whose `current_stage` is in `VIDEO_ASSEMBLY_STAGES + ("final_review",)`. Shape defined in Task 1.2.
+- `POST /api/episodes/{id}/assembly/advance` already exists at `app.py:574-584`. Request body: `{ "target_stage": "<stage>" }` (matches `AssemblyAdvanceRequest`). The frontend must POST exactly this shape; the backend already enforces all preconditions.
+- `POST /api/episodes/{id}/queue` will newly return HTTP 400 with detail `"Assembly stages must be advanced via /assembly/advance, not queued."` for assembly-stage episodes (Task 1.1). The frontend should never need to handle this in practice because the new UI will not surface the queue button on assembly cards — but a graceful error toast is still expected.
+
+## Phase 1 — Backend safety net & helpers
+
+### Task 1.1 [BACKEND] — Guard `queue_episode` against assembly stages
+- **File:** `tool1_dashboard/service.py` near the existing `if stage not in EPISODE_RUNNABLE_STAGES` check around `service.py:3553`.
+- **What:** Before that check (and before `delete_stage_runs_for` at `service.py:3590` can possibly run), raise `ValueError("Assembly stages must be advanced via /assembly/advance, not queued.")` if either `start_stage` is in `VIDEO_ASSEMBLY_STAGES + ("final_review",)` **or** if the loaded `episode["current_stage"]` is in that set.
+- **Why:** Defense in depth. Even if the UI regresses, this guarantees uploaded assets and upstream stage runs can never be deleted by a mis-routed Resume click.
+- **Verify:** Manually flip an episode row to `current_stage="asset_upload"`, hit `POST /api/episodes/{id}/queue` with curl — expect HTTP 400 and zero rows deleted from `stage_runs`.
+
+### Task 1.2 [BACKEND] — Add `assembly_progress` to the episode payload
+- **File:** `tool1_dashboard/service.py`. Find the method that hydrates the dict returned to the board (search for `_hydrate_episode_record` and the place where `queue_readiness` is attached). Apply the change in the same shared serializer used by `GET /api/episodes` and `GET /api/episodes/{id}`.
+- **What:** When `current_stage in VIDEO_ASSEMBLY_STAGES + ("final_review",)`, attach a new dict key `assembly_progress` with:
+  - `stage` — the current assembly stage
+  - `next_stage` — next stage in the assembly sequence or `null` if none
+  - `assets_uploaded` and `assets_total` — counts derived from `_assembly_shared_validation()` (count scenes vs. count of scenes whose `scene_id` is **not** in `missing_scenes`)
+  - `all_assets_uploaded` — boolean from the same helper
+  - `validation_ok` — `null` unless cheap to compute; leave as `null` to avoid running the heavy `validate_assembly()` on every list call. The UI will treat `null` as "click Validate first".
+- **Why:** The card needs to render counts and decide button enable/disable without an extra roundtrip.
+- **Verify:** `GET /api/episodes` for an `asset_upload` episode contains `assembly_progress`; for a `translation` episode it does not (or it is `null`).
+
+### Task 1.3 [BACKEND] — Helper `next_assembly_stage(current)`
+- **File:** `tool1_dashboard/service.py` near `_assembly_stage_sequence()` at `service.py:3164-3166`.
+- **What:** Tiny pure helper returning the next stage name in the assembly sequence, or `None` for `final_review`. Use it inside Task 1.2 and inside `advance_assembly_stage()` (replace the inline `sequence.index(...)` math).
+- **Why:** Single source of truth for the order; avoids string-magic in the UI.
+- **Verify:** `next_assembly_stage("asset_upload") == "assembly_validation"`; `next_assembly_stage("final_review") is None`.
+
+## Phase 2 — JS constants & predicates
+
+### Task 2.1 [FRONTEND] — Introduce assembly stage constants in `app.js`
+- **File:** `tool1_dashboard/ui/app.js` near the existing `EPISODE_RUNNABLE_STAGE_IDS` constant (search `EPISODE_RUNNABLE_STAGE_IDS` to locate it).
+- **What:**
+  - Add `EPISODE_ASSEMBLY_STAGE_IDS = ["asset_upload", "assembly_validation", "video_render", "final_review"]`.
+  - Add a label map `{ asset_upload: "Asset Upload", assembly_validation: "Assembly Validation", video_render: "Video Render", final_review: "Final Review" }` and merge it into the existing `EPISODE_STAGE_LABELS` (or extend `stageLabel()` at `app.js:738-740` to fall back through it).
+- **Why:** Required by every subsequent render function. Keep `EPISODE_RUNNABLE_STAGE_IDS` untouched.
+- **Verify:** `stageLabel("asset_upload")` returns `"Asset Upload"` from the browser console.
+
+### Task 2.2 [FRONTEND] — Predicate `isEpisodeInAssemblyStage(episode)`
+- **File:** `tool1_dashboard/ui/app.js` near `isWorkflowActiveStatus` at `app.js:742-744`.
+- **What:** Returns `true` if `episode?.current_stage` is in `EPISODE_ASSEMBLY_STAGE_IDS`. Used by the card render, the control panel, and the click delegation.
+- **Why:** Single source of truth.
+- **Verify:** Call against a mocked episode with `current_stage="asset_upload"` — true.
+
+### Task 2.3 [FRONTEND] — `episodeQueueStartStage` fallback for assembly episodes
+- **File:** `tool1_dashboard/ui/app.js:725-736`.
+- **What:** At the very top of the function, if `isEpisodeInAssemblyStage(episode)` return `episode.current_stage` as-is. Do **not** funnel assembly stages into the dropdown; this only fixes downstream callers (`pauseRequestedCopy`, `stageActivityLabel`) that read this helper for display copy.
+- **Why:** Prevents misleading copy like "The workflow will stop before Consistency Guide" on a paused asset_upload episode.
+- **Verify:** `pauseRequestedCopy(episode)` for a paused asset_upload episode reads "Asset Upload", not "Consistency Guide".
+
+### Task 2.4 [FRONTEND] — Extend `stageActivityLabel` with assembly entries
+- **File:** `tool1_dashboard/ui/app.js:758-774`.
+- **What:** Add entries: `asset_upload: "Upload scene assets"`, `assembly_validation: "Validating assembly"`, `video_render: "Rendering video"`, `final_review: "Awaiting final review"`.
+- **Why:** Card status badges currently fall through to `Running Asset_upload` style strings.
+- **Verify:** Card badge for an asset_upload episode reads "Upload scene assets".
+
+## Phase 3 — Card and control-panel rewiring
+
+### Task 3.1 [FRONTEND-DESIGN] — Branch `renderEpisodeWorkflowControlPanel` on assembly mode
+- **File:** `tool1_dashboard/ui/app.js:2930-2993`.
+- **What:** At the very top of the function, if `isEpisodeInAssemblyStage(episode)`, delegate to a new `renderEpisodeAssemblyControlPanel(episode, { surface })` and return early. The existing path for upstream episodes stays exactly as it is.
+- **Why:** Keeps the change surgical — the runnable-stages dropdown is never shown for assembly cards, eliminating the misleading "Resume to translation" trap.
+- **Verify:** Load the board with a paused `asset_upload` episode. Confirm there is **no** "Run from step" dropdown on the card and **no** `data-queue-episode` button.
+
+### Task 3.2 [FRONTEND-DESIGN] — New `renderEpisodeAssemblyControlPanel(episode, { surface })`
+- **File:** `tool1_dashboard/ui/app.js` (co-locate next to `renderEpisodeWorkflowControlPanel`).
+- **What:** Render a `<section>` matching the existing `.project-readiness-panel.workflow-control-panel` styling but with this content:
+  - **Header badge:** `Stage: {label of current_stage}` using the new label map.
+  - **Progress line** sourced from `episode.assembly_progress`:
+    - For `asset_upload` show `"{assets_uploaded}/{assets_total} scenes uploaded"`. Tone success when complete, neutral otherwise.
+    - For `assembly_validation` show `"Run validation to verify timeline + voiceover for each language"`.
+    - For `video_render` show `"Render the configured languages from the assembly workspace"`.
+    - For `final_review` show `"Review the rendered videos and mark the episode done"`.
+  - **Primary button** `data-advance-assembly="{episodeId}" data-target-stage="{assembly_progress.next_stage}"` labelled `"Continue to {label of next stage}"`. Button enable rules:
+    - `asset_upload → assembly_validation`: enabled only when `assembly_progress.all_assets_uploaded === true`.
+    - `assembly_validation → video_render`: enabled when `assembly_progress.validation_ok === true`. If `validation_ok` is `null`, render the button **disabled** with helper "Run validation first".
+    - `video_render → final_review`: enabled when at least one render job is `completed` (UI can read this from existing `episode.render_jobs` / assembly section state if available; otherwise always enable and let the backend reject — `advance_assembly_stage()` already enforces this at `service.py:3517-3523`).
+    - `final_review`: hide the Continue button entirely (terminal — see Task 5.1).
+  - **Secondary ghost button** `data-open-assembly="{episodeId}"` labelled `"Open assembly workspace"`.
+  - **Helper line:** `"Your uploaded assets are saved. Use Continue when you're ready to move to the next stage."` (only on the asset_upload variant; vary copy slightly per stage).
+  - **Pause button:** preserve the existing `data-pause-episode` button only if `activeWorkflow` is true (it usually won't be on a paused assembly card).
+- **Why:** Gives the user a clear, lossless forward action and an obvious way back into the upload UI.
+- **Verify:** A paused `asset_upload` episode with 3/5 scenes uploaded shows "3/5 scenes uploaded", a **disabled** "Continue to Assembly Validation" button, and an enabled "Open assembly workspace" button. Uploading the remaining 2 scenes (and refreshing) enables Continue.
+
+### Task 3.3 [FRONTEND-DESIGN] — Card body adjustments
+- **File:** `tool1_dashboard/ui/app.js` around `renderEpisodeCard` at `app.js:3007-3051`.
+- **What:** The existing compact `queueButton` rendered on the board card should also branch on `isEpisodeInAssemblyStage`. For assembly episodes, render a small `data-advance-assembly` button (button-tiny variant) instead of the compact queue button. Reuse the same enable rules from Task 3.2 (extract them into a helper like `assemblyContinueButtonState(episode)` so the panel and the card share the logic).
+- **Why:** Without this, the board card still shows the misleading queue button even though the detail panel is fixed.
+- **Verify:** Board card for a paused `asset_upload` episode shows a tiny "Continue →" or similar, not "Resume from step".
+
+## Phase 4 — Click delegation & fetch wiring
+
+### Task 4.1 [FRONTEND] — `data-advance-assembly` click handler
+- **File:** `tool1_dashboard/ui/app.js` — extend the existing delegated click handler block that already handles `data-validate-assembly`, `data-render-lang`, `data-render-all` at `app.js:6991-7072`.
+- **What:** Add a new branch matching `event.target.closest("[data-advance-assembly]")`:
+  1. Read `episodeId = btn.dataset.advanceAssembly` and `targetStage = btn.dataset.targetStage`.
+  2. If `!targetStage` bail out (terminal stage).
+  3. Disable the button + `setNotice("Advancing to {label}…", "neutral")`.
+  4. POST to `/api/episodes/${encodeURIComponent(episodeId)}/assembly/advance` with `Content-Type: application/json` body `{"target_stage": targetStage}` (matches `AssemblyAdvanceRequest` at `app.py:574-584`).
+  5. On 2xx: `setNotice("Advanced to {label}", "success")` then refresh the relevant view. Use the same refresh helper invoked by the existing `data-validate-assembly` branch (likely `loadAssemblyUI(...)` and/or the board rerender). Trace what `data-start-video-assembly` does and follow the same pattern.
+  6. On non-2xx: read `data.detail`, surface via `setNotice(detail, "error")`, re-enable the button.
+- **Why:** Single source of truth for moving the episode through the assembly sequence.
+- **Verify:** With all assets uploaded, click Continue — the card flips to `assembly_validation`, the button refreshes, no console errors.
+
+### Task 4.2 [FRONTEND] — `data-open-assembly` click handler
+- **File:** `tool1_dashboard/ui/app.js` (same delegated block).
+- **What:** Locate the existing entry point that opens the assembly modal — search for `data-start-video-assembly` and trace where it ends up calling `loadAssemblyUI(...)` (around `app.js:6986`). If the modal-open logic is inline, factor it into a small helper `openAssemblyWorkspace(episodeId)` and call it from both `data-start-video-assembly` and the new `data-open-assembly` branch. **Important:** do **not** call `/assembly/start` again — the episode is already in `asset_upload` and `start_assembly()` requires `current_stage="export"`/`pipeline_status="done"` so it would 400 anyway.
+- **Why:** Re-entry into the upload UI without confusion or stage churn.
+- **Verify:** Click "Open assembly workspace" on a paused `asset_upload` card — the bulk-upload modal opens, no fetch errors, episode state unchanged.
+
+### Task 4.3 [FRONTEND] — Auto-offer advance after successful validation
+- **File:** `tool1_dashboard/ui/app.js` inside the existing `data-validate-assembly` handler at `app.js:6991-7009` and inside `renderAssemblyValidationPanel()` at `app.js:6698-6767`.
+- **What:**
+  - After validation returns successfully, inspect `normalized.shared.ok` and whether at least one language has `ok: true`.
+  - If both true and `episode.current_stage === "asset_upload"`, render a prominent "Move to Assembly Validation stage" button inside the validation panel using the same `data-advance-assembly` attribute with `data-target-stage="assembly_validation"`.
+  - If `episode.current_stage === "assembly_validation"` and validation passes, render "Move to Video Render" with `data-target-stage="video_render"`.
+  - **Do NOT auto-fire the advance.** Require an explicit click — surprises here are dangerous.
+  - Update the in-memory episode object so the card panel's `assembly_progress.validation_ok` flips to `true` and the Continue button on the card enables on the next render. Easiest path: trigger the same board refresh helper used by `data-validate-assembly` today, then `loadEpisodes()` (or whatever the existing reload path is).
+- **Why:** Closes the loop: the user can validate and advance with two clicks instead of being stuck.
+- **Verify:** Validate an episode with all assets present — a "Move to Assembly Validation stage" button appears in the panel; one click flips the stage; the card now offers "Continue to Video Render" (still disabled until validation re-runs at the next stage).
+
+## Phase 5 — Polish & regression guards
+
+### Task 5.1 [FRONTEND-DESIGN] — Terminal `final_review` rendering
+- **File:** `tool1_dashboard/ui/app.js` in `renderEpisodeAssemblyControlPanel`.
+- **What:** When `episode.current_stage === "final_review"` (or `assembly_progress.next_stage === null`), replace the Continue button with a disabled "Awaiting final review" chip and a helper line "Mark this episode done from the assembly workspace once you've reviewed the rendered videos." Also keep the "Open assembly workspace" button so the user can reach the videos.
+- **Verify:** Force an episode to `final_review` (DB update) — no Continue button, no JS errors.
+
+### Task 5.2 [FRONTEND-DESIGN] — Reassurance notice
+- **File:** `tool1_dashboard/ui/app.js` inside `renderEpisodeAssemblyControlPanel`.
+- **What:** Render a persistent helper line on the asset_upload variant: `"Uploaded assets are preserved across refreshes and workflow actions."` Style as a low-tone notice, not an error.
+- **Why:** Emotional requirement — the user explicitly worried about losing progress; this should be visible right next to the action.
+
+### Task 5.3 [BACKEND] — Smoke tests
+- **Files:** existing pytest suite for `service.py` (search for `test_queue_episode` or `tests/test_service.py`).
+- **What:**
+  1. Test that with `current_stage="asset_upload"`, `service.queue_episode(...)` raises `ValueError` and that no rows in `stage_runs` for that episode are deleted.
+  2. Test that `advance_assembly_stage("asset_upload" → "assembly_validation")` still raises when assets are missing and succeeds when they are present (regression guard for Task 1.3 helper).
+  3. (Optional) Test that the new `assembly_progress` block appears on episodes whose `current_stage` is in `VIDEO_ASSEMBLY_STAGES`.
+- **Verify:** `pytest tool1_dashboard/tests/...` is green.
+
+## Critical files to modify
+
+- `tool1_dashboard/ui/app.js`
+- `tool1_dashboard/service.py`
+- `tool1_dashboard/app.py` *(no changes expected — endpoints already exist; only verify request payload contract for `/assembly/advance`)*
+- `tool1_dashboard/config.py` *(read-only — DO NOT add assembly stages to `EPISODE_RUNNABLE_STAGES`)*
+
+## Reused functions / utilities (do not reinvent)
+
+- `tool1_dashboard/service.py:3462-3482` — `start_assembly()`
+- `tool1_dashboard/service.py:3484-3537` — `advance_assembly_stage()` (already enforces every precondition)
+- `tool1_dashboard/service.py:3226-3287` — `validate_assembly()`
+- `tool1_dashboard/service.py:3187-3208` — `_assembly_shared_validation()` (counts source for `assembly_progress`)
+- `tool1_dashboard/service.py:3164-3166` — `_assembly_stage_sequence()`
+- `tool1_dashboard/config.py:70` — `VIDEO_ASSEMBLY_STAGES`
+- `tool1_dashboard/app.py:551-597` — existing `/assembly/validate`, `/assembly/start`, `/assembly/advance`, `/assembly/render` endpoints
+- `tool1_dashboard/ui/app.js:738-740` — `stageLabel()`
+- `tool1_dashboard/ui/app.js:758-774` — `stageActivityLabel()`
+- `tool1_dashboard/ui/app.js:2930-2993` — `renderEpisodeWorkflowControlPanel()`
+- `tool1_dashboard/ui/app.js:6698-6767` — `renderAssemblyValidationPanel()`
+- `tool1_dashboard/ui/app.js:6991-7072` — delegated click handler block (pattern to follow)
+- `tool1_dashboard/ui/app.js` — existing `loadAssemblyUI()` helper used by `data-start-video-assembly` (search for it; reuse for the new `data-open-assembly` branch)
+
+## End-to-end verification
+
+1. Seed an episode and run through to export. Click "Start Video Assembly" — episode transitions to `asset_upload`.
+2. Bulk-upload all scene assets via the existing modal. Close the modal.
+3. **Board card:** confirm the card shows `"Asset Upload — N/N uploaded"`, no "Run from step" dropdown, and a tiny "Continue" button (enabled because all assets are uploaded).
+4. **Detail panel:** confirm the new assembly continuation panel shows: stage badge, progress line, enabled Continue button, ghost "Open assembly workspace" button, and the reassurance notice.
+5. Click "Open assembly workspace" — modal opens; close it. Episode state unchanged.
+6. Click "Continue to Assembly Validation". Card flips to `assembly_validation`. The Continue button on the new panel now reads "Continue to Video Render" but is disabled until validation runs.
+7. Open the assembly workspace, click "Validate All Languages". On success, a "Move to Video Render" button appears in the validation panel; clicking it advances the stage. The card panel's Continue button enables in parallel.
+8. Continue through to `video_render`, render at least one language, then continue to `final_review`. Confirm the terminal state from Task 5.1.
+9. **Regression:** with an episode in `asset_upload`, manually `curl -X POST /api/episodes/{id}/queue` — expect HTTP 400 and zero rows deleted from `stage_runs` for that episode.
+10. Inspect `workspace/episodes/{episode}/assembly/shared_assets/` and the `scene_assets` table before and after every click above — file count and row count must be unchanged.
+11. Refresh the page at every stage — buttons survive reloads because state comes from the server payload (`assembly_progress`).
+
+## Risks / things to NOT touch
+
+- **DO NOT add assembly stages to `EPISODE_RUNNABLE_STAGES`** at `tool1_dashboard/config.py:58-68`. Doing so would let `queue_episode` accept them, and `delete_stage_runs_for(...)` at `service.py:3590` would happily wipe upstream stage runs.
+- **DO NOT let `queue_episode()` reach `delete_stage_runs_for()` for an assembly-stage episode.** Task 1.1's guard must run *before* that call.
+- **DO NOT delete, move, or re-materialize files** under `workspace/episodes/{episode}/assembly/shared_assets/` or rows in `scene_assets`. The advance flow is metadata-only.
+- **DO NOT overload `data-queue-episode`** for assembly actions. Use a brand-new `data-advance-assembly` attribute so the existing handler (and its `delete_stage_runs_for` path) is never reachable from an assembly card.
+- **DO NOT auto-fire stage advance on validation success.** Always require an explicit click.
+- **DO NOT modify `start_assembly()` preconditions** at `service.py:3468-3469` — it must still require `export/done`. The fix is strictly about what happens *after* the episode is already in an assembly stage.
+- **Be careful with `episodeQueueStartStage`** at `app.js:725-736` — it is consumed by status copy helpers like `pauseRequestedCopy` and `stageActivityLabel`. Only change the early-return for assembly mode; do not feed assembly stages into the upstream stage dropdown.
+- **`assembly_progress.validation_ok` should default to `null`**, not `false`. The UI must distinguish "not yet validated" (button disabled with helper text) from "validation failed" (button disabled with error text).
