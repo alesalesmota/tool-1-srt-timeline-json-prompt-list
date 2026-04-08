@@ -16,7 +16,7 @@
   - [x] Chunk bulk upload into sequential 5-file batches with `batch X/N` notices and one final rerender
   - [x] Extend `tests/test_video_pipeline.py` for single-scene before/after upload/delete plus unknown-scene `404`
   - [x] Verify with `node --check tool1_dashboard/ui/app.js`, `python -m pytest tests/test_video_pipeline.py -q` (`72` passing), and live browser smoke on `ep-20260402-201657-205` showing `20 -> 40` cards after `Show 20 more`
-  - Plan: `plans/performance/ASSEMBLY_LIGHTWEIGH_PLAN.md`
+  - Plan: `plans/completed/ASSEMBLY_LIGHTWEIGH_PLAN.md`
 
 - [x] **F1 + F2 + F3 — Smart Refresh System** (2026-04-08; these three are one interconnected problem)
   - [x] F1: Increase polling intervals (idle 10s, active 3s)
@@ -25,7 +25,7 @@
   - [x] Verify legacy `pipeline-board` routing is redirect-only, so `/api/board/episodes` polling stays disabled
   - [x] Evaluate in-flight cancellation and keep the existing `state.isRefreshingData` overlap guard for now (no `AbortController` added yet)
   - [x] Verify with `node --check tool1_dashboard/ui/app.js` and `python -m pytest tests/test_video_pipeline.py -q` (`72` passing)
-  - Plan: `plans/performance/PERF_PLAN_SMART_REFRESH.md`
+  - Plan: `plans/completed/PERF_PLAN_SMART_REFRESH.md`
 
 - [ ] **B1 — Triple Video Re-encoding**
   - [ ] Switch concat to stream copy (`-c:v copy`) in `concat_scenes.py`
