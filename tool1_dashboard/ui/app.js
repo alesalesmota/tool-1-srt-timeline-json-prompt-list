@@ -61,8 +61,8 @@ const TRANSLATION_PROFILE_PROVIDER_CATALOG = [
     description: "UI preview only for now. This tab shows the planned CLI setup shape.",
   },
 ];
-const REFRESH_INTERVAL_MS = 5000;
-const ACTIVE_REFRESH_INTERVAL_MS = 1000;
+const REFRESH_INTERVAL_MS = 10000;
+const ACTIVE_REFRESH_INTERVAL_MS = 3000;
 const ASSEMBLY_PAGE_SIZE = 20;
 const EPISODE_FILES_CACHE_TTL_MS = 3000;
 const HEALTH_CACHE_TTL_MS = 15000;
@@ -166,6 +166,7 @@ let refreshGeneration = 0;
 let activeRefreshes = 0;
 let blockingRefreshes = 0;
 let currentRefreshIntervalMs = REFRESH_INTERVAL_MS;
+let lastRenderFingerprint = "";
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) =>
@@ -4800,6 +4801,30 @@ function renderTemplates() {
   `;
 }
 
+function computeRenderFingerprint() {
+  return JSON.stringify({
+    health: state.health,
+    settings: state.settings,
+    modelCatalog: state.modelCatalog,
+    templates: state.templates,
+    nicheProjects: state.nicheProjects,
+    boardEpisodes: state.boardEpisodes,
+    targetLanguages: state.targetLanguages,
+    voiceProfiles: state.voiceProfiles,
+    workerHealth: state.workerHealth,
+    appRuntime: state.appRuntime,
+    translationProfiles: state.translationProfiles,
+    episodeDetail: state.episodeDetail,
+    nicheProjectDetail: state.nicheProjectDetail,
+    stageProviderOpenAi: state.stageProviderOpenAi,
+    route: state.route,
+    episodeOverlayId: state.episodeOverlayId,
+    notice: state.notice,
+    modal: state.modal,
+    isLoadingRoute: state.isLoadingRoute,
+  });
+}
+
 function renderApp() {
   captureDashboardScroll();
   renderSidebar();
@@ -4825,6 +4850,7 @@ function renderApp() {
   syncAllProviderModelSelects();
   resetElapsedTimer();
   restoreDashboardScroll();
+  lastRenderFingerprint = computeRenderFingerprint();
 }
 
 async function refreshData({ preserveNotice = true, routeLoading = false, force = false } = {}) {
@@ -4834,12 +4860,13 @@ async function refreshData({ preserveNotice = true, routeLoading = false, force 
   const now = Date.now();
   const shouldFetchHealth = force || !state.health || !cacheIsFresh(state.healthFetchedAt, HEALTH_CACHE_TTL_MS);
   const shouldFetchSettings = force || !state.settings || ["settings", "templates"].includes(route.view) || !cacheIsFresh(state.settingsFetchedAt, SETTINGS_CACHE_TTL_MS);
-  const shouldFetchBoardEpisodes = force || route.view === "pipeline-board";
+  const shouldFetchBoardEpisodes = false; // Legacy pipeline-board hashes redirect before refreshData runs.
   const shouldFetchTargetLanguages = (
     force ||
     route.view === "niche-project" ||
     route.view === "niche-projects"
   ) && (!state.targetLanguages.length || !cacheIsFresh(state.targetLanguagesFetchedAt, TARGET_LANGUAGES_CACHE_TTL_MS));
+  const needsNicheProjects = ["niche-projects", "niche-project", "episode", "pipeline-board"].includes(route.view);
 
   activeRefreshes += 1;
   if (routeLoading) {
@@ -4855,7 +4882,9 @@ async function refreshData({ preserveNotice = true, routeLoading = false, force 
       model_catalog: state.modelCatalog || DEFAULT_MODEL_CATALOG,
       templates: state.templates || [],
     });
-    const nicheProjectsPromise = api("/api/niche-projects");
+    const nicheProjectsPromise = needsNicheProjects
+      ? api("/api/niche-projects")
+      : Promise.resolve({ projects: state.nicheProjects || [] });
     const boardEpisodesPromise = shouldFetchBoardEpisodes
       ? api("/api/board/episodes")
       : Promise.resolve({ episodes: state.boardEpisodes || [] });
@@ -4968,7 +4997,9 @@ async function refreshData({ preserveNotice = true, routeLoading = false, force 
       state.settingsFetchedAt = now;
     }
 
-    state.nicheProjects = nicheProjects.projects || [];
+    if (needsNicheProjects) {
+      state.nicheProjects = nicheProjects.projects || [];
+    }
     if (shouldFetchBoardEpisodes) {
       state.boardEpisodes = boardEpisodes.episodes || [];
     }
@@ -5035,7 +5066,12 @@ function resetAutoRefresh() {
       projectConfigInteractionIsActive() ||
       episodeAssemblyInteractionIsActive()
     ) return;
-    refreshData().then(renderApp).catch(() => {});
+    refreshData().then(() => {
+      const fingerprint = computeRenderFingerprint();
+      if (fingerprint === lastRenderFingerprint) return;
+      lastRenderFingerprint = fingerprint;
+      renderApp();
+    }).catch(() => {});
   }, currentRefreshIntervalMs);
 }
 
