@@ -1048,9 +1048,10 @@ function renderAssemblyLoadingMarkup(stage) {
 
 function updateEpisodeAssemblyCache(episodeId, stage, html) {
   if (!episodeId || !stage || !ASSEMBLY_STAGE_IDS.includes(stage)) return;
+  const cleanHtml = String(html || "").replace(/ data-change-bound="true"/g, "");
   state.episodeAssemblyCache[episodeId] = {
     stage,
-    html: String(html || ""),
+    html: cleanHtml,
   };
 }
 
@@ -6345,14 +6346,14 @@ function handleSingleUploadInputChange(event) {
 
 function bindEpisodeAssemblyUploadInputs(root = document) {
   root.querySelectorAll("[data-bulk-upload-input]").forEach((input) => {
-    if (input.dataset.changeBound === "true") return;
-    input.dataset.changeBound = "true";
+    input.removeEventListener("change", handleBulkUploadInputChange);
     input.addEventListener("change", handleBulkUploadInputChange);
+    input.dataset.changeBound = "true";
   });
   root.querySelectorAll("[data-single-upload-input]").forEach((input) => {
-    if (input.dataset.changeBound === "true") return;
-    input.dataset.changeBound = "true";
+    input.removeEventListener("change", handleSingleUploadInputChange);
     input.addEventListener("change", handleSingleUploadInputChange);
+    input.dataset.changeBound = "true";
   });
 }
 

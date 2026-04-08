@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 9 | **To Do**: 0 | **Doing**: 0 | **Done**: 9
+**Total**: 10 | **To Do**: 1 | **Doing**: 0 | **Done**: 9
 
 ## Tasks
 
@@ -13,8 +13,9 @@
 7. [x] Background Container – "we got an error on the tts step can you verify and fix" `section.kanban-column.project-kanban-column:nth-child(13) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
 8. [x] Container #episode-assembly-section – "when i scrool down here, the screen glitches a section ap..." `#episode-assembly-section`
 9. [x] Button: Bulk Upload – "the upload function is not working, for video and for images" `#episode-assembly-section > div.assembly-stats-bar:nth-child(2) > div:nth-child(2) > button:nth-of-type(1)`
+10. [ ] Container #episode-assembly-section – "neither bulk upload, and scene upload is working, i choos..." `#episode-assembly-section`
 
 ---
 
-_Generated: 07/04/2026, 19:37:22_
+_Generated: 07/04/2026, 21:19:22_
 _Source: moat-tasks-detail.json_
