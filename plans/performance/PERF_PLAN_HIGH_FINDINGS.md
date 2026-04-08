@@ -3,7 +3,7 @@
 > **Date:** 2026-04-08  
 > **Audit ref:** `PERFORMANCE_AUDIT.md` findings F4, F5, F6, B2  
 > **Checklist ref:** `PERFORMANCE_CHECKLIST.md`  
-> **Status:** In progress (`F4` + `F5` complete on 2026-04-08; `F6` and `B2` still pending)
+> **Status:** In progress (`F4` + `F5` + `B2` complete on 2026-04-08; `F6` still pending)
 
 These are 4 independent fixes. Each is small and self-contained. Implement in any order.
 
@@ -328,6 +328,6 @@ This is a **read-only investigation task** — don't change code, just verify th
 - [ ] F6.3: Add 5-minute inactivity timeout per SSE connection
 
 ### B2 — ffprobe Re-probing
-- [ ] B2.3: Investigate `asset_id` key format in `timeline.py` (do this first — read-only)
-- [ ] B2.1: Write `cached_probes.json` during `_stage_assets_for_render()`
-- [ ] B2.2: Modify `probe_assets()` to read cache and skip ffprobe for complete entries
+- [x] B2.3: Investigate `asset_id` key format in `timeline.py` (do this first — read-only)
+- [x] B2.1: Write `cached_probes.json` during `_stage_assets_for_render()`
+- [x] B2.2: Modify `probe_assets()` to read cache and skip ffprobe for complete entries

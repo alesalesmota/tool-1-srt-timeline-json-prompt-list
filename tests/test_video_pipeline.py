@@ -18,6 +18,7 @@ from tool1_dashboard.database import Tool1Database
 from tool1_dashboard.providers import CliRunner
 from tool1_dashboard.runtime import utc_now
 from tool1_dashboard.service import QueueBlockedError, Tool1Service
+from tool1_dashboard.video_assembly.timeline import load_timeline
 
 
 class FakeCliRunner:
@@ -3325,6 +3326,115 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                     (input_dir / "timeline.json").read_text(encoding="utf-8"),
                     pt_timeline.read_text(encoding="utf-8"),
                 )
+
+    def test_stage_assets_for_render_writes_cached_probes_with_timeline_asset_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                voice_profiles, _ = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    ["en", "pt-BR"],
+                    master_language="en",
+                    include_translation_for=[],
+                )
+                project = service.create_niche_project(
+                    name="Assembly Probe Cache",
+                    master_language="en",
+                    configured_languages=["en", "pt-BR"],
+                    language_voice_profiles=voice_profiles,
+                )
+                episode = service.submit_episode(
+                    project["project"]["id"],
+                    title="Assembly probe cache",
+                    script_text="Test script for probe cache.",
+                )["episode"]
+                episode_id = episode["id"]
+                workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+
+                pt_timeline = workspace / "timeline_pt-BR.json"
+                pt_timeline.write_text(
+                    json.dumps(
+                        [
+                            {"scene_id": "scene_001", "start": 0, "end": 2, "duration": 2, "asset_type": "video"},
+                            {"scene_id": "scene_002", "start": 2, "end": 4, "duration": 2, "asset_type": "image"},
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                pt_audio = workspace / "narration_pt-BR.wav"
+                pt_audio.write_bytes(b"RIFF....WAVEfmt ")
+                pt_srt = workspace / "subtitles_pt-BR.srt"
+                pt_srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nTeste\n", encoding="utf-8")
+
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "pt-BR",
+                    timeline_path=str(pt_timeline),
+                    timeline_status="done",
+                    tts_audio_path=str(pt_audio),
+                    tts_status="done",
+                    srt_path=str(pt_srt),
+                    srt_status="done",
+                )
+
+                video_path = workspace / "scene_001.mp4"
+                image_path = workspace / "scene_002.png"
+                video_path.write_bytes(b"video")
+                image_path.write_bytes(b"image")
+                now = utc_now()
+                service.db.create_scene_asset(
+                    {
+                        "id": f"{episode_id}-scene-001",
+                        "episode_id": episode_id,
+                        "scene_id": "scene_001",
+                        "asset_type": "video",
+                        "original_filename": "scene_001.mp4",
+                        "stored_filename": "scene_001.mp4",
+                        "file_path": str(video_path),
+                        "file_size": video_path.stat().st_size,
+                        "width": 1920,
+                        "height": 1080,
+                        "duration_seconds": 2.0,
+                        "uploaded_at": now,
+                        "updated_at": now,
+                    }
+                )
+                service.db.create_scene_asset(
+                    {
+                        "id": f"{episode_id}-scene-002",
+                        "episode_id": episode_id,
+                        "scene_id": "scene_002",
+                        "asset_type": "image",
+                        "original_filename": "scene_002.png",
+                        "stored_filename": "scene_002.png",
+                        "file_path": str(image_path),
+                        "file_size": image_path.stat().st_size,
+                        "width": 1280,
+                        "height": 720,
+                        "duration_seconds": None,
+                        "uploaded_at": now,
+                        "updated_at": now,
+                    }
+                )
+
+                project_dir = service._prepare_assembly_project(episode_id, "pt-BR")
+                project_dir = service._stage_assets_for_render(episode_id, "pt-BR")
+                cached_probes_path = project_dir / "input" / "cached_probes.json"
+                self.assertTrue(cached_probes_path.exists())
+
+                cached_probes = json.loads(cached_probes_path.read_text(encoding="utf-8"))
+                _, render_scenes = load_timeline(project_dir)
+                self.assertEqual({scene.asset_id for scene in render_scenes}, set(cached_probes.keys()))
+                self.assertEqual(cached_probes["asset_001"]["type"], "video")
+                self.assertEqual(cached_probes["asset_001"]["width"], 1920)
+                self.assertEqual(cached_probes["asset_001"]["height"], 1080)
+                self.assertEqual(cached_probes["asset_001"]["duration"], 2.0)
+                self.assertEqual(cached_probes["asset_002"]["type"], "image")
+                self.assertEqual(cached_probes["asset_002"]["width"], 1280)
+                self.assertEqual(cached_probes["asset_002"]["height"], 720)
+                self.assertIsNone(cached_probes["asset_002"]["duration"])
 
 
 if __name__ == "__main__":

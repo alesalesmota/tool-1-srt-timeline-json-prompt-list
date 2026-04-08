@@ -50,10 +50,11 @@
   - [x] Verify with `node --check tool1_dashboard/ui/app.js` and inline Node smoke covering placeholder clear, `DocumentFragment` append, and 300-line cap (`render-log-helper-ok`)
   - Plan: `PERF_PLAN_HIGH_FINDINGS.md`
 
-- [ ] **B2 — Sequential ffprobe Re-probing All Assets**
-  - [ ] B2.3: Investigate `SceneSpec.asset_id` key format in `timeline.py` (read-only)
-  - [ ] B2.1: Write `cached_probes.json` during `_stage_assets_for_render()` from DB metadata
-  - [ ] B2.2: Modify `probe_assets()` to read cache and skip ffprobe for complete entries
+- [x] **B2 — Sequential ffprobe Re-probing All Assets** (2026-04-08)
+  - [x] B2.3: Investigate `SceneSpec.asset_id` key format in `timeline.py` (read-only)
+  - [x] B2.1: Write `cached_probes.json` during `_stage_assets_for_render()` from DB metadata
+  - [x] B2.2: Modify `probe_assets()` to read cache and skip ffprobe for complete entries
+  - [x] Verify with `python -m pytest tests/test_video_assembly/test_probe_assets.py -q` (`2` passing), `python -m pytest tests/test_video_pipeline.py -k "prepare_assembly_project_copies_language_specific_inputs or stage_assets_for_render_writes_cached_probes_with_timeline_asset_ids" -q` (`2` passing), and `python -m pytest tests/test_video_assembly_integration.py -q` (`16` passing)
   - Plan: `PERF_PLAN_HIGH_FINDINGS.md`
 
 ---

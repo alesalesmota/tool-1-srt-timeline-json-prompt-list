@@ -3009,30 +3009,68 @@ class Tool1Service:
         return render_job_id
 
     def _stage_assets_for_render(self, episode_id: str, language_code: str) -> Path:
-        episode, scenes = self._load_master_timeline_scenes(episode_id)
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
         project_dir = self._episode_workspace(episode) / "assembly" / language_code
         assets_dir = ensure_dir(project_dir / "input" / "assets")
+        timeline_path = project_dir / "input" / "timeline.json"
 
         for child in list(assets_dir.iterdir()):
             self._safe_delete_path(child, assets_dir)
+
+        try:
+            raw_timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"Assembly timeline missing for {language_code}.") from exc
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Assembly timeline is invalid for {language_code}: {exc.msg}.") from exc
+
+        if isinstance(raw_timeline, list):
+            timeline_scenes = raw_timeline
+        elif isinstance(raw_timeline, dict):
+            timeline_scenes = raw_timeline.get("scenes")
+        else:
+            timeline_scenes = None
+        if not isinstance(timeline_scenes, list) or not timeline_scenes:
+            raise ValueError(f"Assembly timeline has no scenes for {language_code}.")
 
         assets_by_scene = {
             asset["scene_id"]: asset
             for asset in self.db.list_scene_assets(episode_id)
         }
-        for index, scene in enumerate(scenes, start=1):
-            asset = assets_by_scene.get(scene["scene_id"])
+        cached_probes: dict[str, dict[str, Any]] = {}
+        for index, scene in enumerate(timeline_scenes, start=1):
+            if not isinstance(scene, dict):
+                raise ValueError(f"Assembly timeline scene {index} is invalid for {language_code}.")
+            scene_id = str(scene.get("scene_id") or "").strip()
+            if not scene_id:
+                raise ValueError(f"Assembly timeline scene {index} is missing scene_id for {language_code}.")
+            asset_id = str(scene.get("asset_id") or f"asset_{index:03d}").strip() or f"asset_{index:03d}"
+
+            asset = assets_by_scene.get(scene_id)
             if asset is None:
-                raise ValueError(f"Missing shared asset for {scene['scene_id']}.")
+                raise ValueError(f"Missing shared asset for {scene_id}.")
             file_path = str(asset.get("file_path") or "").strip()
             if not file_path:
-                raise FileNotFoundError(f"Asset file missing for {scene['scene_id']}.")
+                raise FileNotFoundError(f"Asset file missing for {scene_id}.")
             source_path = Path(file_path)
             if not source_path.exists() or not source_path.is_file():
-                raise FileNotFoundError(f"Asset file missing for {scene['scene_id']}.")
+                raise FileNotFoundError(f"Asset file missing for {scene_id}.")
             original_name = str(asset.get("original_filename") or asset.get("stored_filename") or source_path.name)
             staged_name = f"{index:03d}_{safe_filename(original_name, 'asset')}"
             shutil.copy2(source_path, assets_dir / staged_name)
+            cached_probes[asset_id] = {
+                "type": str(asset.get("asset_type") or scene.get("asset_type") or "").strip().lower() or None,
+                "width": asset.get("width"),
+                "height": asset.get("height"),
+                "duration": asset.get("duration_seconds"),
+            }
+
+        (project_dir / "input" / "cached_probes.json").write_text(
+            json.dumps(cached_probes, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
         return project_dir
 
