@@ -6324,24 +6324,26 @@ async function renderAssemblySection(episodeId, { readOnly = false, showLoading 
 function handleBulkUploadInputChange(event) {
   const input = event.currentTarget;
   const epId = input.dataset.bulkUploadInput;
+  const files = Array.from(input.files);
+  input.value = "";
+  if (!files.length) return;
   beginEpisodeAssemblyUploadInteraction();
-  handleBulkUpload(epId, input.files).finally(() => {
+  handleBulkUpload(epId, files).finally(() => {
     endEpisodeAssemblyUploadInteraction();
   });
-  input.value = "";
 }
 
 function handleSingleUploadInputChange(event) {
   const input = event.currentTarget;
   const epId = input.dataset.singleUploadInput;
   const sceneId = input.dataset.scene;
-  if (input.files.length > 0) {
-    beginEpisodeAssemblyUploadInteraction();
-    handleAssetUpload(epId, sceneId, input.files[0]).finally(() => {
-      endEpisodeAssemblyUploadInteraction();
-    });
-  }
+  const file = input.files[0] || null;
   input.value = "";
+  if (!file) return;
+  beginEpisodeAssemblyUploadInteraction();
+  handleAssetUpload(epId, sceneId, file).finally(() => {
+    endEpisodeAssemblyUploadInteraction();
+  });
 }
 
 function bindEpisodeAssemblyUploadInputs(root = document) {
@@ -6358,6 +6360,7 @@ function bindEpisodeAssemblyUploadInputs(root = document) {
 }
 
 async function handleAssetUpload(episodeId, sceneId, file) {
+  setNotice(`Uploading ${file.name}…`, "neutral");
   const formData = new FormData();
   formData.append("file", file);
   try {
@@ -6369,9 +6372,10 @@ async function handleAssetUpload(episodeId, sceneId, file) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || "Upload failed");
     }
+    setNotice(`Uploaded ${file.name}`, "success");
     await renderAssemblySection(episodeId);
   } catch (err) {
-    setNotice(err.message, "error");
+    setNotice(`Upload failed: ${err.message}`, "error");
   }
 }
 
@@ -6381,7 +6385,7 @@ async function handleBulkUpload(episodeId, files) {
   for (const file of files) {
     formData.append("files", file);
   }
-  setNotice("Uploading assets...", "neutral");
+  setNotice(`Uploading ${files.length} file${files.length > 1 ? "s" : ""}…`, "neutral");
   try {
     const res = await fetch(`/api/episodes/${encodeURIComponent(episodeId)}/scenes/bulk-upload`, {
       method: "POST",
@@ -6389,7 +6393,7 @@ async function handleBulkUpload(episodeId, files) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || "Bulk upload failed");
-    
+
     if (data.unmatched && data.unmatched.length > 0) {
       setNotice(`${data.matched.length} uploaded, ${data.unmatched.length} skipped (filename or type mismatch)`, "warn");
     } else {
@@ -6397,7 +6401,7 @@ async function handleBulkUpload(episodeId, files) {
     }
     await renderAssemblySection(episodeId);
   } catch (err) {
-    setNotice(err.message, "error");
+    setNotice(`Bulk upload failed: ${err.message}`, "error");
   }
 }
 
