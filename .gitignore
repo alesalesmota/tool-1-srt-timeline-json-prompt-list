@@ -7,6 +7,8 @@ workspace/
 venv/
 .env
 .playwright-cli/
+output/playwright/
+test-results/
 tool1_dashboard/alignment_tool/logs/
 tool1_dashboard/alignment_tool/output/
 tool1_dashboard/alignment_tool/temp/
