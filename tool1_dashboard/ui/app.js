@@ -5077,7 +5077,7 @@ function resetAutoRefresh() {
 }
 
 function resetElapsedTimer() {
-  if (elapsedTimer) window.clearInterval(elapsedTimer);
+  if (elapsedTimer) return;
   elapsedTimer = window.setInterval(() => {
     document.querySelectorAll(".running-elapsed").forEach((el) => {
       if (!el.dataset.startedAt) return;

@@ -39,8 +39,9 @@
 
 ## HIGH
 
-- [ ] **F4 — Elapsed Timer DOM Scan**
-  - [ ] F4.1: Make `resetElapsedTimer()` start-once (remove `clearInterval` + recreate pattern)
+- [x] **F4 — Elapsed Timer DOM Scan** (2026-04-08)
+  - [x] F4.1: Make `resetElapsedTimer()` start-once (remove `clearInterval` + recreate pattern)
+  - [x] Verify with `node --check tool1_dashboard/ui/app.js` and inline Node smoke covering single-interval registration plus preserved elapsed text updates (`elapsed-timer-start-once-ok`)
   - Plan: `PERF_PLAN_HIGH_FINDINGS.md`
 
 - [x] **F5 — Unbounded SSE Log Growth** (2026-04-08)
