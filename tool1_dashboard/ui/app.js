@@ -722,10 +722,70 @@ function updateEpisodeReferences(episodeId, updater) {
   }
 }
 
+function updateEpisodeAssemblyProgressState(episodeId, progressUpdates = {}) {
+  updateEpisodeReferences(episodeId, (episode) => {
+    if (!episode) return episode;
+    const currentProgress = episode?.assembly_progress && typeof episode.assembly_progress === "object"
+      ? episode.assembly_progress
+      : {
+        stage: episode.current_stage || "asset_upload",
+        next_stage: null,
+        assets_uploaded: 0,
+        assets_total: 0,
+        all_assets_uploaded: false,
+        validation_ok: null,
+      };
+    return {
+      ...episode,
+      assembly_progress: {
+        ...currentProgress,
+        ...progressUpdates,
+        stage: episode.current_stage || currentProgress.stage || "asset_upload",
+      },
+    };
+  });
+}
+
+function syncEpisodeAssemblyControlPanels(episodeId) {
+  const episode = findEpisodeReference(episodeId);
+  if (!episode) return;
+  document.querySelectorAll(`[data-episode-assembly-control-panel="${episodeId}"]`).forEach((panel) => {
+    panel.outerHTML = renderEpisodeAssemblyControlPanel(episode, {
+      surface: panel.dataset.surface || "detail",
+    });
+  });
+}
+
+async function refreshAssemblyEpisodeView(episodeId, { activeRenderLanguage = null } = {}) {
+  await refreshData();
+  renderApp();
+  if (state.episodeDetail?.episode?.id === episodeId) {
+    await loadAssemblyUI(episodeId, { activeRenderLanguage });
+    syncEpisodeAssemblyControlPanels(episodeId);
+  }
+}
+
+async function openAssemblyWorkspace(episodeId) {
+  if (!episodeId) return;
+  const episode = findEpisodeReference(episodeId);
+  if (state.episodeOverlayId !== episodeId || state.episodeDetail?.episode?.id !== episodeId) {
+    await openEpisodeOverlay(episodeId, episode?.niche_project_id || null);
+  }
+  if (state.episodeDetail?.episode?.id === episodeId) {
+    await loadAssemblyUI(episodeId, {
+      activeRenderLanguage: state.episodeAssemblyActiveRenderLanguage[episodeId] || null,
+    });
+    syncEpisodeAssemblyControlPanels(episodeId);
+  }
+}
+
 function episodeQueueStartStage(episode, explicitStage = null) {
   if (explicitStage) return explicitStage;
   const pipelineStatus = String(episode?.pipeline_status || "idle").toLowerCase();
   const currentStage = String(episode?.current_stage || "").trim();
+  if (isEpisodeInAssemblyStage(episode)) {
+    return currentStage || "asset_upload";
+  }
   if (["failed", "paused"].includes(pipelineStatus) && EPISODE_RUNNABLE_STAGE_IDS.includes(currentStage)) {
     return currentStage;
   }
@@ -737,6 +797,105 @@ function episodeQueueStartStage(episode, explicitStage = null) {
 
 function stageLabel(stage) {
   return EPISODE_STAGE_LABELS[stage] || titleCase(stage || "workflow");
+}
+
+function isEpisodeInAssemblyStage(episode) {
+  return ASSEMBLY_STAGE_IDS.includes(String(episode?.current_stage || "").trim());
+}
+
+function episodeAssemblyContinueState(episode) {
+  if (!isEpisodeInAssemblyStage(episode)) {
+    return {
+      visible: false,
+      disabled: true,
+      targetStage: null,
+      label: "",
+      shortLabel: "",
+      helper: "",
+    };
+  }
+
+  const currentStage = String(episode?.current_stage || "").trim();
+  const progress = episode?.assembly_progress && typeof episode.assembly_progress === "object"
+    ? episode.assembly_progress
+    : {};
+  const nextStage = String(progress.next_stage || "").trim();
+  if (!nextStage) {
+    return {
+      visible: false,
+      disabled: true,
+      targetStage: null,
+      label: "",
+      shortLabel: "",
+      helper: "Mark this episode done from the assembly workspace once you've reviewed the rendered videos.",
+    };
+  }
+
+  let disabled = false;
+  let helper = `Continue to ${stageLabel(nextStage)} when you're ready.`;
+
+  if (currentStage === "asset_upload") {
+    disabled = progress.all_assets_uploaded !== true;
+    helper = disabled
+      ? "Upload assets for every scene before continuing."
+      : "All scene assets are uploaded. Continue when you're ready.";
+  } else if (currentStage === "assembly_validation") {
+    disabled = progress.validation_ok !== true;
+    helper = progress.validation_ok === true
+      ? "Validation passed. Continue when you're ready."
+      : progress.validation_ok === false
+        ? "Validation failed. Fix the flagged languages before continuing."
+        : "Run validation first.";
+  } else if (currentStage === "video_render") {
+    const renderJobs = normalizeAssemblyRenderJobs(episode?.render_jobs);
+    disabled = renderJobs.length > 0 && !renderJobs.some((job) => String(job?.state || "").toLowerCase() === "completed");
+    helper = disabled
+      ? "Render at least one language before continuing."
+      : "At least one render is complete. Continue when you're ready.";
+  }
+
+  return {
+    visible: true,
+    disabled,
+    targetStage: nextStage,
+    label: `Continue to ${stageLabel(nextStage)}`,
+    shortLabel: "Continue",
+    helper,
+  };
+}
+
+function episodeAssemblyStatusCopy(episode) {
+  if (!isEpisodeInAssemblyStage(episode)) return "";
+  const currentStage = String(episode?.current_stage || "").trim();
+  const progress = episode?.assembly_progress && typeof episode.assembly_progress === "object"
+    ? episode.assembly_progress
+    : {};
+  const assetsUploaded = Math.max(0, Number(progress.assets_uploaded) || 0);
+  const assetsTotal = Math.max(0, Number(progress.assets_total) || 0);
+
+  if (currentStage === "asset_upload") {
+    if (assetsTotal > 0) {
+      return `${assetsUploaded}/${assetsTotal} scenes uploaded.`;
+    }
+    return "Upload scene assets to continue.";
+  }
+  if (currentStage === "assembly_validation") {
+    if (progress.validation_ok === true) return "Validation passed. Ready for video render.";
+    if (progress.validation_ok === false) return "Validation failed. Fix the flagged languages first.";
+    return "Run validation to verify timeline and voiceover for each language.";
+  }
+  if (currentStage === "video_render") {
+    const renderJobs = normalizeAssemblyRenderJobs(episode?.render_jobs);
+    const completedCount = renderJobs.filter((job) => String(job?.state || "").toLowerCase() === "completed").length;
+    if (completedCount > 0) {
+      return `${completedCount} render${completedCount === 1 ? "" : "s"} completed.`;
+    }
+    return "Render at least one language to continue.";
+  }
+  if (currentStage === "final_review") {
+    return "Review rendered videos in the assembly workspace.";
+  }
+  return stageActivityLabel(currentStage);
 }
 
 function isWorkflowActiveStatus(status) {
@@ -767,6 +926,10 @@ function stageActivityLabel(stage) {
     video_prompt_generation: "Generating video prompts",
     image_prompt_generation: "Generating image prompts",
     timeline_mapping: "Mapping timeline",
+    asset_upload: "Upload scene assets",
+    assembly_validation: "Validating assembly",
+    video_render: "Rendering video",
+    final_review: "Awaiting final review",
     review: "Ready for review",
     export: "Export completed",
   };
@@ -888,6 +1051,10 @@ function episodeWorkflowStatusCopy(episode) {
   const displayStage = episodeDisplayStage(episode);
   const counts = perLanguageStageCounts(episode.language_statuses, displayStage);
   const liveTtsCopy = activeTtsJobCopy(activeTtsJob(episode));
+  if (isEpisodeInAssemblyStage(episode)) {
+    if (pipelineStatus === "failed") return `Stopped in ${stageLabel(displayStage)}.`;
+    return episodeAssemblyStatusCopy(episode) || `${stageActivityLabel(displayStage)}.`;
+  }
   if (episode.pause_requested && isWorkflowActiveStatus(pipelineStatus)) return pauseRequestedCopy(episode);
   if (pipelineStatus === "failed") return `Stopped in ${stageLabel(displayStage)}.`;
   if (pipelineStatus === "done") return "Export completed.";
@@ -2864,6 +3031,22 @@ function renderIconOnlyActionButton({
 }
 
 function renderEpisodeWorkflowActionButton(ep, { className = "", readiness = ep.queue_readiness || { ok: true, blockers: [], warnings: [] } } = {}) {
+  if (isEpisodeInAssemblyStage(ep)) {
+    const continueState = episodeAssemblyContinueState(ep);
+    if (!continueState.visible) return "";
+    return renderIconOnlyActionButton({
+      icon: "play",
+      label: continueState.label,
+      tooltip: continueState.helper || continueState.label,
+      toneClass: "button-primary",
+      className: `episode-action-button episode-workflow-action ${className}`.trim(),
+      dataAttributes: {
+        "advance-assembly": ep.id,
+        "target-stage": continueState.targetStage,
+      },
+      disabled: continueState.disabled,
+    });
+  }
   const meta = queueActionMeta(ep, readiness);
   return renderIconOnlyActionButton({
     icon: meta.icon,
@@ -2934,6 +3117,9 @@ function renderEpisodeWorkflowControlPanel(
     readiness = episode.queue_readiness || { ok: true, blockers: [], warnings: [] },
   } = {},
 ) {
+  if (isEpisodeInAssemblyStage(episode)) {
+    return renderEpisodeAssemblyControlPanel(episode, { surface });
+  }
   const status = String(episode?.pipeline_status || "idle").toLowerCase();
   const selectedStage = selectedWorkflowStage(episode);
   const selectId = workflowStageSelectId(episode.id, surface);
@@ -4816,6 +5002,83 @@ function renderTemplates() {
   `;
 }
 
+function renderEpisodeAssemblyControlPanel(episode, { surface = "detail" } = {}) {
+  const status = String(episode?.pipeline_status || "idle").toLowerCase();
+  const activeWorkflow = isWorkflowActiveStatus(status);
+  const currentStage = String(episode?.current_stage || "").trim();
+  const progress = episode?.assembly_progress && typeof episode.assembly_progress === "object"
+    ? episode.assembly_progress
+    : {};
+  const continueState = episodeAssemblyContinueState(episode);
+  const assetsUploaded = Math.max(0, Number(progress.assets_uploaded) || 0);
+  const assetsTotal = Math.max(0, Number(progress.assets_total) || 0);
+  const tone = activeWorkflow ? "warn" : continueState.disabled ? "warn" : "success";
+  const pauseButton = activeWorkflow
+    ? `<button
+        type="button"
+        class="button button-ghost button-small"
+        data-pause-episode="${esc(episode.id)}"
+        ${episode.pause_requested ? "disabled" : ""}
+      >${esc(episode.pause_requested ? "Pause requested" : "Pause after current step")}</button>`
+    : "";
+
+  let progressCopy = "Continue through the assembly stages from here.";
+  let helperCopy = continueState.helper || "Use the assembly workspace to continue.";
+  if (currentStage === "asset_upload") {
+    progressCopy = assetsTotal > 0
+      ? `${assetsUploaded}/${assetsTotal} scenes uploaded`
+      : "Upload media assets for every scene";
+    helperCopy = "Your uploaded assets are saved. Use Continue when you're ready to move to the next stage.";
+  } else if (currentStage === "assembly_validation") {
+    progressCopy = "Run validation to verify timeline + voiceover for each language";
+  } else if (currentStage === "video_render") {
+    progressCopy = "Render the configured languages from the assembly workspace";
+  } else if (currentStage === "final_review") {
+    progressCopy = "Review the rendered videos and mark the episode done";
+    helperCopy = "Mark this episode done from the assembly workspace once you've reviewed the rendered videos.";
+  }
+
+  const primaryAction = continueState.visible
+    ? `<button
+        type="button"
+        class="button button-primary button-small"
+        data-advance-assembly="${esc(episode.id)}"
+        data-target-stage="${esc(continueState.targetStage)}"
+        ${continueState.disabled ? "disabled" : ""}
+      >${esc(continueState.label)}</button>`
+    : `<span class="badge" data-tone="warn">Awaiting final review</span>`;
+
+  const reassurance = currentStage === "asset_upload"
+    ? `<div class="helper" style="margin-top:8px;">Uploaded assets are preserved across refreshes and workflow actions.</div>`
+    : "";
+
+  return `
+    <section
+      class="project-readiness-panel workflow-control-panel"
+      data-tone="${esc(tone)}"
+      data-episode-assembly-control-panel="${esc(episode.id)}"
+      data-surface="${esc(surface)}"
+    >
+      <div class="project-readiness-head">
+        <span class="badge" data-tone="${esc(tone)}">Stage: ${esc(stageLabel(currentStage))}</span>
+        <strong>Assembly continuation</strong>
+      </div>
+      <div class="helper" style="margin-top:10px;">${esc(progressCopy)}</div>
+      ${reassurance}
+      <div class="workflow-control-actions" style="margin-top:14px; display:flex; flex-wrap:wrap; gap:8px;">
+        ${primaryAction}
+        <button
+          type="button"
+          class="button button-ghost button-small"
+          data-open-assembly="${esc(episode.id)}"
+        >Open assembly workspace</button>
+        ${pauseButton}
+      </div>
+      <div class="helper workflow-control-helper">${esc(helperCopy)}</div>
+    </section>
+  `;
+}
+
 function computeRenderFingerprint() {
   return JSON.stringify({
     health: state.health,
@@ -5657,10 +5920,13 @@ document.addEventListener("click", async (event) => {
     closeEpisodeOverlay();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-stage-provider-openai-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-pause-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-open-episode-file], [data-download-episode-file], [data-save-review], [data-finalize-export], [data-download-export], [data-project-config-toggle]");
+  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-stage-provider-openai-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-advance-assembly], [data-open-assembly], [data-pause-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-open-episode-file], [data-download-episode-file], [data-save-review], [data-finalize-export], [data-download-export], [data-project-config-toggle]");
   if (!target) return;
   event.preventDefault();
   try {
+    if (target.dataset.advanceAssembly || target.dataset.openAssembly) {
+      return;
+    }
     if (target.dataset.closeModal) {
       if (state.modal.kind === "translation-preview") state.translationPreview = null;
       state.translationProfileEditor = null;
@@ -6282,15 +6548,21 @@ async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
       await renderAssemblySection(episodeId, { showLoading: shouldShowLoading });
       container.dataset.assemblyReady = "true";
       updateEpisodeAssemblyCache(episodeId, currentStage, container.innerHTML);
+      syncEpisodeAssemblyControlPanels(episodeId);
       return;
     }
 
     if (currentStage === "assembly_validation") {
       await renderAssemblySection(episodeId, { readOnly: true, showLoading: shouldShowLoading });
       const validationData = await api(`/api/episodes/${encodeURIComponent(episodeId)}/assembly/validate`, { method: "POST" });
+      const normalized = normalizeAssemblyValidationPayload(validationData);
+      updateEpisodeAssemblyProgressState(episodeId, {
+        validation_ok: Boolean(normalized.shared?.ok && normalized.languages.some((entry) => entry.ok)),
+      });
       container.insertAdjacentHTML("beforeend", renderAssemblyValidationPanel(episodeId, validationData));
       container.dataset.assemblyReady = "true";
       updateEpisodeAssemblyCache(episodeId, currentStage, container.innerHTML);
+      syncEpisodeAssemblyControlPanels(episodeId);
       return;
     }
 
@@ -6299,6 +6571,11 @@ async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
         container.innerHTML = renderLoadingSurface("Loading renders", "Fetching per-language render progress.");
       }
       const renderStatus = await api(`/api/episodes/${encodeURIComponent(episodeId)}/assembly/render-status`);
+      updateEpisodeReferences(episodeId, (episodeRecord) => (
+        episodeRecord
+          ? { ...episodeRecord, render_jobs: renderStatus }
+          : episodeRecord
+      ));
       const renderJobs = normalizeAssemblyRenderJobs(renderStatus);
       const preferredTab = activeRenderLanguage || state.episodeAssemblyActiveRenderLanguage[episodeId] || renderJobs[0]?.language_code || null;
       if (preferredTab) {
@@ -6307,6 +6584,7 @@ async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
       container.innerHTML = renderAssemblyRenderPanel(episodeId, renderJobs, preferredTab);
       container.dataset.assemblyReady = "true";
       updateEpisodeAssemblyCache(episodeId, currentStage, container.innerHTML);
+      syncEpisodeAssemblyControlPanels(episodeId);
       return;
     }
 
@@ -6315,10 +6593,16 @@ async function loadAssemblyUI(episodeId, { activeRenderLanguage = null } = {}) {
         container.innerHTML = renderLoadingSurface("Loading final videos", "Fetching completed render outputs.");
       }
       const renderJobsPayload = await api(`/api/episodes/${encodeURIComponent(episodeId)}/assembly/render-jobs`);
+      updateEpisodeReferences(episodeId, (episodeRecord) => (
+        episodeRecord
+          ? { ...episodeRecord, render_jobs: renderJobsPayload }
+          : episodeRecord
+      ));
       const completedVideos = normalizeAssemblyRenderJobs(renderJobsPayload).filter((job) => job.state === "completed");
       container.innerHTML = renderAssemblyReviewPanel(episodeId, completedVideos);
       container.dataset.assemblyReady = "true";
       updateEpisodeAssemblyCache(episodeId, currentStage, container.innerHTML);
+      syncEpisodeAssemblyControlPanels(episodeId);
     }
   } catch (error) {
     if (shouldShowLoading || !container.innerHTML.trim()) {
@@ -6389,6 +6673,12 @@ async function renderAssemblySection(episodeId, { readOnly = false, showLoading 
     const scenes = data.scenes || [];
     const totalScenes = data.total_scenes || 0;
     const uploadedCount = data.uploaded_count || 0;
+    updateEpisodeAssemblyProgressState(episodeId, {
+      assets_uploaded: uploadedCount,
+      assets_total: totalScenes,
+      all_assets_uploaded: totalScenes > 0 ? uploadedCount >= totalScenes : false,
+    });
+    syncEpisodeAssemblyControlPanels(episodeId);
     const visibleCount = getEpisodeAssemblyVisibleCount(episodeId);
     const visibleScenes = scenes.slice(0, visibleCount);
     const shownCount = Math.min(visibleCount, scenes.length);
@@ -6473,7 +6763,14 @@ async function updateSingleSceneCard(episodeId, sceneId) {
       const currentUploaded = Number(progressEl?.dataset.uploadedCount || 0);
       const totalScenes = Number(progressEl?.dataset.totalScenes || 0);
       const delta = newHasAsset ? 1 : -1;
-      updateEpisodeAssemblyProgressCounter(container, currentUploaded + delta, totalScenes);
+      const nextUploaded = currentUploaded + delta;
+      updateEpisodeAssemblyProgressCounter(container, nextUploaded, totalScenes);
+      updateEpisodeAssemblyProgressState(episodeId, {
+        assets_uploaded: nextUploaded,
+        assets_total: totalScenes,
+        all_assets_uploaded: totalScenes > 0 ? nextUploaded >= totalScenes : false,
+      });
+      syncEpisodeAssemblyControlPanels(episodeId);
     }
 
     updateEpisodeAssemblyCache(episodeId, stage, container.innerHTML);
@@ -6696,6 +6993,7 @@ document.addEventListener("drop", (event) => {
 // ── Video Assembly (Phase 7: Validation & Render) ─────────────────────────
 
 function renderAssemblyValidationPanel(episodeId, validationData) {
+  const episode = findEpisodeReference(episodeId);
   const normalized = normalizeAssemblyValidationPayload(validationData);
   let inner = "";
   if (!validationData) {
@@ -6707,6 +7005,9 @@ function renderAssemblyValidationPanel(episodeId, validationData) {
     `;
   } else {
     const sharedOk = normalized.shared?.ok !== false;
+    const passedLanguageCount = normalized.languages.filter((entry) => entry.ok).length;
+    const continueState = episodeAssemblyContinueState(episode);
+    const showAdvanceButton = sharedOk && passedLanguageCount > 0 && continueState.visible && !continueState.disabled;
     let rows = `<div class="validation-result">
       <div>Shared Assets (All Scenes Have Assets)</div>
       <div>${sharedOk ? '<span class="validation-success-item">Yes</span>' : '<span class="validation-error-item">No</span>'}</div>
@@ -6747,6 +7048,7 @@ function renderAssemblyValidationPanel(episodeId, validationData) {
       <div style="margin-bottom:12px;">
         <button type="button" class="button" data-validate-assembly="${esc(episodeId)}">Re-validate</button>
         ${canRenderAny ? `<button type="button" class="button button-primary" style="margin-left:8px;" data-render-all="${esc(episodeId)}">Render All Valid</button>` : ""}
+        ${showAdvanceButton ? `<button type="button" class="button button-primary" style="margin-left:8px;" data-advance-assembly="${esc(episodeId)}" data-target-stage="${esc(continueState.targetStage)}">${esc(continueState.label)}</button>` : ""}
       </div>
       <div class="surface" style="padding:0; border-radius:var(--radius-sm); border:1px solid var(--line);">
         ${rows}
@@ -6988,6 +7290,41 @@ document.addEventListener("click", async (event) => {
     return;
   }
 
+  const advanceAssemblyBtn = event.target.closest("[data-advance-assembly]");
+  if (advanceAssemblyBtn) {
+    const epId = advanceAssemblyBtn.dataset.advanceAssembly;
+    const targetStage = advanceAssemblyBtn.dataset.targetStage;
+    if (!targetStage) return;
+    advanceAssemblyBtn.disabled = true;
+    setNotice(`Advancing to ${stageLabel(targetStage)}...`, "neutral");
+    try {
+      await api(`/api/episodes/${encodeURIComponent(epId)}/assembly/advance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_stage: targetStage }),
+      });
+      await refreshAssemblyEpisodeView(epId, {
+        activeRenderLanguage: state.episodeAssemblyActiveRenderLanguage[epId] || null,
+      });
+      setNotice(`Advanced to ${stageLabel(targetStage)}`, "success");
+    } catch (err) {
+      advanceAssemblyBtn.disabled = false;
+      setNotice(err.message || `Could not advance to ${stageLabel(targetStage)}.`, "error");
+    }
+    return;
+  }
+
+  const openAssemblyBtn = event.target.closest("[data-open-assembly]");
+  if (openAssemblyBtn) {
+    const epId = openAssemblyBtn.dataset.openAssembly;
+    try {
+      await openAssemblyWorkspace(epId);
+    } catch (err) {
+      setNotice(err.message || "Could not open the assembly workspace.", "error");
+    }
+    return;
+  }
+
   const validateBtn = event.target.closest("[data-validate-assembly]");
   if (validateBtn) {
     const epId = validateBtn.dataset.validateAssembly;
@@ -6996,11 +7333,15 @@ document.addEventListener("click", async (event) => {
       const res = await fetch(`/api/episodes/${encodeURIComponent(epId)}/assembly/validate`, { method: "POST" });
       const data = await res.json().catch(()=>({}));
       if (!res.ok) throw new Error(data.detail || "Validation failed");
-      
+      const normalized = normalizeAssemblyValidationPayload(data);
+      updateEpisodeAssemblyProgressState(epId, {
+        validation_ok: Boolean(normalized.shared?.ok && normalized.languages.some((entry) => entry.ok)),
+      });
       const panel = $(`assembly-validation-target-${epId}`);
       if (panel) {
         panel.outerHTML = renderAssemblyValidationPanel(epId, data);
       }
+      syncEpisodeAssemblyControlPanels(epId);
       setNotice("Validation complete", "success");
     } catch (err) {
       setNotice(err.message, "error");
@@ -7063,8 +7404,8 @@ document.addEventListener("click", async (event) => {
         throw new Error(d.detail || "Failed to start assembly");
       }
       setNotice("Video Assembly started", "success");
-      await syncRouteAndRender(); 
-      // This will completely re-fetch the episode state and trigger loadAssemblyUI (in Phase 8 codebase)
+      await refreshAssemblyEpisodeView(epId);
+      await openAssemblyWorkspace(epId);
     } catch (err) {
       setNotice(err.message, "error");
     }
