@@ -68,7 +68,7 @@
   - [x] Verify with `node --check tool1_dashboard/ui/app.js`, `python -m pytest tests/test_video_pipeline.py -k "render_job_events_endpoint_streams_named_update_events" -q` (`1` passing), and inline Node smoke covering the SSE timeout/cleanup wiring (`render-sse-lifecycle-ok`)
   - Plan: `plans/completed/PERF_PLAN_HIGH_FINDINGS.md`
 
-- [ ] **F7 — Assembly Cache Unbounded Growth**
+- [x] **F7 — Assembly Cache Unbounded Growth** (2026-04-08)
   - [x] F7.1: Convert `episodeAssemblyCache` from `{}` to `new Map()`
   - [x] F7.2: Update writer to enforce LRU + `MAX_ASSEMBLY_CACHE_SIZE = 5`
   - [x] F7.3: Update `renderEpisodeAssemblySectionShell()` reader to use `Map.get`
