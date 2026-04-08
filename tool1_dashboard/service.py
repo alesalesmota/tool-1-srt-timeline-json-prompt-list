@@ -102,6 +102,9 @@ from .validators import (
 
 log = logging.getLogger(__name__)
 
+IDLE_WAIT_MIN_SECONDS = 5.0
+IDLE_WAIT_MAX_SECONDS = 30.0
+
 _TYPE_SCOPED_IMAGE_UPLOAD_RE = re.compile(r"^(?:img|image)(?:$|[^a-z0-9].*)", re.IGNORECASE)
 _TYPE_SCOPED_VIDEO_UPLOAD_RE = re.compile(r"^(?:video|vid)(?:$|[^a-z0-9].*)", re.IGNORECASE)
 _EXPLICIT_SCENE_NUMBER_UPLOAD_RE = re.compile(
@@ -170,6 +173,7 @@ class Tool1Service:
         self._stop_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
         self._render_lock = threading.Lock()
+        self._idle_wait_seconds = IDLE_WAIT_MIN_SECONDS
         self._provider_stage_stale_seconds = float(
             os.environ.get("TOOL1_PROVIDER_STAGE_STALE_SECONDS", "900")
         )
@@ -209,15 +213,23 @@ class Tool1Service:
 
     def _worker_loop(self) -> None:
         self._quiesce_stale_episodes()
+        self._idle_wait_seconds = IDLE_WAIT_MIN_SECONDS
         while not self._stop_event.is_set():
             episode = self.db.next_queued_episode()
             if episode is not None:
                 self._process_episode(episode)
+                self._idle_wait_seconds = IDLE_WAIT_MIN_SECONDS
                 continue
             self._check_paused_tts_episodes()
             self._check_stale_provider_stage_runs()
             with self._condition:
-                self._condition.wait(timeout=1.0)
+                self._condition.wait(timeout=self._idle_wait_seconds)
+            if self._stop_event.is_set():
+                break
+            self._idle_wait_seconds = min(
+                self._idle_wait_seconds * 2,
+                IDLE_WAIT_MAX_SECONDS,
+            )
 
     @staticmethod
     def _timestamp_age_seconds(value: Any) -> float | None:

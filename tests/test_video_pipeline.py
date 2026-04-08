@@ -17,7 +17,12 @@ from tool1_dashboard.alignment_tool.config import resolve_language_profile, reso
 from tool1_dashboard.database import Tool1Database
 from tool1_dashboard.providers import CliRunner
 from tool1_dashboard.runtime import utc_now
-from tool1_dashboard.service import QueueBlockedError, Tool1Service
+from tool1_dashboard.service import (
+    IDLE_WAIT_MAX_SECONDS,
+    IDLE_WAIT_MIN_SECONDS,
+    QueueBlockedError,
+    Tool1Service,
+)
 from tool1_dashboard.video_assembly.timeline import load_timeline
 
 
@@ -2022,6 +2027,78 @@ class EpisodePipelineServiceTests(unittest.TestCase):
             **payload,
         )
         return service, project["project"]["id"], runner
+
+    def test_worker_loop_uses_idle_backoff_and_resets_after_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                wait_timeouts: list[float] = []
+                next_episode_values: list[dict[str, object] | None] = [
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    {"id": "ep-queued"},
+                ]
+                processed_episode_ids: list[str] = []
+
+                class FakeCondition:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, exc_type, exc, tb):
+                        return False
+
+                    def wait(self, timeout=None):
+                        wait_timeouts.append(float(timeout or 0.0))
+
+                def next_queued_episode():
+                    if next_episode_values:
+                        return next_episode_values.pop(0)
+                    return None
+
+                def process_episode(episode):
+                    processed_episode_ids.append(str(episode["id"]))
+                    service._stop_event.set()
+
+                service._condition = FakeCondition()
+                service._stop_event.clear()
+                service._idle_wait_seconds = IDLE_WAIT_MAX_SECONDS
+
+                with patch.object(service, "_quiesce_stale_episodes"), patch.object(
+                    service.db,
+                    "next_queued_episode",
+                    side_effect=next_queued_episode,
+                ), patch.object(
+                    service,
+                    "_check_paused_tts_episodes",
+                ) as paused_mock, patch.object(
+                    service,
+                    "_check_stale_provider_stage_runs",
+                ) as stale_mock, patch.object(
+                    service,
+                    "_process_episode",
+                    side_effect=process_episode,
+                ) as process_mock:
+                    service._worker_loop()
+
+                self.assertEqual(
+                    wait_timeouts,
+                    [
+                        IDLE_WAIT_MIN_SECONDS,
+                        10.0,
+                        20.0,
+                        IDLE_WAIT_MAX_SECONDS,
+                        IDLE_WAIT_MAX_SECONDS,
+                    ],
+                )
+                self.assertEqual(processed_episode_ids, ["ep-queued"])
+                self.assertEqual(service._idle_wait_seconds, IDLE_WAIT_MIN_SECONDS)
+                self.assertEqual(paused_mock.call_count, 5)
+                self.assertEqual(stale_mock.call_count, 5)
+                process_mock.assert_called_once()
 
     def test_consistency_guide_calls_llm(self) -> None:
         """Consistency guide calls cli_runner.run_structured and writes guide file."""

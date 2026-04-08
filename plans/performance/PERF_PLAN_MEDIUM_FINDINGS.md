@@ -3,7 +3,7 @@
 > **Date:** 2026-04-08
 > **Audit ref:** `PERFORMANCE_AUDIT.md` findings F7, B3, B4
 > **Checklist ref:** `PERFORMANCE_CHECKLIST.md`
-> **Status:** In progress (`F7` complete on 2026-04-08; `B3` + `B4` pending)
+> **Status:** In progress (`F7` + `B3` complete on 2026-04-08; `B4` pending)
 
 Three independent fixes. Each is small and self-contained. Implement in any order. None of them touch the same files, so they cannot collide.
 
@@ -331,10 +331,10 @@ Add `self._translation_db_lock = asyncio.Lock()` to `Tool1Service.__init__`. Wra
 - [x] F7.4: Update the 3 delete sites (`app.js:582`, `584`, `6245`) to use `Map` API
 
 ### B3 — Worker Idle Backoff
-- [ ] B3.1: Add `_idle_wait_seconds`, `IDLE_WAIT_MIN_SECONDS=5`, `IDLE_WAIT_MAX_SECONDS=30`
-- [ ] B3.2: Implement reset-on-work, double-on-idle in `_worker_loop()`
-- [ ] B3.3: (No change required — `notify()` path already wakes the loop)
-- [ ] B3.4: Read-only check that 30 s TTS resume lag is acceptable
+- [x] B3.1: Add `_idle_wait_seconds`, `IDLE_WAIT_MIN_SECONDS=5`, `IDLE_WAIT_MAX_SECONDS=30`
+- [x] B3.2: Implement reset-on-work, double-on-idle in `_worker_loop()`
+- [x] B3.3: (No change required — `notify()` path already wakes the loop)
+- [x] B3.4: Read-only check that 30 s TTS resume lag is acceptable (`_check_paused_tts_episodes()` is still only polled from `_worker_loop()`, and that lag is acceptable because TTS jobs already take minutes)
 
 ### B4 — Parallel Translation Across Languages
 - [ ] B4.1: Extract per-language work into async helper `_run_one_language_translation`

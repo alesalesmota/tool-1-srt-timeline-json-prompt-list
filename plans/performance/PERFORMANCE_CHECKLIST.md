@@ -76,10 +76,12 @@
   - [x] Verify with `node --check tool1_dashboard/ui/app.js` and inline Node smoke exercising `Map` reads/writes, 5-entry eviction, and read-bump LRU ordering (`assembly-cache-lru-ok`)
   - Plan: `PERF_PLAN_MEDIUM_FINDINGS.md`
 
-- [ ] **B3 — Worker DB Polling Every 1s When Idle**
-  - [ ] Increase idle poll interval to 5-10 seconds
-  - [ ] Add exponential backoff when no queued work found
-  - Plan: *(to be designed)*
+- [x] **B3 — Worker DB Polling Every 1s When Idle** (2026-04-08)
+  - [x] B3.1: Add `_idle_wait_seconds`, `IDLE_WAIT_MIN_SECONDS=5`, `IDLE_WAIT_MAX_SECONDS=30`
+  - [x] B3.2: Reset on work, double on idle inside `_worker_loop()`
+  - [x] B3.4: Read-only verify TTS resume lag (≤30s) is acceptable
+  - [x] Verify with `python -m pytest tests/test_video_pipeline.py -k "worker_loop_uses_idle_backoff_and_resets_after_work or paused_tts_episode_requeues_stale_processing_jobs_and_wakes_worker or stale_running_provider_stage_is_failed" -q` (`3` passing) and `python -m pytest tests/test_video_pipeline.py -q` (`75` passing)
+  - Plan: `PERF_PLAN_MEDIUM_FINDINGS.md`
 
 - [ ] **B4 — Sequential Translation (API-bound)**
   - [ ] Parallelize chunk translation within a single language (batch of 3-5 concurrent)
