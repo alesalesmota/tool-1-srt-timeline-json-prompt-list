@@ -40,29 +40,30 @@
 ## HIGH
 
 - [ ] **F4 — Elapsed Timer DOM Scan**
-  - [ ] Replace `querySelectorAll` scan with a tracked element set
-  - [ ] Register/unregister elapsed elements when they mount/unmount
-  - Plan: *(to be designed)*
+  - [ ] F4.1: Make `resetElapsedTimer()` start-once (remove `clearInterval` + recreate pattern)
+  - Plan: `PERF_PLAN_HIGH_FINDINGS.md`
 
-- [ ] **F5 — Unbounded SSE Log Growth**
-  - [ ] Cap log DOM to last 200 lines (remove oldest nodes when exceeded)
-  - [ ] Batch `appendChild` calls to reduce reflows
-  - Plan: *(to be designed)*
+- [x] **F5 — Unbounded SSE Log Growth** (2026-04-08)
+  - [x] F5.1: Cap log DOM to last 300 lines (remove oldest child nodes when exceeded)
+  - [x] F5.2: Batch `appendChild` via `DocumentFragment` for single reflow
+  - [x] Verify with `node --check tool1_dashboard/ui/app.js` and inline Node smoke covering placeholder clear, `DocumentFragment` append, and 300-line cap (`render-log-helper-ok`)
+  - Plan: `PERF_PLAN_HIGH_FINDINGS.md`
 
 - [ ] **B2 — Sequential ffprobe Re-probing All Assets**
-  - [ ] Reuse metadata already stored in `scene_assets` DB table from upload time
-  - [ ] Only call ffprobe on assets missing metadata
-  - Plan: *(to be designed)*
+  - [ ] B2.3: Investigate `SceneSpec.asset_id` key format in `timeline.py` (read-only)
+  - [ ] B2.1: Write `cached_probes.json` during `_stage_assets_for_render()` from DB metadata
+  - [ ] B2.2: Modify `probe_assets()` to read cache and skip ffprobe for complete entries
+  - Plan: `PERF_PLAN_HIGH_FINDINGS.md`
 
 ---
 
 ## MEDIUM
 
 - [ ] **F6 — SSE Connection Leaks**
-  - [ ] Add 5-minute timeout on idle SSE connections
-  - [ ] Close all SSE connections when navigating away from assembly section
-  - [ ] Fix duplicate event handlers (`addEventListener` + `onmessage`)
-  - Plan: *(to be designed)*
+  - [ ] F6.1: Remove duplicate handler (`addEventListener("update")` vs `onmessage`) — verify backend event format first
+  - [ ] F6.2: Add `closeAllRenderSSE()` and call it on navigation away from episode view
+  - [ ] F6.3: Add 5-minute inactivity timeout per SSE connection
+  - Plan: `PERF_PLAN_HIGH_FINDINGS.md`
 
 - [ ] **F7 — Assembly Cache Unbounded Growth**
   - [ ] Add LRU eviction (keep max 5 episodes cached)

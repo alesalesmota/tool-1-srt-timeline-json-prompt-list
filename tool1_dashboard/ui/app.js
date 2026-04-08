@@ -68,6 +68,7 @@ const EPISODE_FILES_CACHE_TTL_MS = 3000;
 const HEALTH_CACHE_TTL_MS = 15000;
 const SETTINGS_CACHE_TTL_MS = 30000;
 const TARGET_LANGUAGES_CACHE_TTL_MS = 60000;
+const MAX_RENDER_LOG_LINES = 300;
 const FALLBACK_VOICE_TTS_PRESETS = {
   natural_stable: {
     preset: "natural_stable",
@@ -6749,6 +6750,22 @@ function renderAssemblyValidationPanel(episodeId, validationData) {
 
 let renderEventSources = {};
 
+function appendRenderLogMessages(logOut, newLogs) {
+  if (!logOut || !Array.isArray(newLogs) || newLogs.length === 0) return;
+  if (logOut.childNodes.length === 1 && logOut.textContent.trim() === "Waiting for logs...") {
+    logOut.textContent = "";
+  }
+  const fragment = document.createDocumentFragment();
+  newLogs.forEach((msg) => {
+    fragment.appendChild(document.createTextNode(`${msg?.message ?? ""}\\n`));
+  });
+  logOut.appendChild(fragment);
+  while (logOut.childNodes.length > MAX_RENDER_LOG_LINES) {
+    logOut.removeChild(logOut.firstChild);
+  }
+  logOut.scrollTop = logOut.scrollHeight;
+}
+
 function startRenderSSE(episodeId, jobId, lang) {
   if (renderEventSources[jobId]) return;
   const es = new EventSource(`/api/episodes/${encodeURIComponent(episodeId)}/assembly/render/${encodeURIComponent(jobId)}/events`);
@@ -6768,12 +6785,7 @@ function startRenderSSE(episodeId, jobId, lang) {
         if (statusBadge) statusBadge.textContent = data.job.stage || data.job.state;
         if (currSceneNode) currSceneNode.textContent = data.job.current_scene_id || "-";
       }
-      if (logOut && data.new_logs) {
-        data.new_logs.forEach(msg => {
-           logOut.appendChild(document.createTextNode(msg.message + "\\n"));
-        });
-        logOut.scrollTop = logOut.scrollHeight;
-      }
+      appendRenderLogMessages(logOut, data.new_logs);
       if (data.job && (data.job.state === "completed" || data.job.state === "failed")) {
         es.close();
         delete renderEventSources[jobId];

@@ -3,7 +3,7 @@
 > **Date:** 2026-04-08  
 > **Audit ref:** `PERFORMANCE_AUDIT.md` findings F4, F5, F6, B2  
 > **Checklist ref:** `PERFORMANCE_CHECKLIST.md`  
-> **Status:** Ready for implementation
+> **Status:** In progress (`F5` complete on 2026-04-08; `F4`, `F6`, and `B2` still pending)
 
 These are 4 independent fixes. Each is small and self-contained. Implement in any order.
 
@@ -319,8 +319,8 @@ This is a **read-only investigation task** — don't change code, just verify th
 - [ ] F4.1: Make `resetElapsedTimer()` start-once (remove clearInterval + re-create pattern)
 
 ### F5 — SSE Log Growth
-- [ ] F5.1: Cap log DOM to 300 lines (remove oldest child nodes when exceeded)
-- [ ] F5.2: Batch log appends using DocumentFragment for single reflow
+- [x] F5.1: Cap log DOM to 300 lines (remove oldest child nodes when exceeded)
+- [x] F5.2: Batch log appends using DocumentFragment for single reflow
 
 ### F6 — SSE Connection Leaks
 - [ ] F6.1: Remove duplicate handler (either `addEventListener("update")` or `onmessage`)
