@@ -74,19 +74,24 @@
   - [x] F7.3: Update `renderEpisodeAssemblySectionShell()` reader to use `Map.get`
   - [x] F7.4: Update the 3 delete sites (`app.js:582`, `584`, `6245`) to `Map` API
   - [x] Verify with `node --check tool1_dashboard/ui/app.js` and inline Node smoke exercising `Map` reads/writes, 5-entry eviction, and read-bump LRU ordering (`assembly-cache-lru-ok`)
-  - Plan: `PERF_PLAN_MEDIUM_FINDINGS.md`
+  - Plan: `plans/completed/PERF_PLAN_MEDIUM_FINDINGS.md`
 
 - [x] **B3 — Worker DB Polling Every 1s When Idle** (2026-04-08)
   - [x] B3.1: Add `_idle_wait_seconds`, `IDLE_WAIT_MIN_SECONDS=5`, `IDLE_WAIT_MAX_SECONDS=30`
   - [x] B3.2: Reset on work, double on idle inside `_worker_loop()`
   - [x] B3.4: Read-only verify TTS resume lag (≤30s) is acceptable
   - [x] Verify with `python -m pytest tests/test_video_pipeline.py -k "worker_loop_uses_idle_backoff_and_resets_after_work or paused_tts_episode_requeues_stale_processing_jobs_and_wakes_worker or stale_running_provider_stage_is_failed" -q` (`3` passing) and `python -m pytest tests/test_video_pipeline.py -q` (`75` passing)
-  - Plan: `PERF_PLAN_MEDIUM_FINDINGS.md`
+  - Plan: `plans/completed/PERF_PLAN_MEDIUM_FINDINGS.md`
 
-- [ ] **B4 — Sequential Translation (API-bound)**
-  - [ ] Parallelize chunk translation within a single language (batch of 3-5 concurrent)
-  - [ ] Evaluate parallel language translation (API-bound, doesn't stress local CPU)
-  - Plan: *(to be designed)*
+- [x] **B4 — Sequential Translation (API-bound)** (2026-04-08)
+  - [x] B4.1: Extract per-language work into async helper `_run_one_language_translation`
+  - [x] B4.2: Replace sequential loop with `asyncio.gather` + `Semaphore(4)`
+  - [x] B4.3: Move "all failed" check to source from DB after gather completes
+  - [x] B4.4: Investigate `Tool1Database` thread-safety for concurrent coroutine writes
+  - [x] B4.5 (conditional): No change needed — `Tool1Database` already serializes writes with `self._lock` and uses a fresh SQLite connection per call
+  - Note: chunk-within-language stays sequential (context dependency in `translation/service.py:498`)
+  - [x] Verify with `python -m pytest tests/test_video_pipeline.py -k "translations_with_mock_service or translations_run_languages_concurrently_with_semaphore or translations_fail_when_service_returns_empty_script" -q` (`3` passing) and `python -m pytest tests/test_video_pipeline.py -q` (`76` passing)
+  - Plan: `plans/completed/PERF_PLAN_MEDIUM_FINDINGS.md`
 
 - [ ] **B5 — MFA Alignment CPU Pressure**
   - [ ] No quick fix — inherently CPU-intensive

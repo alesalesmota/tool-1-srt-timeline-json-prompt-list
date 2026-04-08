@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 import tempfile
@@ -9,7 +10,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -2692,16 +2693,90 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 mock_result.status = "done"
                 with patch("tool1_dashboard.translation.TranslationService") as MockTS:
                     mock_instance = MockTS.return_value
-                    mock_instance.translate_script = MagicMock(return_value=mock_result)
-                    with patch("tool1_dashboard.service.asyncio") as mock_asyncio:
-                        mock_asyncio.run.return_value = mock_result
-                        service._episode_run_translations(episode_id)
+                    mock_instance.translate_script = AsyncMock(return_value=mock_result)
+                    service._episode_run_translations(episode_id)
 
                 lang_statuses = service.db.get_episode_language_statuses(episode_id)
                 ptbr = next(ls for ls in lang_statuses if ls["language_code"] == "pt-BR")
                 self.assertEqual(ptbr["translation_status"], "done")
                 self.assertIsNotNone(ptbr["script_path"])
                 self.assertEqual(Path(ptbr["script_path"]).read_text(encoding="utf-8"), "Olá mundo")
+
+    def test_translations_run_languages_concurrently_with_semaphore(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+
+                now = utc_now()
+                target_languages = ["pt-BR", "es", "fr", "de", "it"]
+                translation_profiles: dict[str, str] = {}
+                for language_code in target_languages:
+                    profile_id = f"tp-{language_code}"
+                    translation_profiles[language_code] = profile_id
+                    service.db.create_translation_profile({
+                        "id": profile_id,
+                        "name": f"{language_code} OpenAI",
+                        "provider": "openai",
+                        "api_key_ref": "fake-key",
+                        "model": "gpt-5-nano",
+                        "created_at": now,
+                        "updated_at": now,
+                    })
+
+                project = service.create_niche_project(
+                    name="Parallel Translation",
+                    master_language="en",
+                    configured_languages=["en", *target_languages],
+                    language_translation_profiles=translation_profiles,
+                )
+                episode_id = service.submit_episode(
+                    project["project"]["id"],
+                    title="Parallel response",
+                    script_text="Hello world",
+                )["episode"]["id"]
+
+                active_translations = 0
+                max_active_translations = 0
+                started_languages: list[str] = []
+
+                async def _translate_script(**kwargs):
+                    nonlocal active_translations, max_active_translations
+                    target_lang = kwargs["target_lang"]
+                    started_languages.append(target_lang)
+                    active_translations += 1
+                    max_active_translations = max(max_active_translations, active_translations)
+                    await asyncio.sleep(0.01)
+                    active_translations -= 1
+                    return SimpleNamespace(
+                        translated_script=f"{target_lang} script",
+                        chunk_results=[],
+                        status="done",
+                    )
+
+                with patch("tool1_dashboard.translation.TranslationService") as MockTS:
+                    def _build_translation_service():
+                        mock_instance = MagicMock()
+                        mock_instance.translate_script = AsyncMock(side_effect=_translate_script)
+                        return mock_instance
+
+                    MockTS.side_effect = _build_translation_service
+                    service._episode_run_translations(episode_id)
+
+                lang_statuses = {
+                    status["language_code"]: status
+                    for status in service.db.get_episode_language_statuses(episode_id)
+                }
+                for language_code in target_languages:
+                    self.assertEqual(lang_statuses[language_code]["translation_status"], "done")
+                    self.assertEqual(
+                        Path(lang_statuses[language_code]["script_path"]).read_text(encoding="utf-8"),
+                        f"{language_code} script",
+                    )
+
+                self.assertCountEqual(started_languages, target_languages)
+                self.assertGreater(max_active_translations, 1)
+                self.assertLessEqual(max_active_translations, 4)
 
     def test_translations_fail_when_service_returns_empty_script(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2739,11 +2814,9 @@ class EpisodePipelineServiceTests(unittest.TestCase):
 
                 with patch("tool1_dashboard.translation.TranslationService") as MockTS:
                     mock_instance = MockTS.return_value
-                    mock_instance.translate_script = MagicMock(return_value=mock_result)
-                    with patch("tool1_dashboard.service.asyncio") as mock_asyncio:
-                        mock_asyncio.run.return_value = mock_result
-                        with self.assertRaises(RuntimeError):
-                            service._episode_run_translations(episode_id)
+                    mock_instance.translate_script = AsyncMock(return_value=mock_result)
+                    with self.assertRaises(RuntimeError):
+                        service._episode_run_translations(episode_id)
 
                 ptbr = service.db.get_episode_language_status(episode_id, "pt-BR")
                 assert ptbr is not None

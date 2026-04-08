@@ -3,7 +3,7 @@
 > **Date:** 2026-04-08
 > **Audit ref:** `PERFORMANCE_AUDIT.md` findings F7, B3, B4
 > **Checklist ref:** `PERFORMANCE_CHECKLIST.md`
-> **Status:** In progress (`F7` + `B3` complete on 2026-04-08; `B4` pending)
+> **Status:** Complete (`F7` + `B3` + `B4` finished on 2026-04-08; plan moved to `plans/completed/`)
 
 Three independent fixes. Each is small and self-contained. Implement in any order. None of them touch the same files, so they cannot collide.
 
@@ -337,8 +337,9 @@ Add `self._translation_db_lock = asyncio.Lock()` to `Tool1Service.__init__`. Wra
 - [x] B3.4: Read-only check that 30 s TTS resume lag is acceptable (`_check_paused_tts_episodes()` is still only polled from `_worker_loop()`, and that lag is acceptable because TTS jobs already take minutes)
 
 ### B4 — Parallel Translation Across Languages
-- [ ] B4.1: Extract per-language work into async helper `_run_one_language_translation`
-- [ ] B4.2: Replace sequential loop with `asyncio.gather` + `Semaphore(4)`
-- [ ] B4.3: Move "all failed" check to source from DB after gather completes
-- [ ] B4.4: Investigate `Tool1Database` thread-safety for concurrent coroutine writes (read-only)
-- [ ] B4.5 (conditional): Add `asyncio.Lock` around DB writes if B4.4 finds it's needed
+- [x] B4.1: Extract per-language work into async helper `_run_one_language_translation`
+- [x] B4.2: Replace sequential loop with `asyncio.gather` + `Semaphore(4)`
+- [x] B4.3: Move "all failed" check to source from DB after gather completes
+- [x] B4.4: Investigate `Tool1Database` thread-safety for concurrent coroutine writes (read-only)
+- [x] B4.5 (conditional): Not needed — `Tool1Database` already uses `self._lock` plus a fresh SQLite connection per call, so no extra async lock was added
+- [x] Verify with `python -m pytest tests/test_video_pipeline.py -k "translations_with_mock_service or translations_run_languages_concurrently_with_semaphore or translations_fail_when_service_returns_empty_script" -q` (`3` passing) and `python -m pytest tests/test_video_pipeline.py -q` (`76` passing)

@@ -104,6 +104,7 @@ log = logging.getLogger(__name__)
 
 IDLE_WAIT_MIN_SECONDS = 5.0
 IDLE_WAIT_MAX_SECONDS = 30.0
+TRANSLATION_MAX_CONCURRENT_LANGUAGES = 4
 
 _TYPE_SCOPED_IMAGE_UPLOAD_RE = re.compile(r"^(?:img|image)(?:$|[^a-z0-9].*)", re.IGNORECASE)
 _TYPE_SCOPED_VIDEO_UPLOAD_RE = re.compile(r"^(?:video|vid)(?:$|[^a-z0-9].*)", re.IGNORECASE)
@@ -4546,7 +4547,7 @@ class Tool1Service:
             raise
 
     def _episode_run_translations(self, episode_id: str) -> None:
-        """Run translation for each non-master language, one at a time."""
+        """Run translation for each non-master language with bounded concurrency."""
         from .translation import TranslationService
 
         episode = self.db.get_episode(episode_id)
@@ -4583,10 +4584,9 @@ class Tool1Service:
         if episode.get("timeline_draft_path") and Path(episode["timeline_draft_path"]).exists():
             master_scenes = read_json(Path(episode["timeline_draft_path"]), default=[])
 
-        failed_count = 0
         non_master_langs = [lang for lang in langs if lang != master_lang]
 
-        for lang in non_master_langs:
+        async def _run_one_language_translation(lang: str) -> None:
             profile_id = translation_profiles.get(lang)
             if not profile_id:
                 self.db.update_episode_language_status(
@@ -4594,7 +4594,7 @@ class Tool1Service:
                     translation_status="skipped",
                     error_message="No translation profile configured",
                 )
-                continue
+                return
 
             profile = self.db.get_translation_profile(profile_id)
             if profile is None:
@@ -4603,13 +4603,13 @@ class Tool1Service:
                     translation_status="skipped",
                     error_message=f"Translation profile '{profile_id}' not found",
                 )
-                continue
+                return
 
             self.db.update_episode_language_status(episode_id, lang, translation_status="running")
             try:
                 target_channel = language_channel_names.get(lang, "")
                 translation_svc = TranslationService()
-                result = asyncio.run(translation_svc.translate_script(
+                result = await translation_svc.translate_script(
                     source_script=source_script,
                     source_lang=master_lang,
                     target_lang=lang,
@@ -4624,7 +4624,7 @@ class Tool1Service:
                     reviewer_required=True,
                     reviewer_api_key=reviewer_api_key,
                     reviewer_model="gpt-5.4-mini",
-                ))
+                )
                 chunk_log = [
                     {
                         "chunk_index": cr.chunk_index,
@@ -4663,7 +4663,6 @@ class Tool1Service:
                     error_message=None,
                 )
             except Exception as exc:
-                failed_count += 1
                 self.db.update_episode_language_status(
                     episode_id, lang,
                     translation_status="failed",
@@ -4671,9 +4670,31 @@ class Tool1Service:
                     spoken_script_path=None,
                     error_message=str(exc)[:500],
                 )
+                raise
 
-        if failed_count == len(non_master_langs) and non_master_langs:
-            raise RuntimeError("All translations failed.")
+        async def _run_all_language_translations() -> None:
+            semaphore = asyncio.Semaphore(TRANSLATION_MAX_CONCURRENT_LANGUAGES)
+
+            async def _bounded_translation(lang: str) -> None:
+                async with semaphore:
+                    await _run_one_language_translation(lang)
+
+            await asyncio.gather(
+                *(_bounded_translation(lang) for lang in non_master_langs),
+                return_exceptions=True,
+            )
+
+        if non_master_langs:
+            asyncio.run(_run_all_language_translations())
+            language_statuses = self.db.get_episode_language_statuses(episode_id)
+            failed_count = sum(
+                1
+                for status in language_statuses
+                if status.get("language_code") in non_master_langs
+                and status.get("translation_status") == "failed"
+            )
+            if failed_count == len(non_master_langs):
+                raise RuntimeError("All translations failed.")
 
     def _episode_tts_script_text(
         self,
