@@ -3595,6 +3595,128 @@ class Tool1Service:
         translated_text = self._read_path_text((language_status or {}).get("script_path")).strip()
         return translated_text or str(episode.get("script_text") or "").strip()
 
+    def _check_existing_tts_job(
+        self,
+        episode_id: str,
+        lang: str,
+        job_id: str,
+        lang_tts_status: str,
+        allow_resubmit_failed: bool,
+    ) -> tuple[bool, bool, bool]:
+        """
+        Checks an existing TTS job and updates database statuses accordingly.
+        Returns (should_continue, is_active, has_failed).
+        """
+        if not job_id:
+            return False, False, False
+
+        job = self.db.get_tts_job(job_id)
+        if not job:
+            return False, False, False
+
+        job_status = str(job.get("status") or "").strip().lower()
+
+        if job_status == "completed":
+            result_path = str(job.get("result_path") or "").strip()
+            if result_path and Path(result_path).exists():
+                self.db.update_episode_language_status(
+                    episode_id,
+                    lang,
+                    tts_status="done",
+                    tts_audio_path=result_path,
+                    error_message=None,
+                )
+                return True, False, False
+            # Fall through to allow queueing a new job
+            return False, False, False
+
+        if job_status in {"queued", "processing"}:
+            stage_status = self._tts_stage_status_for_job_status(job_status)
+            if lang_tts_status != stage_status:
+                self.db.update_episode_language_status(
+                    episode_id,
+                    lang,
+                    tts_status=stage_status,
+                    error_message=None,
+                )
+            return True, True, False
+
+        if job_status in {"error", "failed"} and not allow_resubmit_failed:
+            self.db.update_episode_language_status(
+                episode_id,
+                lang,
+                tts_status="failed",
+                error_message=job.get("error_message", "TTS failed"),
+            )
+            return True, False, True
+
+        return False, False, False
+
+    def _queue_new_tts_job(
+        self,
+        episode_id: str,
+        lang: str,
+        voice_profiles: dict[str, Any],
+        allow_resubmit_failed: bool,
+        tts_mgr: Any,
+        episode: dict[str, Any],
+        lang_status: dict[str, Any],
+    ) -> tuple[bool, str | None, Any]:
+        """
+        Prepares and submits a new TTS job.
+        Returns (success, unrecoverable_error, tts_mgr).
+        """
+        profile_id = str(voice_profiles.get(lang) or "").strip()
+        if not profile_id:
+            if allow_resubmit_failed:
+                self.db.update_episode_language_status(
+                    episode_id,
+                    lang,
+                    tts_status="skipped",
+                    error_message="No voice profile configured",
+                )
+                return False, None, tts_mgr
+            return False, f"{lang}: no voice profile configured", tts_mgr
+
+        profile = self.db.get_voice_profile(profile_id)
+        if profile is None:
+            if allow_resubmit_failed:
+                self.db.update_episode_language_status(
+                    episode_id,
+                    lang,
+                    tts_status="skipped",
+                    error_message=f"Voice profile '{profile_id}' not found",
+                )
+                return False, None, tts_mgr
+            return False, f"{lang}: voice profile '{profile_id}' not found", tts_mgr
+
+        if tts_mgr is None:
+            tts_mgr = self.tts_manager
+            tts_mgr.ensure_worker_ready(intent="pipeline")
+
+        script_text = self._episode_tts_script_text(episode, lang, lang_status)
+        payload = self._build_generate_tts_payload(
+            profile=profile,
+            language=lang,
+            script_text=script_text,
+        )
+        new_job_id = tts_mgr.submit_tts_job(
+            job_type="generate",
+            profile_id=profile_id,
+            payload=payload,
+            build_id=episode_id,
+            filename=f"narration_{lang}.wav",
+        )
+        self.db.update_episode_language_status(
+            episode_id,
+            lang,
+            tts_status="queued",
+            tts_job_id=new_job_id,
+            tts_audio_path=None,
+            error_message=None,
+        )
+        return True, None, tts_mgr
+
     def _queue_episode_tts_jobs(
         self,
         episode_id: str,
@@ -3631,98 +3753,24 @@ class Tool1Service:
                 continue
 
             job_id = str(lang_status.get("tts_job_id") or "").strip()
-            job = self.db.get_tts_job(job_id) if job_id else None
-            job_status = str((job or {}).get("status") or "").strip().lower()
-
-            if job and job_status == "completed":
-                result_path = str(job.get("result_path") or "").strip()
-                if result_path and Path(result_path).exists():
-                    self.db.update_episode_language_status(
-                        episode_id,
-                        lang,
-                        tts_status="done",
-                        tts_audio_path=result_path,
-                        error_message=None,
-                    )
-                    continue
-                job = None
-                job_status = ""
-
-            if job and job_status in {"queued", "processing"}:
-                stage_status = self._tts_stage_status_for_job_status(job_status)
-                if status != stage_status:
-                    self.db.update_episode_language_status(
-                        episode_id,
-                        lang,
-                        tts_status=stage_status,
-                        error_message=None,
-                    )
+            should_continue, is_active, has_failed = self._check_existing_tts_job(
+                episode_id, lang, job_id, status, allow_resubmit_failed
+            )
+            if is_active:
                 active_jobs += 1
-                continue
-
-            if job and job_status in {"error", "failed"} and not allow_resubmit_failed:
-                self.db.update_episode_language_status(
-                    episode_id,
-                    lang,
-                    tts_status="failed",
-                    error_message=job.get("error_message", "TTS failed"),
-                )
+            if has_failed:
                 any_failed = True
+            if should_continue:
                 continue
 
-            profile_id = str(voice_profiles.get(lang) or "").strip()
-            if not profile_id:
-                if allow_resubmit_failed:
-                    self.db.update_episode_language_status(
-                        episode_id,
-                        lang,
-                        tts_status="skipped",
-                        error_message="No voice profile configured",
-                    )
-                    continue
-                unrecoverable.append(f"{lang}: no voice profile configured")
-                continue
-
-            profile = self.db.get_voice_profile(profile_id)
-            if profile is None:
-                if allow_resubmit_failed:
-                    self.db.update_episode_language_status(
-                        episode_id,
-                        lang,
-                        tts_status="skipped",
-                        error_message=f"Voice profile '{profile_id}' not found",
-                    )
-                    continue
-                unrecoverable.append(f"{lang}: voice profile '{profile_id}' not found")
-                continue
-
-            if tts_mgr is None:
-                tts_mgr = self.tts_manager
-                tts_mgr.ensure_worker_ready(intent="pipeline")
-
-            script_text = self._episode_tts_script_text(episode, lang, lang_status)
-            payload = self._build_generate_tts_payload(
-                profile=profile,
-                language=lang,
-                script_text=script_text,
+            success, err_msg, tts_mgr = self._queue_new_tts_job(
+                episode_id, lang, voice_profiles, allow_resubmit_failed, tts_mgr, episode, lang_status
             )
-            new_job_id = tts_mgr.submit_tts_job(
-                job_type="generate",
-                profile_id=profile_id,
-                payload=payload,
-                build_id=episode_id,
-                filename=f"narration_{lang}.wav",
-            )
-            self.db.update_episode_language_status(
-                episode_id,
-                lang,
-                tts_status="queued",
-                tts_job_id=new_job_id,
-                tts_audio_path=None,
-                error_message=None,
-            )
-            active_jobs += 1
-            submitted_jobs += 1
+            if err_msg:
+                unrecoverable.append(err_msg)
+            if success:
+                active_jobs += 1
+                submitted_jobs += 1
 
         return {
             "submitted_jobs": submitted_jobs,
