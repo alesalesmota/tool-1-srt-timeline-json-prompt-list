@@ -3028,37 +3028,12 @@ class Tool1Service:
                 )
                 return "skipped"
 
-            ratio = lang_total / master_total
-            lang_boundaries = sorted({c.start_ms / 1000.0 for c in lang_cues} | {c.end_ms / 1000.0 for c in lang_cues})
-
-            def snap_to_boundary(t: float) -> float:
-                if not lang_boundaries:
-                    return t
-                closest = min(lang_boundaries, key=lambda b: abs(b - t))
-                if abs(closest - t) <= 0.5:
-                    return closest
-                return round(t, 3)
-
-            lang_scenes: list[dict[str, Any]] = []
-            for i, scene in enumerate(master_scenes):
-                mapped = dict(scene)
-                raw_start = scene["start"] * ratio
-                raw_end = scene["end"] * ratio
-
-                mapped_start = snap_to_boundary(raw_start)
-                mapped_end = snap_to_boundary(raw_end)
-
-                if lang_scenes and mapped_start < lang_scenes[-1]["end"]:
-                    mapped_start = lang_scenes[-1]["end"]
-                if mapped_end - mapped_start < 1.0:
-                    mapped_end = mapped_start + 1.0
-                if i == len(master_scenes) - 1:
-                    mapped_end = lang_total
-
-                mapped["start"] = round(mapped_start, 3)
-                mapped["end"] = round(mapped_end, 3)
-                mapped["duration"] = round(mapped_end - mapped_start, 3)
-                lang_scenes.append(mapped)
+            lang_scenes = self._map_timeline_scenes(
+                master_scenes=master_scenes,
+                master_total=master_total,
+                lang_cues=lang_cues,
+                lang_total=lang_total,
+            )
 
             lang_timeline_path = workspace / f"timeline_{lang}.json"
             write_json(lang_timeline_path, lang_scenes)
@@ -3079,6 +3054,48 @@ class Tool1Service:
                 error_message=str(exc)[:500],
             )
             return "failed"
+
+    def _map_timeline_scenes(
+        self,
+        master_scenes: list[dict[str, Any]],
+        master_total: float,
+        lang_cues: list[Any],
+        lang_total: float,
+    ) -> list[dict[str, Any]]:
+        """Map scenes from master timeline to translated timeline based on total duration ratio."""
+        ratio = lang_total / master_total
+        lang_boundaries = sorted({c.start_ms / 1000.0 for c in lang_cues} | {c.end_ms / 1000.0 for c in lang_cues})
+
+        def snap_to_boundary(t: float) -> float:
+            if not lang_boundaries:
+                return t
+            closest = min(lang_boundaries, key=lambda b: abs(b - t))
+            if abs(closest - t) <= 0.5:
+                return closest
+            return round(t, 3)
+
+        lang_scenes: list[dict[str, Any]] = []
+        for i, scene in enumerate(master_scenes):
+            mapped = dict(scene)
+            raw_start = scene["start"] * ratio
+            raw_end = scene["end"] * ratio
+
+            mapped_start = snap_to_boundary(raw_start)
+            mapped_end = snap_to_boundary(raw_end)
+
+            if lang_scenes and mapped_start < lang_scenes[-1]["end"]:
+                mapped_start = lang_scenes[-1]["end"]
+            if mapped_end - mapped_start < 1.0:
+                mapped_end = mapped_start + 1.0
+            if i == len(master_scenes) - 1:
+                mapped_end = lang_total
+
+            mapped["start"] = round(mapped_start, 3)
+            mapped["end"] = round(mapped_end, 3)
+            mapped["duration"] = round(mapped_end - mapped_start, 3)
+            lang_scenes.append(mapped)
+
+        return lang_scenes
 
     def get_translation_preview(self, episode_id: str, language_code: str) -> dict[str, Any]:
         """Return original and translated script side-by-side for preview."""
