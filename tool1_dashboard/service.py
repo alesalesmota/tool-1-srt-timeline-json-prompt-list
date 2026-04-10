@@ -22,6 +22,7 @@ from .alignment_tool.mfa_resources import mfa_resource_status, prepare_mfa_langu
 from .alignment_tool.orchestrator import run_alignment_job
 from .alignment_tool.runtime import probe_health as alignment_health
 from .chunking import build_gap_fill_batches, build_planning_chunks, build_prompt_batches
+from .database import StageRunResult
 from .config import (
     AGENTS_ROOT,
     BOARD_STATUSES,
@@ -237,9 +238,11 @@ class Tool1Service:
             )
             self.db.finish_stage_run(
                 int(run["id"]),
-                status="failed",
-                exit_code=1,
-                error_text=error_message,
+                StageRunResult(
+                    status="failed",
+                    exit_code=1,
+                    error_text=error_message,
+                )
             )
             self.db.update_episode(
                 run["episode_id"],
@@ -3426,25 +3429,29 @@ class Tool1Service:
             self.db.update_episode(episode_id, consistency_guide_path=str(guide_path), updated_at=utc_now())
             self.db.finish_stage_run(
                 run_id,
-                status="completed",
-                exit_code=0,
-                parsed_output_path=parsed_output_path,
-                validation_path=validation_path,
-                command_payload=result.get("command_payload"),
-                stdout_path=result.get("stdout_path"),
-                stderr_path=result.get("stderr_path"),
+                StageRunResult(
+                    status="completed",
+                    exit_code=0,
+                    parsed_output_path=parsed_output_path,
+                    validation_path=validation_path,
+                    command_payload=result.get("command_payload"),
+                    stdout_path=result.get("stdout_path"),
+                    stderr_path=result.get("stderr_path"),
+                )
             )
         except Exception as exc:
             self.db.finish_stage_run(
                 run_id,
-                status="failed",
-                exit_code=1,
-                parsed_output_path=parsed_output_path,
-                validation_path=validation_path,
-                error_text=str(exc),
-                command_payload=result.get("command_payload") if result else None,
-                stdout_path=result.get("stdout_path") if result else None,
-                stderr_path=result.get("stderr_path") if result else None,
+                StageRunResult(
+                    status="failed",
+                    exit_code=1,
+                    parsed_output_path=parsed_output_path,
+                    validation_path=validation_path,
+                    error_text=str(exc),
+                    command_payload=result.get("command_payload") if result else None,
+                    stdout_path=result.get("stdout_path") if result else None,
+                    stderr_path=result.get("stderr_path") if result else None,
+                )
             )
             raise
 
@@ -3984,25 +3991,29 @@ class Tool1Service:
                 warnings.extend(group_warnings)
                 self.db.finish_stage_run(
                     run_id,
-                    status="completed",
-                    exit_code=0,
-                    parsed_output_path=parsed_output_path,
-                    validation_path=validation_path,
-                    command_payload=result.get("command_payload"),
-                    stdout_path=result.get("stdout_path"),
-                    stderr_path=result.get("stderr_path"),
+                    StageRunResult(
+                        status="completed",
+                        exit_code=0,
+                        parsed_output_path=parsed_output_path,
+                        validation_path=validation_path,
+                        command_payload=result.get("command_payload"),
+                        stdout_path=result.get("stdout_path"),
+                        stderr_path=result.get("stderr_path"),
+                    )
                 )
             except Exception as exc:
                 self.db.finish_stage_run(
                     run_id,
-                    status="failed",
-                    exit_code=1,
-                    parsed_output_path=parsed_output_path,
-                    validation_path=validation_path,
-                    error_text=str(exc),
-                    command_payload=result.get("command_payload") if result else None,
-                    stdout_path=result.get("stdout_path") if result else None,
-                    stderr_path=result.get("stderr_path") if result else None,
+                    StageRunResult(
+                        status="failed",
+                        exit_code=1,
+                        parsed_output_path=parsed_output_path,
+                        validation_path=validation_path,
+                        error_text=str(exc),
+                        command_payload=result.get("command_payload") if result else None,
+                        stdout_path=result.get("stdout_path") if result else None,
+                        stderr_path=result.get("stderr_path") if result else None,
+                    )
                 )
                 raise
 
@@ -4128,23 +4139,27 @@ class Tool1Service:
                             prompts_by_scene_id[sid] = prompt_item
                 self.db.finish_stage_run(
                     run_id,
-                    status="completed",
-                    exit_code=0,
-                    parsed_output_path=parsed_output_path,
-                    command_payload=result.get("command_payload"),
-                    stdout_path=result.get("stdout_path"),
-                    stderr_path=result.get("stderr_path"),
+                    StageRunResult(
+                        status="completed",
+                        exit_code=0,
+                        parsed_output_path=parsed_output_path,
+                        command_payload=result.get("command_payload"),
+                        stdout_path=result.get("stdout_path"),
+                        stderr_path=result.get("stderr_path"),
+                    )
                 )
             except Exception as exc:
                 self.db.finish_stage_run(
                     run_id,
-                    status="failed",
-                    exit_code=1,
-                    parsed_output_path=parsed_output_path,
-                    error_text=str(exc),
-                    command_payload=result.get("command_payload") if result else None,
-                    stdout_path=result.get("stdout_path") if result else None,
-                    stderr_path=result.get("stderr_path") if result else None,
+                    StageRunResult(
+                        status="failed",
+                        exit_code=1,
+                        parsed_output_path=parsed_output_path,
+                        error_text=str(exc),
+                        command_payload=result.get("command_payload") if result else None,
+                        stdout_path=result.get("stdout_path") if result else None,
+                        stderr_path=result.get("stderr_path") if result else None,
+                    )
                 )
                 raise
 
