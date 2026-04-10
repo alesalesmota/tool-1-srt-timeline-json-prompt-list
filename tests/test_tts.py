@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from tool1_dashboard.database import Tool1Database
+from tool1_dashboard.database import Tool1Database, WorkerHeartbeat
 from tool1_dashboard.runtime import utc_now
 from tool1_dashboard.service import Tool1Service
 from tool1_dashboard.tts.audio import generate_silence_wav, merge_wav_chunks_streaming
@@ -152,11 +152,13 @@ class WorkerHeartbeatDbTests(unittest.TestCase):
 
     def test_record_and_get_heartbeat(self):
         self.db.record_worker_heartbeat(
-            worker_id="w1",
-            status="idle",
-            current_job_id=None,
-            pid=1234,
-            started_at=time.time(),
+            WorkerHeartbeat(
+                worker_id="w1",
+                status="idle",
+                current_job_id=None,
+                pid=1234,
+                started_at=time.time(),
+            )
         )
         hb = self.db.get_latest_worker_heartbeat()
         self.assertIsNotNone(hb)
@@ -167,10 +169,14 @@ class WorkerHeartbeatDbTests(unittest.TestCase):
     def test_heartbeat_upsert(self):
         now = time.time()
         self.db.record_worker_heartbeat(
-            worker_id="w1", status="idle", current_job_id=None, pid=100, started_at=now,
+            WorkerHeartbeat(
+                worker_id="w1", status="idle", current_job_id=None, pid=100, started_at=now,
+            )
         )
         self.db.record_worker_heartbeat(
-            worker_id="w1", status="processing", current_job_id="j1", pid=100, started_at=now,
+            WorkerHeartbeat(
+                worker_id="w1", status="processing", current_job_id="j1", pid=100, started_at=now,
+            )
         )
         hb = self.db.get_latest_worker_heartbeat()
         self.assertEqual(hb["status"], "processing")
@@ -179,19 +185,23 @@ class WorkerHeartbeatDbTests(unittest.TestCase):
     def test_list_worker_heartbeats_newest_first(self):
         now = time.time()
         self.db.record_worker_heartbeat(
-            worker_id="older",
-            status="idle",
-            current_job_id=None,
-            pid=100,
-            started_at=now - 10,
+            WorkerHeartbeat(
+                worker_id="older",
+                status="idle",
+                current_job_id=None,
+                pid=100,
+                started_at=now - 10,
+            )
         )
         time.sleep(0.01)
         self.db.record_worker_heartbeat(
-            worker_id="newer",
-            status="processing",
-            current_job_id="job-1",
-            pid=200,
-            started_at=now,
+            WorkerHeartbeat(
+                worker_id="newer",
+                status="processing",
+                current_job_id="job-1",
+                pid=200,
+                started_at=now,
+            )
         )
         rows = self.db.list_worker_heartbeats()
         self.assertEqual(rows[0]["worker_id"], "newer")
@@ -313,11 +323,13 @@ class TTSJobDbTests(unittest.TestCase):
             "updated_at": now,
         })
         self.db.record_worker_heartbeat(
-            worker_id="active-worker",
-            status="processing",
-            current_job_id="fresh-worker-job",
-            pid=1234,
-            started_at=now,
+            WorkerHeartbeat(
+                worker_id="active-worker",
+                status="processing",
+                current_job_id="fresh-worker-job",
+                pid=1234,
+                started_at=now,
+            )
         )
         count = self.db.requeue_orphaned_processing_tts_jobs(90)
         self.assertEqual(count, 0)
@@ -692,11 +704,13 @@ class ManagerJobSubmissionTests(unittest.TestCase):
 
         now = time.time()
         self.db.record_worker_heartbeat(
-            worker_id="worker-live",
-            status="idle",
-            current_job_id=None,
-            pid=4321,
-            started_at=now,
+            WorkerHeartbeat(
+                worker_id="worker-live",
+                status="idle",
+                current_job_id=None,
+                pid=4321,
+                started_at=now,
+            )
         )
         mgr = TTSManager(self.db)
         with patch.object(mgr, "_pid_is_alive", return_value=True):
@@ -742,18 +756,22 @@ class ManagerJobSubmissionTests(unittest.TestCase):
             "updated_at": now,
         })
         self.db.record_worker_heartbeat(
-            worker_id="worker-main",
-            status="processing",
-            current_job_id="job-main",
-            pid=1111,
-            started_at=now - 5,
+            WorkerHeartbeat(
+                worker_id="worker-main",
+                status="processing",
+                current_job_id="job-main",
+                pid=1111,
+                started_at=now - 5,
+            )
         )
         self.db.record_worker_heartbeat(
-            worker_id="worker-dup",
-            status="processing",
-            current_job_id="job-dup",
-            pid=2222,
-            started_at=now - 4,
+            WorkerHeartbeat(
+                worker_id="worker-dup",
+                status="processing",
+                current_job_id="job-dup",
+                pid=2222,
+                started_at=now - 4,
+            )
         )
 
         mgr = TTSManager(self.db)
@@ -1286,11 +1304,13 @@ class EpisodeTtsQueueStatusTests(unittest.TestCase):
             tts_job_id="job-en",
         )
         self.service.db.record_worker_heartbeat(
-            worker_id="healthy-worker",
-            status="idle",
-            current_job_id=None,
-            pid=5555,
-            started_at=now,
+            WorkerHeartbeat(
+                worker_id="healthy-worker",
+                status="idle",
+                current_job_id=None,
+                pid=5555,
+                started_at=now,
+            )
         )
 
         with patch.object(

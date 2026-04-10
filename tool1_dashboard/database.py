@@ -4,11 +4,22 @@ import json
 import sqlite3
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
 from .config import DATABASE_PATH, DEFAULT_SETTINGS
 from .runtime import ensure_dir, utc_now
+
+
+@dataclass
+class WorkerHeartbeat:
+    worker_id: str
+    status: str
+    current_job_id: str | None
+    pid: int
+    started_at: float
+    last_error: str | None = None
 
 
 class Tool1Database:
@@ -670,16 +681,7 @@ class Tool1Database:
 
     # ── worker heartbeats ────────────────────────────────────────────
 
-    def record_worker_heartbeat(
-        self,
-        *,
-        worker_id: str,
-        status: str,
-        current_job_id: str | None,
-        pid: int,
-        started_at: float,
-        last_error: str | None = None,
-    ) -> None:
+    def record_worker_heartbeat(self, heartbeat: WorkerHeartbeat) -> None:
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
@@ -695,7 +697,15 @@ class Tool1Database:
                     heartbeat_at = excluded.heartbeat_at,
                     last_error = excluded.last_error
                 """,
-                (worker_id, status, current_job_id, pid, started_at, time.time(), last_error),
+                (
+                    heartbeat.worker_id,
+                    heartbeat.status,
+                    heartbeat.current_job_id,
+                    heartbeat.pid,
+                    heartbeat.started_at,
+                    time.time(),
+                    heartbeat.last_error,
+                ),
             )
 
     def get_latest_worker_heartbeat(self) -> dict[str, Any] | None:
