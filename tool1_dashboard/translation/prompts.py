@@ -24,7 +24,8 @@ DEFAULT_TRANSLATION_PROMPT = (
     "7. Output ONLY the translated text — no explanations, no headers\n"
     "8. Translate EVERYTHING into {target_lang}; do not leave any sentence, paragraph, or CTA in the source language\n"
     "9. Do NOT output both the original text and the translation; never duplicate source paragraphs\n"
-    "10. If the text contains calls to action like subscribe, share, or tell someone, translate those calls to action fully into {target_lang}\n"
+    "10. If the text contains calls to action like subscribe, share, or tell someone, translate those calls to action fully into {target_lang}\n" \
+    "11. Always write numbers in plain text words (e.g., \"one, two, three\") rather than digits (\"1, 2, 3\").\n"
     "{language_guidance}"
     "{channel_name_instruction}"
     "{chunk_note}"
@@ -45,7 +46,8 @@ DEFAULT_TRANSLATION_REPAIR_PROMPT = (
     "3. Keep the same paragraph structure and line breaks as the source text\n"
     "4. Fully translate all CTA lines and action phrases into {target_lang}\n"
     "5. Preserve names, brands, and technical terms unless a channel replacement instruction says otherwise\n"
-    "6. If a rejected line sounded literal or awkward, rewrite it idiomatically instead of reusing the same wording\n"
+    "6. If a rejected line sounded literal or awkward, rewrite it idiomatically instead of reusing the same wording\n" \
+    "7. Always write numbers in plain text words (e.g., \"one, two, three\") rather than digits (\"1, 2, 3\").\n"
     "{language_guidance}"
     "{channel_name_instruction}"
     "{context_section}\n"
@@ -71,7 +73,8 @@ DEFAULT_TRANSLATION_SCRIPT_REPAIR_PROMPT = (
     "3. Remove all leaked source-language text and all duplicated original text\n"
     "4. Fix awkward literal phrasing so the narration sounds native in {target_lang}\n"
     "5. Fully translate CTA lines and action phrases into natural {target_lang}\n"
-    "6. Replace any flagged literal CTA line with an idiomatic local phrase instead of reusing the rejected wording\n"
+    "6. Replace any flagged literal CTA line with an idiomatic local phrase instead of reusing the rejected wording\n" \
+    "7. Always write numbers in plain text words (e.g., \"one, two, three\") rather than digits (\"1, 2, 3\").\n"
     "{language_guidance}"
     "{channel_name_instruction}"
     "\n"
