@@ -18,7 +18,6 @@ from .alignment_tool.extract_script import extract_script_text
 from .alignment_tool.normalize_script import normalize_script
 from .alignment_tool.config import LANGUAGE_PROFILES
 from .alignment_tool.config import OUTPUT_ROOT as ALIGNMENT_OUTPUT_ROOT
-from .alignment_tool.config import TEMP_ROOT as ALIGNMENT_TEMP_ROOT
 from .alignment_tool.mfa_resources import mfa_resource_status, prepare_mfa_language_resources_async
 from .alignment_tool.orchestrator import run_alignment_job
 from .alignment_tool.runtime import probe_health as alignment_health
