@@ -35,6 +35,14 @@ Implemented in code on 2026-04-10:
 - The redesign followed the existing dark dashboard system instead of introducing a new aesthetic, and the first implemented slice passed a code-plus-screenshot `design-review` check for rollout readiness.
 - Verified with `node --check tool1_dashboard/ui/app.js` and a live local `GET http://127.0.0.1:8020/#settings` response. Screenshot-based smoke is still pending because headless Chrome refused to write a file on this machine during the session.
 
+## Active plan pointer — 2026-04-10 translation simplification
+
+The active execution docs for the current translation-step work now live under:
+
+- `plans/translation-step-simplification/IMPLEMENTATION_PLAN.md`
+- `plans/translation-step-simplification/IMPLEMENTATION_CHECKLIST.md`
+- `plans/translation-step-simplification/AGENT_EXECUTION_GUIDE.md`
+
 ## Supplemental implementation note — 2026-04-10 channel-name simplification
 
 Implemented in code and regression-tested on 2026-04-10:

@@ -4,6 +4,19 @@ Companion to `IMPLEMENTATION_PLAN.md`. Tick each box as the task is completed an
 
 Status on 2026-04-08: implementation complete for Phases 1-7. Episode `205` timeline artifacts are repaired and stale non-completed render jobs were pruned. Manual live browser/render verification is still pending.
 
+## Active checklist pointer — 2026-04-10 translation simplification
+
+The active translation-step checklist now lives at:
+
+- `plans/translation-step-simplification/IMPLEMENTATION_CHECKLIST.md`
+
+## Channel-name Simplification (2026-04-10)
+- [x] Strengthen translation prompts so channel renaming is handled explicitly by the model
+- [x] Remove backend post-translation channel-name/CTA rewrites
+- [x] Keep validation for leaked source channel names and missing configured localized names
+- [x] Simplify the niche-project language config UI to prompt replacement plus validation messaging
+- [x] Verify with `python -m pytest tests/test_translation.py -q`, `python -m pytest tests/test_video_pipeline.py -q`, `python -m compileall tool1_dashboard`, and `node --check tool1_dashboard/ui/app.js`
+
 ## Phase 8 — Fail-stop multilingual translation/TTS safety
 
 - [x] **Task 8.1 [BACKEND]** — Make translation fail-stop for mixed per-language outcomes (`tool1_dashboard/service.py`)
