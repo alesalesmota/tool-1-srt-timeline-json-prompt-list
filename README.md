@@ -11,7 +11,7 @@ The app takes a script-only episode draft inside a Niche Project and produces th
 - per-language `final.srt`
 - per-language `timeline.json`
 - prompt lists for asset generation
-- export bundles for Tool 2 handoff
+- export bundles and video assembly output
 
 ## Workflow
 
