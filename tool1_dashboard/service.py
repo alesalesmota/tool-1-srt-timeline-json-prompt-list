@@ -110,6 +110,21 @@ STAGE_PROVIDER_OPENAI_SYNCED_AT_SETTING = "stage_provider_openai_models_synced_a
 
 
 @dataclass
+class TranslationContext:
+    episode_id: str
+    master_lang: str
+    workspace: Path
+    translation_profiles: dict[str, Any]
+    source_channel_name: str
+    language_channel_names: dict[str, Any]
+    enable_prompt: bool
+    settings: dict[str, Any]
+    reviewer_api_key: str
+    source_script: str
+    master_scenes: list[dict[str, Any]] | None
+
+
+@dataclass
 class QueueReadinessContext:
     project: dict[str, Any] | None
     episode: dict[str, Any] | None = None
@@ -3518,21 +3533,103 @@ class Tool1Service:
             )
             raise
 
+    def _translate_single_language(self, lang: str, ctx: TranslationContext) -> bool:
+        from .translation import TranslationService
+
+        profile_id = ctx.translation_profiles.get(lang)
+        if not profile_id:
+            self.db.update_episode_language_status(
+                ctx.episode_id, lang,
+                translation_status="skipped",
+                error_message="No translation profile configured",
+            )
+            return True
+
+        profile = self.db.get_translation_profile(profile_id)
+        if profile is None:
+            self.db.update_episode_language_status(
+                ctx.episode_id, lang,
+                translation_status="skipped",
+                error_message=f"Translation profile '{profile_id}' not found",
+            )
+            return True
+
+        self.db.update_episode_language_status(ctx.episode_id, lang, translation_status="running")
+        try:
+            target_channel = ctx.language_channel_names.get(lang, "")
+            translation_svc = TranslationService()
+            result = asyncio.run(translation_svc.translate_script(
+                source_script=ctx.source_script,
+                source_lang=ctx.master_lang,
+                target_lang=lang,
+                provider=profile["provider"],
+                api_key=profile["api_key_ref"],
+                model=profile["model"],
+                master_scenes=ctx.master_scenes,
+                max_words_per_chunk=ctx.settings.get("translation_chunk_max_words", 800),
+                context_tail_words=ctx.settings.get("translation_context_tail_words", 200),
+                source_channel_name=ctx.source_channel_name if ctx.enable_prompt else "",
+                target_channel_name=target_channel if ctx.enable_prompt else "",
+                reviewer_required=True,
+                reviewer_api_key=ctx.reviewer_api_key,
+                reviewer_model="gpt-5.4-mini",
+            ))
+            chunk_log = [
+                {
+                    "chunk_index": cr.chunk_index,
+                    "scene_ids": cr.scene_ids,
+                    "words_in": cr.words_in,
+                    "words_out": cr.words_out,
+                    "status": cr.status,
+                    "error": cr.error,
+                }
+                for cr in result.chunk_results
+            ]
+            write_json(ctx.workspace / f"translation_log_{lang}.json", chunk_log)
+            translated_script = self._validated_translation_script(
+                result,
+                language_code=lang,
+                source_script=ctx.source_script,
+                source_channel_name=ctx.source_channel_name if ctx.enable_prompt else "",
+                target_channel_name=target_channel if ctx.enable_prompt else "",
+            )
+            translated_path, spoken_path = self._write_language_script_assets(
+                workspace=ctx.workspace,
+                language_code=lang,
+                master_language=ctx.master_lang,
+                readable_script=translated_script,
+            )
+            review_report_raw = getattr(result, "review_report", None)
+            review_report = review_report_raw if isinstance(review_report_raw, dict) else None
+            if review_report:
+                write_json(ctx.workspace / f"translation_review_{lang}.json", review_report)
+
+            self.db.update_episode_language_status(
+                ctx.episode_id, lang,
+                translation_status="done",
+                script_path=str(translated_path),
+                spoken_script_path=str(spoken_path),
+                error_message=None,
+            )
+            return True
+        except Exception as exc:
+            self.db.update_episode_language_status(
+                ctx.episode_id, lang,
+                translation_status="failed",
+                script_path=None,
+                spoken_script_path=None,
+                error_message=str(exc)[:500],
+            )
+            return False
+
     def _episode_run_translations(self, episode_id: str) -> None:
         """Run translation for each non-master language, one at a time."""
-        from .translation import TranslationService
 
         episode = self.db.get_episode(episode_id)
         master_lang = episode["master_language"]
         langs = json.loads(episode.get("configured_languages") or "[]")
         workspace = self._episode_workspace(episode)
         project = self.db.get_niche_project(episode["niche_project_id"])
-        translation_profiles = json.loads(project.get("language_translation_profiles") or "{}")
-        source_channel_name = str(project.get("source_channel_name") or "").strip()
-        language_channel_names = json.loads(project.get("language_channel_names") or "{}")
-        enable_prompt = bool(int(project.get("channel_replace_prompt", 1) or 1))
-        settings = self._global_settings()
-        reviewer_api_key = self._stage_provider_openai_api_key()
         source_script = episode["script_text"]
 
         # Set master language script path
@@ -3555,94 +3652,27 @@ class Tool1Service:
         if episode.get("timeline_draft_path") and Path(episode["timeline_draft_path"]).exists():
             master_scenes = read_json(Path(episode["timeline_draft_path"]), default=[])
 
+        ctx = TranslationContext(
+            episode_id=episode_id,
+            master_lang=master_lang,
+            workspace=workspace,
+            translation_profiles=json.loads(project.get("language_translation_profiles") or "{}"),
+            source_channel_name=str(project.get("source_channel_name") or "").strip(),
+            language_channel_names=json.loads(project.get("language_channel_names") or "{}"),
+            enable_prompt=bool(int(project.get("channel_replace_prompt", 1) or 1)),
+            settings=self._global_settings(),
+            reviewer_api_key=self._stage_provider_openai_api_key(),
+            source_script=source_script,
+            master_scenes=master_scenes,
+        )
+
         failed_count = 0
         non_master_langs = [lang for lang in langs if lang != master_lang]
 
         for lang in non_master_langs:
-            profile_id = translation_profiles.get(lang)
-            if not profile_id:
-                self.db.update_episode_language_status(
-                    episode_id, lang,
-                    translation_status="skipped",
-                    error_message="No translation profile configured",
-                )
-                continue
-
-            profile = self.db.get_translation_profile(profile_id)
-            if profile is None:
-                self.db.update_episode_language_status(
-                    episode_id, lang,
-                    translation_status="skipped",
-                    error_message=f"Translation profile '{profile_id}' not found",
-                )
-                continue
-
-            self.db.update_episode_language_status(episode_id, lang, translation_status="running")
-            try:
-                target_channel = language_channel_names.get(lang, "")
-                translation_svc = TranslationService()
-                result = asyncio.run(translation_svc.translate_script(
-                    source_script=source_script,
-                    source_lang=master_lang,
-                    target_lang=lang,
-                    provider=profile["provider"],
-                    api_key=profile["api_key_ref"],
-                    model=profile["model"],
-                    master_scenes=master_scenes,
-                    max_words_per_chunk=settings.get("translation_chunk_max_words", 800),
-                    context_tail_words=settings.get("translation_context_tail_words", 200),
-                    source_channel_name=source_channel_name if enable_prompt else "",
-                    target_channel_name=target_channel if enable_prompt else "",
-                    reviewer_required=True,
-                    reviewer_api_key=reviewer_api_key,
-                    reviewer_model="gpt-5.4-mini",
-                ))
-                chunk_log = [
-                    {
-                        "chunk_index": cr.chunk_index,
-                        "scene_ids": cr.scene_ids,
-                        "words_in": cr.words_in,
-                        "words_out": cr.words_out,
-                        "status": cr.status,
-                        "error": cr.error,
-                    }
-                    for cr in result.chunk_results
-                ]
-                write_json(workspace / f"translation_log_{lang}.json", chunk_log)
-                translated_script = self._validated_translation_script(
-                    result,
-                    language_code=lang,
-                    source_script=source_script,
-                    source_channel_name=source_channel_name if enable_prompt else "",
-                    target_channel_name=target_channel if enable_prompt else "",
-                )
-                translated_path, spoken_path = self._write_language_script_assets(
-                    workspace=workspace,
-                    language_code=lang,
-                    master_language=master_lang,
-                    readable_script=translated_script,
-                )
-                review_report_raw = getattr(result, "review_report", None)
-                review_report = review_report_raw if isinstance(review_report_raw, dict) else None
-                if review_report:
-                    write_json(workspace / f"translation_review_{lang}.json", review_report)
-
-                self.db.update_episode_language_status(
-                    episode_id, lang,
-                    translation_status="done",
-                    script_path=str(translated_path),
-                    spoken_script_path=str(spoken_path),
-                    error_message=None,
-                )
-            except Exception as exc:
+            success = self._translate_single_language(lang, ctx)
+            if not success:
                 failed_count += 1
-                self.db.update_episode_language_status(
-                    episode_id, lang,
-                    translation_status="failed",
-                    script_path=None,
-                    spoken_script_path=None,
-                    error_message=str(exc)[:500],
-                )
 
         if failed_count == len(non_master_langs) and non_master_langs:
             raise RuntimeError("All translations failed.")
