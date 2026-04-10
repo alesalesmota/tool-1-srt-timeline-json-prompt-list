@@ -11,6 +11,18 @@
 - [x] Simplify the niche-project language config UI to prompt replacement plus validation messaging
 - [x] Verify with `python -m pytest tests/test_translation.py -q`, `python -m pytest tests/test_video_pipeline.py -q`, `python -m compileall tool1_dashboard`, and `node --check tool1_dashboard/ui/app.js`
 
+## Deterministic Translation Gate + Manual Audit Flow (2026-04-10)
+- [x] Remove the automatic AI reviewer from the workflow-blocking translation path
+- [x] Expand deterministic translation blockers for pipeline-risk issues and return structured `blocking_issues` plus `warnings`
+- [x] Keep AI review as a manual advisory audit only and store it separately from deterministic review data
+- [x] Add project-level `pause_after_translation_review` plus episode-level continue/pause overrides
+- [x] Make paused-TTS recovery revalidate upstream translation readiness before requeueing narration jobs
+- [x] Preserve real translation failure context in translation reports and preview payloads
+- [x] Redesign the translation preview UI to show state summary first, advisory audit second, and raw details collapsed
+- [x] Rebalance the paused-review CTA hierarchy so `Continue to TTS` is primary when the translation is already clean
+- [x] Add regression coverage for deterministic review, manual audit, pause-after-translation, episode overrides, paused-TTS recovery, and fail-stop translation prerequisites
+- [x] Verify with `python -m pytest tests/test_translation.py tests/test_video_pipeline.py -q` and `node --check tool1_dashboard/ui/app.js`
+
 ## Subtitle Density Hardening (2026-04-04)
 - [x] Replace the greedy subtitle splitter with a deterministic DP readability-first segmenter
 - [x] Add shared subtitle-profile rules to the language rulepacks for `de/es/fr/it`

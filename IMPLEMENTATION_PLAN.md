@@ -1,5 +1,5 @@
 # Tool 1 Creator Studio — Reconstruction Plan
-> Last updated: 2026-04-04
+> Last updated: 2026-04-10
 
 > [!IMPORTANT]
 > Historical migration record. This plan is complete and intentionally preserves the old cleanup context from the transition period. Do not treat the phase narrative below as the current architecture source of truth; use `README.md` and `PROJECT_REGISTRY.md` for the live product shape.
@@ -13,6 +13,18 @@ Implemented in code and regression-tested on 2026-04-10:
 - Validation remains in place: if the translated script still contains the source channel name or fails to use the configured localized name when required, the translation is rejected.
 - New niche projects now default `channel_replace_post = false`, and the language-configuration UI no longer presents a second post-translation replacement toggle.
 - Verified with `python -m pytest tests/test_translation.py -q`, `python -m pytest tests/test_video_pipeline.py -q`, `python -m compileall tool1_dashboard`, and `node --check tool1_dashboard/ui/app.js`.
+
+## Supplemental implementation note — 2026-04-10 deterministic translation gate
+
+Implemented in code and regression-tested on 2026-04-10:
+
+- Automatic translation blocking now uses deterministic workflow-safety checks instead of an always-on AI reviewer.
+- Deterministic blockers now cover empty output, source leakage, duplicated/omitted paragraph structure, channel-name mistakes, obvious text corruption, and other patterns likely to break TTS, alignment, subtitles, or downstream localized assets.
+- AI review remains available only as a manual advisory audit from the translation preview UI; it no longer auto-runs during workflow progression.
+- Translation can now pause cleanly after the translation stage for human review via a project default plus episode-level override.
+- Paused-TTS recovery now revalidates upstream translation readiness before requeueing jobs, and fail-stop behavior preserves the real translation error instead of letting downstream TTS status overwrite it.
+- Translation preview/API payloads now expose deterministic review data, manual audit data, `ready_for_tts`, and `paused_after_translation`.
+- Verified with `python -m pytest tests/test_translation.py tests/test_video_pipeline.py -q` and `node --check tool1_dashboard/ui/app.js`.
 
 ## Context
 
