@@ -528,6 +528,14 @@ function statusBadge(label, tone = "neutral") {
   return `<span class="badge" data-tone="${tone}">${esc(label)}</span>`;
 }
 
+function compactMaskedKeyLabel(maskedValue, fallback = "Saved key on file") {
+  const cleaned = String(maskedValue || "").trim();
+  if (!cleaned) return fallback;
+  const visible = cleaned.replace(/\*/g, "");
+  const tail = visible.slice(-4);
+  return tail ? `Saved key ending ${tail}` : fallback;
+}
+
 function healthBadge(label, okState) {
   const tone = okState === "warn" ? "warn" : okState ? "success" : "error";
   return statusBadge(label, tone);
@@ -1818,9 +1826,9 @@ function syncAllProviderModelSelects() {
   syncProviderModelSelect("niche-image_prompt-provider", "niche-image_prompt-model");
 }
 
-function renderSetupCard({ icon, title, copy, fields, tone = "neutral", compact = false }) {
+function renderSetupCard({ icon, title, copy, fields, tone = "neutral", compact = false, className = "" }) {
   return `
-    <article class="setup-card${compact ? " setup-card-compact" : ""}" data-tone="${esc(tone)}">
+    <article class="setup-card${compact ? " setup-card-compact" : ""}${className ? ` ${esc(className)}` : ""}" data-tone="${esc(tone)}">
       <div class="setup-card-head">
         <div class="setup-card-title-row">
           <span class="setup-card-glyph" aria-hidden="true">${iconMarkup(icon)}</span>
@@ -2681,7 +2689,7 @@ function renderTranslationProfileEditorBody(editor) {
         </label>
       </div>
       <div class="translation-key-meta">
-        ${translationProfileCanReuseSavedKey(editor) ? statusBadge(`Saved key ${editor.apiKeyMasked}`, "active") : ""}
+        ${translationProfileCanReuseSavedKey(editor) ? statusBadge(compactMaskedKeyLabel(editor.apiKeyMasked), "active") : ""}
         ${editor.activeProvider === "openai_compatible" ? statusBadge("Manual model fallback", "warn") : ""}
         <span class="helper">${esc(keyMetaCopy)}</span>
       </div>
@@ -2819,7 +2827,7 @@ function renderStageProviderOpenAiMeta(stageProviderOpenAi = state.stageProvider
   if (!stageProviderOpenAi) return "";
   const badges = [
     stageProviderOpenAi.hasSavedApiKey
-      ? statusBadge(`Saved key ${stageProviderOpenAi.apiKeyMasked}`, "active")
+      ? statusBadge(compactMaskedKeyLabel(stageProviderOpenAi.apiKeyMasked), "active")
       : statusBadge("No saved key", "warn"),
     stageProviderOpenAi.modelCount
       ? statusBadge(
@@ -2835,9 +2843,11 @@ function renderStageProviderOpenAiMeta(stageProviderOpenAi = state.stageProvider
     ? `Last model sync ${formatDate(stageProviderOpenAi.lastSyncedAt)}.`
     : "Used by scene planning, consistency guide, video prompts, and image prompts when their provider is set to OpenAI API.";
   return `
-    <div id="stage-provider-openai-meta" class="translation-key-meta">
-      ${badges}
-      <span class="helper">${esc(helperCopy)}</span>
+    <div class="settings-provider-meta">
+      <div id="stage-provider-openai-meta" class="translation-key-meta">
+        ${badges}
+      </div>
+      <div class="settings-provider-note">${esc(helperCopy)}</div>
     </div>
   `;
 }
@@ -5068,7 +5078,7 @@ function renderSettings() {
   const workerInfo = describeWorkerHealth(workerHealth);
   const appStartedAt = appRuntime.started_at ? formatDate(appRuntime.started_at) : null;
   $("view").innerHTML = `
-    <section class="split-grid">
+    <section class="split-grid settings-page-grid">
       <section class="surface">
         <div class="section-head">
           <div>
@@ -5076,132 +5086,162 @@ function renderSettings() {
             <h2 class="section-title">Pipeline settings</h2>
           </div>
         </div>
-        <form id="settings-form" class="stack">
-          <div class="helper">These are the defaults every new card starts with. You can still override them on a single card later.</div>
-          <div class="workflow-setup-grid">
-            ${renderStageSetupCard({
-              icon: "scene",
-              title: "Scene planning",
-              providerId: "settings-scene",
-              providerValue: settings.default_scene_planning_provider || "claude",
-              modelId: "settings-scene-model",
-              modelValue: settings.default_scene_planning_model || "haiku",
-            })}
-            ${renderStageSetupCard({
-              icon: "bible",
-              title: "Consistency guide",
-              providerId: "settings-bible",
-              providerValue: settings.default_visual_bible_provider || "claude",
-              modelId: "settings-bible-model",
-              modelValue: settings.default_visual_bible_model || "haiku",
-            })}
-            ${renderStageSetupCard({
-              icon: "play",
-              title: "Video prompts",
-              providerId: "settings-video",
-              providerValue: settings.default_video_prompt_provider || "codex",
-              modelId: "settings-video-model",
-              modelValue: settings.default_video_prompt_model || "gpt-5.4",
-            })}
-            ${renderStageSetupCard({
-              icon: "prompts",
-              title: "Image prompts",
-              providerId: "settings-image",
-              providerValue: settings.default_image_prompt_provider || "codex",
-              modelId: "settings-image-model",
-              modelValue: settings.default_image_prompt_model || "gpt-5.4",
-            })}
-            ${renderSetupCard({
-              icon: "timeline",
-              title: "Output strategy",
-              copy: "",
-              tone: "warn",
-              fields: `
-                <label class="field">
-                  <span class="field-label">Video-first scenes</span>
-                  <input id="settings-leading-video" type="number" min="0" value="${esc(settings.leading_video_scene_count || 20)}" />
-                </label>
-              `,
-            })}
-          </div>
-          <div class="workflow-setup-grid workflow-setup-grid-compact">
-            ${renderSetupCard({
-              icon: "refresh",
-              title: "OpenAI workflow access",
-              copy: "",
-              tone: stageProviderOpenAi.hasSavedApiKey ? "active" : "warn",
-              fields: `
-                <label class="field">
-                  <span class="field-label">OpenAI API key</span>
-                  <input
-                    id="stage-provider-openai-api-key"
-                    type="password"
-                    value="${esc(stageProviderOpenAi.apiKeyDraft)}"
-                    placeholder="${stageProviderOpenAi.hasSavedApiKey ? "Leave blank to keep the saved key" : "Paste an OpenAI key"}"
-                    autocomplete="off"
-                    spellcheck="false"
-                  />
-                </label>
-                ${renderStageProviderOpenAiMeta(stageProviderOpenAi)}
-                <div class="button-row translation-discovery-actions">
-                  <button type="button" class="button has-icon" id="stage-provider-openai-discover-button" data-stage-provider-openai-discover="true">${iconContent("refresh", stageProviderOpenAi.modelCount ? "Refresh models" : "Check key")}</button>
+        <form id="settings-form" class="stack settings-form-shell">
+          <div class="helper settings-form-intro">These defaults shape every new card. Stage choices stay compact here, while provider access and review controls get room to breathe below.</div>
+          <section class="settings-cluster">
+            <div class="settings-cluster-head">
+              <div>
+                <div class="eyebrow">Stage defaults</div>
+                <h3>Model assignments</h3>
+              </div>
+              <div class="helper settings-cluster-copy">Choose the default provider and model for each creative stage. You can still override them on a single card later.</div>
+            </div>
+            <div class="workflow-setup-grid settings-stage-grid">
+              ${renderStageSetupCard({
+                icon: "scene",
+                title: "Scene planning",
+                providerId: "settings-scene",
+                providerValue: settings.default_scene_planning_provider || "claude",
+                modelId: "settings-scene-model",
+                modelValue: settings.default_scene_planning_model || "haiku",
+              })}
+              ${renderStageSetupCard({
+                icon: "bible",
+                title: "Consistency guide",
+                providerId: "settings-bible",
+                providerValue: settings.default_visual_bible_provider || "claude",
+                modelId: "settings-bible-model",
+                modelValue: settings.default_visual_bible_model || "haiku",
+              })}
+              ${renderStageSetupCard({
+                icon: "play",
+                title: "Video prompts",
+                providerId: "settings-video",
+                providerValue: settings.default_video_prompt_provider || "codex",
+                modelId: "settings-video-model",
+                modelValue: settings.default_video_prompt_model || "gpt-5.4",
+              })}
+              ${renderStageSetupCard({
+                icon: "prompts",
+                title: "Image prompts",
+                providerId: "settings-image",
+                providerValue: settings.default_image_prompt_provider || "codex",
+                modelId: "settings-image-model",
+                modelValue: settings.default_image_prompt_model || "gpt-5.4",
+              })}
+              ${renderSetupCard({
+                icon: "timeline",
+                title: "Output strategy",
+                copy: "Keep a predictable story rhythm when episodes branch into video-first scenes.",
+                tone: "warn",
+                className: "settings-stage-card",
+                fields: `
+                  <label class="field">
+                    <span class="field-label">Video-first scenes</span>
+                    <input id="settings-leading-video" type="number" min="0" value="${esc(settings.leading_video_scene_count || 20)}" />
+                  </label>
+                `,
+              })}
+            </div>
+          </section>
+          <section class="settings-cluster settings-cluster-emphasis">
+            <div class="settings-cluster-head">
+              <div>
+                <div class="eyebrow">Access and review</div>
+                <h3>Provider control room</h3>
+              </div>
+              <div class="helper settings-cluster-copy">Workflow-stage discovery uses the shared OpenAI access here. Translation can run locally, but final multilingual review still lands on OpenAI.</div>
+            </div>
+            <div class="settings-provider-layout">
+              ${renderSetupCard({
+                icon: "refresh",
+                title: "OpenAI workflow access",
+                copy: "Shared key and cached model catalog for any stage set to OpenAI API.",
+                tone: stageProviderOpenAi.hasSavedApiKey ? "active" : "warn",
+                className: "settings-provider-card",
+                fields: `
+                  <label class="field">
+                    <span class="field-label">OpenAI API key</span>
+                    <input
+                      id="stage-provider-openai-api-key"
+                      type="password"
+                      value="${esc(stageProviderOpenAi.apiKeyDraft)}"
+                      placeholder="${stageProviderOpenAi.hasSavedApiKey ? "Leave blank to keep the saved key" : "Paste an OpenAI key"}"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                  </label>
+                  ${renderStageProviderOpenAiMeta(stageProviderOpenAi)}
+                  <div class="button-row translation-discovery-actions">
+                    <button type="button" class="button has-icon" id="stage-provider-openai-discover-button" data-stage-provider-openai-discover="true">${iconContent("refresh", stageProviderOpenAi.modelCount ? "Refresh models" : "Check key")}</button>
+                  </div>
+                  <div id="stage-provider-openai-status" class="settings-provider-status">${renderStageProviderOpenAiStatus(stageProviderOpenAi)}</div>
+                `,
+              })}
+              <div class="settings-provider-secondary">
+                ${renderSetupCard({
+                  icon: "prompts",
+                  title: "Translation reviewer",
+                  copy: "Final multilingual approval after translation or repair.",
+                  tone: "active",
+                  className: "settings-reviewer-card",
+                  fields: `
+                    <div class="setup-card-field-grid">
+                      <label class="field">
+                        <span class="field-label">Provider</span>
+                        <select id="settings-translation-reviewer-provider">
+                          <option value="openai" ${(settings.translation_reviewer_provider || "openai") === "openai" ? "selected" : ""}>OpenAI</option>
+                        </select>
+                      </label>
+                      <label class="field">
+                        <span class="field-label">Model</span>
+                        <input id="settings-translation-reviewer-model" value="${esc(settings.translation_reviewer_model || "gpt-4.1-mini")}" spellcheck="false" />
+                      </label>
+                    </div>
+                    <div class="helper settings-inline-note">LM Studio can translate, but final multilingual review still fails closed on OpenAI.</div>
+                  `,
+                })}
+                <div class="settings-control-grid">
+                  ${renderSetupCard({
+                    icon: "prompts",
+                    title: "Prompt batches",
+                    copy: "How many prompts each planning batch sends at once.",
+                    className: "settings-control-card",
+                    fields: `
+                      <label class="field">
+                        <span class="field-label">Batch size</span>
+                        <input id="settings-batch-size" type="number" min="1" value="${esc(settings.prompt_batch_size || 24)}" />
+                      </label>
+                    `,
+                  })}
+                  ${renderSetupCard({
+                    icon: "timeline",
+                    title: "Planning chunk size",
+                    copy: "Segment length for planning blocks before prompt generation.",
+                    className: "settings-control-card",
+                    fields: `
+                      <label class="field">
+                        <span class="field-label">Chunk seconds</span>
+                        <input id="settings-chunk-seconds" type="number" min="1" value="${esc(settings.planning_chunk_seconds || 360)}" />
+                      </label>
+                    `,
+                  })}
+                  ${renderSetupCard({
+                    icon: "rerun",
+                    title: "Planning overlap",
+                    copy: "Shared context between consecutive planning chunks.",
+                    className: "settings-control-card",
+                    fields: `
+                      <label class="field">
+                        <span class="field-label">Overlap seconds</span>
+                        <input id="settings-overlap-seconds" type="number" min="0" value="${esc(settings.planning_overlap_seconds || 30)}" />
+                      </label>
+                    `,
+                  })}
                 </div>
-                <div id="stage-provider-openai-status">${renderStageProviderOpenAiStatus(stageProviderOpenAi)}</div>
-              `,
-            })}
-            ${renderSetupCard({
-              icon: "prompts",
-              title: "Translation reviewer",
-              copy: "",
-              tone: "active",
-              fields: `
-                <label class="field">
-                  <span class="field-label">Provider</span>
-                  <select id="settings-translation-reviewer-provider">
-                    <option value="openai" ${(settings.translation_reviewer_provider || "openai") === "openai" ? "selected" : ""}>OpenAI</option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span class="field-label">Model</span>
-                  <input id="settings-translation-reviewer-model" value="${esc(settings.translation_reviewer_model || "gpt-4.1-mini")}" spellcheck="false" />
-                </label>
-                <div class="helper">Translation can use LM Studio, but final multilingual review still fails closed on OpenAI.</div>
-              `,
-            })}
-            ${renderSetupCard({
-              icon: "prompts",
-              title: "Prompt batches",
-              copy: "",
-              fields: `
-                <label class="field">
-                  <span class="field-label">Batch size</span>
-                  <input id="settings-batch-size" type="number" min="1" value="${esc(settings.prompt_batch_size || 24)}" />
-                </label>
-              `,
-            })}
-            ${renderSetupCard({
-              icon: "timeline",
-              title: "Planning chunk size",
-              copy: "",
-              fields: `
-                <label class="field">
-                  <span class="field-label">Chunk seconds</span>
-                  <input id="settings-chunk-seconds" type="number" min="1" value="${esc(settings.planning_chunk_seconds || 360)}" />
-                </label>
-              `,
-            })}
-            ${renderSetupCard({
-              icon: "rerun",
-              title: "Planning overlap",
-              copy: "",
-              fields: `
-                <label class="field">
-                  <span class="field-label">Overlap seconds</span>
-                  <input id="settings-overlap-seconds" type="number" min="0" value="${esc(settings.planning_overlap_seconds || 30)}" />
-                </label>
-              `,
-            })}
-          </div>
+              </div>
+            </div>
+          </section>
           <div class="button-row">
             <button type="submit" class="button button-primary has-icon">${iconContent("save", "Save settings")}</button>
             <button type="button" class="button has-icon" data-nav="templates">${iconContent("templates", "Open templates")}</button>

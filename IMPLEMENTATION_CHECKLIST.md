@@ -39,6 +39,8 @@ Status on 2026-04-08: implementation complete for Phases 1-7. Episode `205` time
   - Verify: `python -m pytest tests/test_translation.py tests/test_video_pipeline.py -q` passes.
 - [ ] **Task 9.9 [MANUAL]** — Live LM Studio smoke
   - Verify: with LM Studio server running locally, create an OpenAI-compatible profile, discover models from `/v1/models`, save it, and confirm the UI handles both connected and server-down states clearly.
+- [x] **Task 9.10 [FRONTEND-DESIGN]** — Settings hierarchy redesign for provider/reviewer controls (`tool1_dashboard/ui/app.js`, `tool1_dashboard/ui/app.css`)
+  - Verify: OpenAI workflow access is rendered as the primary settings card, saved-key badges no longer overflow into neighboring cards, and the reviewer/tuning controls sit in a readable secondary grid.
 
 ## Phase 1 — Backend safety net & helpers
 

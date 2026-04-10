@@ -1119,6 +1119,67 @@ body[data-theme="light"] .board-modal-shell {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
+.settings-page-grid {
+  grid-template-columns: minmax(0, 1.16fr) minmax(320px, 0.84fr);
+  align-items: start;
+}
+
+.settings-form-shell {
+  gap: 18px;
+}
+
+.settings-form-intro {
+  max-width: 72ch;
+}
+
+.settings-cluster {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015)),
+    var(--panel-soft);
+}
+
+.settings-cluster-emphasis {
+  border-color: rgba(144, 179, 255, 0.16);
+  background:
+    linear-gradient(180deg, rgba(144, 179, 255, 0.08), rgba(255, 255, 255, 0.02)),
+    var(--panel-soft);
+}
+
+.settings-cluster-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.settings-cluster-copy {
+  max-width: 40ch;
+}
+
+.settings-provider-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.settings-provider-secondary {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.settings-control-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .setup-card {
   display: grid;
   gap: 10px;
@@ -1196,6 +1257,23 @@ body[data-theme="light"] .board-modal-shell {
   display: grid;
   gap: 12px;
   padding-top: 2px;
+}
+
+.settings-stage-card,
+.settings-provider-card,
+.settings-reviewer-card,
+.settings-control-card {
+  height: 100%;
+}
+
+.settings-provider-card .setup-card-fields,
+.settings-reviewer-card .setup-card-fields {
+  gap: 14px;
+}
+
+.settings-control-card .setup-card-copy,
+.settings-stage-card .setup-card-copy {
+  max-width: 30ch;
 }
 
 .setup-card-field-grid {
@@ -1475,6 +1553,11 @@ details.editor-card summary::-webkit-details-marker {
     grid-template-columns: 1fr;
   }
 
+  .settings-page-grid,
+  .settings-provider-layout {
+    grid-template-columns: 1fr;
+  }
+
   .metrics-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1513,7 +1596,9 @@ details.editor-card summary::-webkit-details-marker {
   .metrics-grid,
   .board-grid,
   .form-grid,
-  .form-grid-3 {
+  .form-grid-3,
+  .settings-control-grid,
+  .setup-card-field-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1578,6 +1663,14 @@ details.editor-card summary::-webkit-details-marker {
   .board-modal-main {
     padding-top: 16px;
     padding-bottom: 16px;
+  }
+
+  .settings-cluster {
+    padding: 16px;
+  }
+
+  .settings-cluster-head {
+    display: grid;
   }
 }
 
@@ -2068,7 +2161,32 @@ details.editor-card summary::-webkit-details-marker {
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
-  margin: 2px 0 14px;
+  margin: 0;
+  min-width: 0;
+}
+
+.translation-key-meta .badge {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.settings-provider-meta {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.settings-provider-note,
+.settings-inline-note {
+  font-size: 0.83rem;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.settings-provider-status .profile-inline-message {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
 }
 
 .translation-discovery-actions {
