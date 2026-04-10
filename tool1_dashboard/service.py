@@ -1289,14 +1289,8 @@ class Tool1Service:
                 "display_name": display_name or character_id.replace("_", " "),
                 "descriptor": cls._inline_character_descriptor(card),
                 "aliases": unique_aliases,
-                "alias_patterns": [
-                    re.compile(rf"\b{re.escape(alias)}\b", re.IGNORECASE)
-                    for alias in unique_aliases
-                ],
-                "alias_possessive_patterns": [
-                    re.compile(rf"\b{re.escape(alias)}(?:'s)?\b", re.IGNORECASE)
-                    for alias in unique_aliases
-                ],
+                "alias_pattern": re.compile(rf"\b(?:{'|'.join(re.escape(alias) for alias in unique_aliases)})\b", re.IGNORECASE) if unique_aliases else None,
+                "alias_possessive_pattern": re.compile(rf"\b(?:{'|'.join(re.escape(alias) for alias in unique_aliases)})(?:'s)?\b", re.IGNORECASE) if unique_aliases else None,
             }
             lookup_keys = {
                 character_id.lower(),
@@ -1342,10 +1336,9 @@ class Tool1Service:
         matches: list[str] = []
         unique_payloads = {payload["key"]: payload for payload in character_lookup.values()}
         for payload in unique_payloads.values():
-            for pattern in payload.get("alias_possessive_patterns", []):
-                if pattern.search(sanitized):
-                    matches.append(payload["key"])
-                    break
+            pattern = payload.get("alias_possessive_pattern")
+            if pattern and pattern.search(sanitized):
+                matches.append(payload["key"])
         return cls._ordered_unique(matches)
 
     @classmethod
@@ -1381,11 +1374,10 @@ class Tool1Service:
                 continue
             if descriptor.lower() in expanded.lower():
                 continue
-            for pattern in payload.get("alias_patterns", []):
-                if pattern.search(expanded):
-                    expanded = pattern.sub(lambda match: f"{match.group(0)} ({descriptor})", expanded, count=1)
-                    replaced_any = True
-                    break
+            pattern = payload.get("alias_pattern")
+            if pattern and pattern.search(expanded):
+                expanded = pattern.sub(lambda match: f"{match.group(0)} ({descriptor})", expanded, count=1)
+                replaced_any = True
         if not replaced_any:
             descriptors = [
                 f"{character_lookup[character_ref].get('display_name') or character_lookup[character_ref]['aliases'][0]} ({character_lookup[character_ref]['descriptor']})"
