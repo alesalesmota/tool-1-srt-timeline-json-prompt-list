@@ -506,54 +506,112 @@ class Tool1Service:
 
         return []
 
-    def _reset_episode_outputs_from_stage(self, episode_id: str, start_stage: str) -> None:
-        episode = self._hydrate_episode_record(self.db.get_episode(episode_id))
-        if episode is None:
-            raise FileNotFoundError("Episode not found.")
-        workspace = self._episode_workspace(episode)
-        master_language = str(episode.get("master_language") or "en").strip() or "en"
-        configured_languages = episode.get("configured_languages") or [master_language]
+    def _write_initial_scripts_if_missing(
+        self, episode: dict[str, Any], workspace: Path, master_language: str
+    ) -> tuple[Path, Path]:
         script_original_path = workspace / "script_original.txt"
         if not script_original_path.exists():
             write_text(script_original_path, episode.get("script_text") or "")
+
         script_original_spoken_path = workspace / "script_original_spoken.txt"
         if not script_original_spoken_path.exists():
             write_text(
                 script_original_spoken_path,
                 build_spoken_script(episode.get("script_text") or "", master_language),
             )
+        return script_original_path, script_original_spoken_path
 
-        def reset_languages(*, include_languages: list[str], fields: dict[str, Any]) -> None:
-            for language_code in include_languages:
-                self.db.update_episode_language_status(
-                    episode_id,
-                    language_code,
-                    **(fields | {"error_message": None}),
-                )
-
-        episode_fields: dict[str, Any] = {
+    def _get_episode_reset_fields(self, start_stage: str) -> dict[str, Any]:
+        fields: dict[str, Any] = {
             "review_ready": 0,
             "last_error": None,
             "pause_requested": 0,
         }
 
+        prompt_fields = {
+            "prompt_list_draft_path": None,
+            "prompt_blueprint_path": None,
+            "prompt_validation_path": None,
+        }
+        scene_fields = {
+            "timeline_draft_path": None,
+            "timeline_validation_path": None,
+            "master_scenes_path": None,
+            **prompt_fields,
+        }
+
         if start_stage == "consistency_guide":
-            episode_fields.update({
+            fields.update({
                 "consistency_guide_path": None,
                 "visual_bible_validation_path": None,
                 "planning_manifest_path": None,
-                "timeline_draft_path": None,
-                "timeline_validation_path": None,
-                "prompt_list_draft_path": None,
-                "prompt_blueprint_path": None,
-                "prompt_validation_path": None,
-                "master_scenes_path": None,
+                **scene_fields,
             })
-            reset_languages(
-                include_languages=configured_languages,
-                fields={"timeline_status": "pending", "timeline_path": None},
-            )
+        elif start_stage == "chunking":
+            fields.update({"planning_manifest_path": None, **scene_fields})
+        elif start_stage == "scene_planning":
+            fields.update(scene_fields)
+        elif start_stage in {"video_prompt_generation", "image_prompt_generation"}:
+            fields.update(prompt_fields)
+
+        return fields
+
+    def _get_language_reset_fields(self, start_stage: str) -> dict[str, Any] | None:
+        timeline_fields = {"timeline_status": "pending", "timeline_path": None}
+        srt_fields = {"srt_status": "pending", "srt_path": None, **timeline_fields}
+        tts_fields = {
+            "tts_status": "pending",
+            "tts_audio_path": None,
+            "tts_job_id": None,
+            **srt_fields,
+        }
+        translation_fields = {
+            "translation_status": "pending",
+            "script_path": None,
+            "spoken_script_path": None,
+            **tts_fields,
+        }
+
+        if start_stage in {"consistency_guide", "chunking", "scene_planning", "timeline_mapping"}:
+            return timeline_fields
         elif start_stage == "translation":
+            return translation_fields
+        elif start_stage == "tts":
+            return tts_fields
+        elif start_stage == "alignment":
+            return srt_fields
+
+        return None
+
+    def _reset_episode_outputs_from_stage(self, episode_id: str, start_stage: str) -> None:
+        episode = self._hydrate_episode_record(self.db.get_episode(episode_id))
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+
+        workspace = self._episode_workspace(episode)
+        master_language = str(episode.get("master_language") or "en").strip() or "en"
+        configured_languages = episode.get("configured_languages") or [master_language]
+
+        script_original_path, script_original_spoken_path = self._write_initial_scripts_if_missing(
+            episode, workspace, master_language
+        )
+
+        episode_fields = self._get_episode_reset_fields(start_stage)
+        self.db.update_episode(episode_id, **episode_fields, updated_at=utc_now())
+
+        lang_fields = self._get_language_reset_fields(start_stage)
+        if not lang_fields:
+            return
+
+        def reset_languages(include_languages: list[str]) -> None:
+            for language_code in include_languages:
+                self.db.update_episode_language_status(
+                    episode_id,
+                    language_code,
+                    **(lang_fields | {"error_message": None}),
+                )
+
+        if start_stage == "translation":
             self.db.update_episode_language_status(
                 episode_id,
                 master_language,
@@ -562,84 +620,9 @@ class Tool1Service:
                 spoken_script_path=str(script_original_spoken_path),
                 error_message=None,
             )
-            reset_languages(
-                include_languages=[lang for lang in configured_languages if lang != master_language],
-                fields={
-                    "translation_status": "pending",
-                    "script_path": None,
-                    "spoken_script_path": None,
-                    "tts_status": "pending",
-                    "tts_audio_path": None,
-                    "tts_job_id": None,
-                    "srt_status": "pending",
-                    "srt_path": None,
-                    "timeline_status": "pending",
-                    "timeline_path": None,
-                },
-            )
-        elif start_stage == "tts":
-            reset_languages(
-                include_languages=configured_languages,
-                fields={
-                    "tts_status": "pending",
-                    "tts_audio_path": None,
-                    "tts_job_id": None,
-                    "srt_status": "pending",
-                    "srt_path": None,
-                    "timeline_status": "pending",
-                    "timeline_path": None,
-                },
-            )
-        elif start_stage == "alignment":
-            reset_languages(
-                include_languages=configured_languages,
-                fields={
-                    "srt_status": "pending",
-                    "srt_path": None,
-                    "timeline_status": "pending",
-                    "timeline_path": None,
-                },
-            )
-        elif start_stage == "chunking":
-            episode_fields.update({
-                "planning_manifest_path": None,
-                "timeline_draft_path": None,
-                "timeline_validation_path": None,
-                "prompt_list_draft_path": None,
-                "prompt_blueprint_path": None,
-                "prompt_validation_path": None,
-                "master_scenes_path": None,
-            })
-            reset_languages(
-                include_languages=configured_languages,
-                fields={"timeline_status": "pending", "timeline_path": None},
-            )
-        elif start_stage == "scene_planning":
-            episode_fields.update({
-                "timeline_draft_path": None,
-                "timeline_validation_path": None,
-                "prompt_list_draft_path": None,
-                "prompt_blueprint_path": None,
-                "prompt_validation_path": None,
-                "master_scenes_path": None,
-            })
-            reset_languages(
-                include_languages=configured_languages,
-                fields={"timeline_status": "pending", "timeline_path": None},
-            )
-        elif start_stage in {"video_prompt_generation", "image_prompt_generation"}:
-            episode_fields.update({
-                "prompt_list_draft_path": None,
-                "prompt_blueprint_path": None,
-                "prompt_validation_path": None,
-            })
-        elif start_stage == "timeline_mapping":
-            reset_languages(
-                include_languages=configured_languages,
-                fields={"timeline_status": "pending", "timeline_path": None},
-            )
-
-        self.db.update_episode(episode_id, **episode_fields, updated_at=utc_now())
+            reset_languages([lang for lang in configured_languages if lang != master_language])
+        else:
+            reset_languages(configured_languages)
 
     @staticmethod
     def _queue_issue(
