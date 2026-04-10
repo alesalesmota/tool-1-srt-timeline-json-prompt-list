@@ -376,6 +376,112 @@ class Tool1Service:
             return None
         return EPISODE_RUNNABLE_STAGES[next_index]
 
+    def _check_tts_blockers(self, start_stage: str, master_language: str, configured_languages: list[str], language_statuses: dict[str, Any]) -> list[dict[str, Any]]:
+        blockers = []
+        missing_scripts = [
+            language_code
+            for language_code in configured_languages
+            if language_code != master_language
+            and (
+                str(language_statuses.get(language_code, {}).get("translation_status") or "").lower() != "done"
+                or not self._path_has_non_empty_text(language_statuses.get(language_code, {}).get("script_path"))
+            )
+        ]
+        if missing_scripts:
+            blockers.append(self._queue_issue(
+                "missing_translation_assets",
+                (
+                    "Start from TTS requires translated scripts for "
+                    f"{self._language_list_text(missing_scripts)}."
+                ),
+                stage=start_stage,
+            ))
+        return blockers
+
+    def _check_alignment_blockers(self, start_stage: str, configured_languages: list[str], language_statuses: dict[str, Any]) -> list[dict[str, Any]]:
+        blockers = []
+        missing_alignment_inputs = [
+            language_code
+            for language_code in configured_languages
+            if not self._path_exists(language_statuses.get(language_code, {}).get("tts_audio_path"))
+            or not self._path_has_non_empty_text(
+                language_statuses.get(language_code, {}).get("spoken_script_path")
+                or language_statuses.get(language_code, {}).get("script_path")
+            )
+        ]
+        if missing_alignment_inputs:
+            blockers.append(self._queue_issue(
+                "missing_tts_assets",
+                (
+                    "Start from alignment requires narration audio and script files for "
+                    f"{self._language_list_text(missing_alignment_inputs)}."
+                ),
+                stage=start_stage,
+            ))
+        return blockers
+
+    def _check_chunking_blockers(self, start_stage: str, master_language: str, language_statuses: dict[str, Any]) -> list[dict[str, Any]]:
+        blockers = []
+        master_status = language_statuses.get(master_language, {})
+        if not self._path_exists(master_status.get("srt_path")):
+            blockers.append(self._queue_issue(
+                "missing_master_srt",
+                "Start from chunking requires the master-language SRT from alignment.",
+                stage=start_stage,
+                language_code=master_language,
+            ))
+        return blockers
+
+    def _check_scene_planning_blockers(self, start_stage: str, episode: dict[str, Any]) -> list[dict[str, Any]]:
+        blockers = []
+        if not self._path_exists(episode.get("planning_manifest_path")):
+            blockers.append(self._queue_issue(
+                "missing_planning_manifest",
+                "Start from scene planning requires chunking output first.",
+                stage=start_stage,
+            ))
+        return blockers
+
+    def _check_prompt_generation_blockers(self, start_stage: str, episode: dict[str, Any]) -> list[dict[str, Any]]:
+        blockers = []
+        if not self._path_exists(episode.get("consistency_guide_path")):
+            blockers.append(self._queue_issue(
+                "missing_consistency_guide",
+                "Prompt generation requires a consistency guide first.",
+                stage=start_stage,
+            ))
+        if not self._path_exists(episode.get("timeline_draft_path")):
+            blockers.append(self._queue_issue(
+                "missing_timeline_draft",
+                "Prompt generation requires a timeline draft first.",
+                stage=start_stage,
+            ))
+        return blockers
+
+    def _check_timeline_mapping_blockers(self, start_stage: str, episode: dict[str, Any], configured_languages: list[str], language_statuses: dict[str, Any]) -> list[dict[str, Any]]:
+        blockers = []
+        if not self._path_exists(episode.get("timeline_draft_path")):
+            blockers.append(self._queue_issue(
+                "missing_timeline_draft",
+                "Timeline mapping requires the master timeline draft first.",
+                stage=start_stage,
+            ))
+        missing_timeline_inputs = [
+            language_code
+            for language_code in configured_languages
+            if not self._path_exists(language_statuses.get(language_code, {}).get("srt_path"))
+        ]
+        if missing_timeline_inputs:
+            blockers.append(self._queue_issue(
+                "missing_srt_assets",
+                (
+                    "Timeline mapping requires aligned SRT files for "
+                    f"{self._language_list_text(missing_timeline_inputs)}."
+                ),
+                stage=start_stage,
+            ))
+        return blockers
+
     def _build_start_stage_blockers(self, episode: dict[str, Any], start_stage: str) -> list[dict[str, Any]]:
         episode_id = episode["id"]
         master_language = str(episode.get("master_language") or "en").strip() or "en"
@@ -384,102 +490,21 @@ class Tool1Service:
             status["language_code"]: status
             for status in self.db.get_episode_language_statuses(episode_id)
         }
-        blockers: list[dict[str, Any]] = []
 
         if start_stage == "tts":
-            missing_scripts = [
-                language_code
-                for language_code in configured_languages
-                if language_code != master_language
-                and (
-                    str(language_statuses.get(language_code, {}).get("translation_status") or "").lower() != "done"
-                    or not self._path_has_non_empty_text(language_statuses.get(language_code, {}).get("script_path"))
-                )
-            ]
-            if missing_scripts:
-                blockers.append(self._queue_issue(
-                    "missing_translation_assets",
-                    (
-                        "Start from TTS requires translated scripts for "
-                        f"{self._language_list_text(missing_scripts)}."
-                    ),
-                    stage=start_stage,
-                ))
+            return self._check_tts_blockers(start_stage, master_language, configured_languages, language_statuses)
+        elif start_stage == "alignment":
+            return self._check_alignment_blockers(start_stage, configured_languages, language_statuses)
+        elif start_stage == "chunking":
+            return self._check_chunking_blockers(start_stage, master_language, language_statuses)
+        elif start_stage == "scene_planning":
+            return self._check_scene_planning_blockers(start_stage, episode)
+        elif start_stage in {"video_prompt_generation", "image_prompt_generation"}:
+            return self._check_prompt_generation_blockers(start_stage, episode)
+        elif start_stage == "timeline_mapping":
+            return self._check_timeline_mapping_blockers(start_stage, episode, configured_languages, language_statuses)
 
-        if start_stage == "alignment":
-            missing_alignment_inputs = [
-                language_code
-                for language_code in configured_languages
-                if not self._path_exists(language_statuses.get(language_code, {}).get("tts_audio_path"))
-                or not self._path_has_non_empty_text(
-                    language_statuses.get(language_code, {}).get("spoken_script_path")
-                    or language_statuses.get(language_code, {}).get("script_path")
-                )
-            ]
-            if missing_alignment_inputs:
-                blockers.append(self._queue_issue(
-                    "missing_tts_assets",
-                    (
-                        "Start from alignment requires narration audio and script files for "
-                        f"{self._language_list_text(missing_alignment_inputs)}."
-                    ),
-                    stage=start_stage,
-                ))
-
-        if start_stage == "chunking":
-            master_status = language_statuses.get(master_language, {})
-            if not self._path_exists(master_status.get("srt_path")):
-                blockers.append(self._queue_issue(
-                    "missing_master_srt",
-                    "Start from chunking requires the master-language SRT from alignment.",
-                    stage=start_stage,
-                    language_code=master_language,
-                ))
-
-        if start_stage == "scene_planning" and not self._path_exists(episode.get("planning_manifest_path")):
-            blockers.append(self._queue_issue(
-                "missing_planning_manifest",
-                "Start from scene planning requires chunking output first.",
-                stage=start_stage,
-            ))
-
-        if start_stage in {"video_prompt_generation", "image_prompt_generation"}:
-            if not self._path_exists(episode.get("consistency_guide_path")):
-                blockers.append(self._queue_issue(
-                    "missing_consistency_guide",
-                    "Prompt generation requires a consistency guide first.",
-                    stage=start_stage,
-                ))
-            if not self._path_exists(episode.get("timeline_draft_path")):
-                blockers.append(self._queue_issue(
-                    "missing_timeline_draft",
-                    "Prompt generation requires a timeline draft first.",
-                    stage=start_stage,
-                ))
-
-        if start_stage == "timeline_mapping":
-            if not self._path_exists(episode.get("timeline_draft_path")):
-                blockers.append(self._queue_issue(
-                    "missing_timeline_draft",
-                    "Timeline mapping requires the master timeline draft first.",
-                    stage=start_stage,
-                ))
-            missing_timeline_inputs = [
-                language_code
-                for language_code in configured_languages
-                if not self._path_exists(language_statuses.get(language_code, {}).get("srt_path"))
-            ]
-            if missing_timeline_inputs:
-                blockers.append(self._queue_issue(
-                    "missing_srt_assets",
-                    (
-                        "Timeline mapping requires aligned SRT files for "
-                        f"{self._language_list_text(missing_timeline_inputs)}."
-                    ),
-                    stage=start_stage,
-                ))
-
-        return blockers
+        return []
 
     def _reset_episode_outputs_from_stage(self, episode_id: str, start_stage: str) -> None:
         episode = self._hydrate_episode_record(self.db.get_episode(episode_id))
