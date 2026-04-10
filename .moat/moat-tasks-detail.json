@@ -118,5 +118,20 @@
     "screenshotPath": "./screenshots/moat-1775175974654-dqwv394r0.png",
     "status": "done",
     "timestamp": 1775175974814
+  },
+  {
+    "id": "3ab434ab-d7c7-43f8-a6ed-662782227e9c",
+    "title": "Container #view",
+    "comment": "this hole section need a redesign, there many visual problems",
+    "selector": "#view",
+    "boundingRect": {
+      "x": 68,
+      "y": 87,
+      "w": 1837,
+      "h": 955
+    },
+    "screenshotPath": "./screenshots/moat-1775796268439-0xti5fb9h.png",
+    "status": "done",
+    "timestamp": 1775796268563
   }
 ]

@@ -1109,6 +1109,115 @@ body[data-theme="light"] .board-modal-shell {
   background: var(--panel-soft);
 }
 
+/* ── Settings page redesign ─────────────────────────────────────── */
+
+.settings-page {
+  display: grid;
+  gap: 28px;
+}
+
+.settings-page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.settings-section {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.10em;
+  color: var(--muted);
+}
+
+.settings-model-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+.settings-config-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+
+.settings-config-grid .setup-card-wide {
+  grid-column: span 2;
+}
+
+
+.settings-runtime {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+
+.settings-runtime-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-runtime-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.settings-runtime-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+}
+
+.settings-runtime-item {
+  display: grid;
+  gap: 3px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.settings-runtime-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.settings-runtime-value {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.settings-runtime-copy {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+.settings-runtime-badges {
+  padding-top: 2px;
+}
+
+/* ── End settings page ───────────────────────────────────────────── */
+
 .workflow-setup-grid {
   display: grid;
   gap: 10px;

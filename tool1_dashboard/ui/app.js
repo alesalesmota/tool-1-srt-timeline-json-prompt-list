@@ -1332,9 +1332,10 @@ function syncAllProviderModelSelects() {
   syncProviderModelSelect("niche-image_prompt-provider", "niche-image_prompt-model");
 }
 
-function renderSetupCard({ icon, title, copy, fields, tone = "neutral", compact = false }) {
+function renderSetupCard({ icon, title, copy, fields, tone = "neutral", compact = false, wide = false }) {
+  const classes = ["setup-card", compact ? "setup-card-compact" : "", wide ? "setup-card-wide" : ""].filter(Boolean).join(" ");
   return `
-    <article class="setup-card${compact ? " setup-card-compact" : ""}" data-tone="${esc(tone)}">
+    <article class="${classes}" data-tone="${esc(tone)}">
       <div class="setup-card-head">
         <div class="setup-card-title-row">
           <span class="setup-card-glyph" aria-hidden="true">${iconMarkup(icon)}</span>
@@ -1348,6 +1349,7 @@ function renderSetupCard({ icon, title, copy, fields, tone = "neutral", compact 
     </article>
   `;
 }
+
 
 function renderStageSetupCard({
   icon,
@@ -1363,19 +1365,18 @@ function renderStageSetupCard({
     copy: "",
     tone: "active",
     fields: `
-      <div class="setup-card-field-grid">
-        <label class="field">
-          <span class="field-label">Provider</span>
-          <select id="${esc(providerId)}">${providerOptions(providerValue)}</select>
-        </label>
-        <label class="field">
-          <span class="field-label">Model</span>
-          <select id="${esc(modelId)}" data-provider="${esc(providerValue || "claude")}">${modelOptions(providerValue, modelValue)}</select>
-        </label>
-      </div>
+      <label class="field">
+        <span class="field-label">Provider</span>
+        <select id="${esc(providerId)}">${providerOptions(providerValue)}</select>
+      </label>
+      <label class="field">
+        <span class="field-label">Model</span>
+        <select id="${esc(modelId)}" data-provider="${esc(providerValue || "claude")}">${modelOptions(providerValue, modelValue)}</select>
+      </label>
     `,
   });
 }
+
 
 function pipelineTone(status) {
   if (status === "running") return "info";
@@ -2243,11 +2244,11 @@ function renderStageProviderOpenAiMeta(stageProviderOpenAi = state.stageProvider
   if (!stageProviderOpenAi) return "";
   const badges = [
     stageProviderOpenAi.hasSavedApiKey
-      ? statusBadge(`Saved key ${stageProviderOpenAi.apiKeyMasked}`, "active")
+      ? statusBadge("Key saved", "active")
       : statusBadge("No saved key", "warn"),
     stageProviderOpenAi.modelCount
       ? statusBadge(
-        `${stageProviderOpenAi.modelCount} cached model${stageProviderOpenAi.modelCount === 1 ? "" : "s"}`,
+        `${stageProviderOpenAi.modelCount} cached models`,
         "success"
       )
       : "",
@@ -2265,6 +2266,7 @@ function renderStageProviderOpenAiMeta(stageProviderOpenAi = state.stageProvider
     </div>
   `;
 }
+
 
 function renderStageProviderOpenAiStatus(stageProviderOpenAi = state.stageProviderOpenAi) {
   if (!stageProviderOpenAi) return "";
@@ -4415,18 +4417,76 @@ function renderSettings() {
   const workerHealth = state.workerHealth || {};
   const workerInfo = describeWorkerHealth(workerHealth);
   const appStartedAt = appRuntime.started_at ? formatDate(appRuntime.started_at) : null;
+
+  const runtimeItems = [
+    {
+      label: "App shell",
+      value: appRuntimeModeLabel(appRuntime),
+      copy: appRuntime.close_copy || null,
+    },
+    {
+      label: "App process",
+      value: appRuntime.pid ? `PID ${appRuntime.pid}` : "Unknown",
+      copy: appRuntimeProcessCopy(appRuntime) || null,
+    },
+    {
+      label: "Voice engine",
+      value: workerLifecycleLabel(workerHealth),
+      copy: workerInfo.copy || workerInfo.meta || null,
+    },
+    {
+      label: "OpenAI API",
+      value: openaiHealth.has_api_key ? "Ready" : "Key needed",
+      copy: openaiHealth.has_api_key && openaiHealth.model_count
+        ? `${openaiHealth.model_count} model${openaiHealth.model_count === 1 ? "" : "s"} cached`
+        : null,
+    },
+    {
+      label: "Claude CLI",
+      value: state.health?.providers?.claude?.logged_in
+        ? "Ready"
+        : state.health?.providers?.claude?.available
+          ? "Login needed"
+          : "Not installed",
+      copy: null,
+    },
+  ];
+
+  const runtimeCards = runtimeItems.map((item) => `
+    <div class="settings-runtime-item">
+      <div class="settings-runtime-label">${esc(item.label)}</div>
+      <div class="settings-runtime-value">${esc(item.value)}</div>
+      ${item.copy ? `<div class="settings-runtime-copy">${esc(item.copy)}</div>` : ""}
+    </div>
+  `).join("");
+
+  const runtimeBadges = [
+    appRuntime.single_instance ? healthBadge("Single instance", true) : "",
+    appStartedAt ? statusBadge(`Started ${appStartedAt.toLocaleString()}`, "neutral") : "",
+    healthBadge(`ffmpeg ${state.health?.alignment?.ffmpeg ? "ready" : "missing"}`, state.health?.alignment?.ffmpeg),
+    healthBadge(`MFA ${state.health?.alignment?.mfa ? "ready" : "check"}`, state.health?.alignment?.mfa ? true : "warn"),
+    healthBadge(`WhisperX ${state.health?.alignment?.whisperx ? "ready" : "check"}`, state.health?.alignment?.whisperx ? true : "warn"),
+  ].filter(Boolean).join("");
+
   $("view").innerHTML = `
-    <section class="split-grid">
-      <section class="surface">
-        <div class="section-head">
-          <div>
-            <div class="eyebrow">Global defaults</div>
-            <h2 class="section-title">Pipeline settings</h2>
-          </div>
+    <div class="settings-page">
+
+      <div class="settings-page-header">
+        <div>
+          <div class="eyebrow">Global defaults</div>
+          <h2 class="section-title">Pipeline settings</h2>
         </div>
-        <form id="settings-form" class="stack">
-          <div class="helper">These are the defaults every new card starts with. You can still override them on a single card later.</div>
-          <div class="workflow-setup-grid">
+        <div class="button-row">
+          <button type="submit" form="settings-form" class="button button-primary has-icon">${iconContent("save", "Save settings")}</button>
+          <button type="button" class="button has-icon" data-nav="templates">${iconContent("templates", "Templates")}</button>
+        </div>
+      </div>
+
+      <form id="settings-form">
+
+        <div class="settings-section">
+          <div class="settings-section-label">AI models</div>
+          <div class="settings-model-grid">
             ${renderStageSetupCard({
               icon: "scene",
               title: "Scene planning",
@@ -4459,42 +4519,22 @@ function renderSettings() {
               modelId: "settings-image-model",
               modelValue: settings.default_image_prompt_model || "gpt-5.4",
             })}
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-label">Pipeline configuration</div>
+          <div class="settings-config-grid">
             ${renderSetupCard({
               icon: "timeline",
               title: "Output strategy",
               copy: "",
-              tone: "warn",
+              tone: "neutral",
               fields: `
                 <label class="field">
                   <span class="field-label">Video-first scenes</span>
                   <input id="settings-leading-video" type="number" min="0" value="${esc(settings.leading_video_scene_count || 20)}" />
                 </label>
-              `,
-            })}
-          </div>
-          <div class="workflow-setup-grid workflow-setup-grid-compact">
-            ${renderSetupCard({
-              icon: "refresh",
-              title: "OpenAI workflow access",
-              copy: "",
-              tone: stageProviderOpenAi.hasSavedApiKey ? "active" : "warn",
-              fields: `
-                <label class="field">
-                  <span class="field-label">OpenAI API key</span>
-                  <input
-                    id="stage-provider-openai-api-key"
-                    type="password"
-                    value="${esc(stageProviderOpenAi.apiKeyDraft)}"
-                    placeholder="${stageProviderOpenAi.hasSavedApiKey ? "Leave blank to keep the saved key" : "Paste an OpenAI key"}"
-                    autocomplete="off"
-                    spellcheck="false"
-                  />
-                </label>
-                ${renderStageProviderOpenAiMeta(stageProviderOpenAi)}
-                <div class="button-row translation-discovery-actions">
-                  <button type="button" class="button has-icon" id="stage-provider-openai-discover-button" data-stage-provider-openai-discover="true">${iconContent("refresh", stageProviderOpenAi.modelCount ? "Refresh models" : "Check key")}</button>
-                </div>
-                <div id="stage-provider-openai-status">${renderStageProviderOpenAiStatus(stageProviderOpenAi)}</div>
               `,
             })}
             ${renderSetupCard({
@@ -4530,56 +4570,44 @@ function renderSettings() {
                 </label>
               `,
             })}
+            ${renderSetupCard({
+              icon: "refresh",
+              title: "OpenAI API access",
+              copy: "",
+              tone: stageProviderOpenAi.hasSavedApiKey ? "active" : "warn",
+              wide: true,
+              fields: `
+                <label class="field">
+                  <span class="field-label">API key</span>
+                  <input
+                    id="stage-provider-openai-api-key"
+                    type="password"
+                    value="${esc(stageProviderOpenAi.apiKeyDraft)}"
+                    placeholder="${stageProviderOpenAi.hasSavedApiKey ? "Leave blank to keep saved key" : "Paste an OpenAI key"}"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                </label>
+                ${renderStageProviderOpenAiMeta(stageProviderOpenAi)}
+                <button type="button" class="button has-icon button-small" id="stage-provider-openai-discover-button" data-stage-provider-openai-discover="true">${iconContent("refresh", stageProviderOpenAi.modelCount ? "Refresh models" : "Check key")}</button>
+                <div id="stage-provider-openai-status">${renderStageProviderOpenAiStatus(stageProviderOpenAi)}</div>
+              `,
+            })}
           </div>
-          <div class="button-row">
-            <button type="submit" class="button button-primary has-icon">${iconContent("save", "Save settings")}</button>
-            <button type="button" class="button has-icon" data-nav="templates">${iconContent("templates", "Open templates")}</button>
-          </div>
-        </form>
-      </section>
+        </div>
 
-      <section class="surface">
-        <div class="section-head">
-          <div>
-            <div class="eyebrow">Health</div>
-            <h2 class="section-title">Runtime overview</h2>
-          </div>
+      </form>
+
+      <div class="settings-runtime">
+        <div class="settings-runtime-header">
+          <span class="eyebrow">Health</span>
+          <span class="settings-runtime-title">Runtime</span>
         </div>
-        <div class="provider-grid">
-          <article class="summary-card">
-            <div class="metric-label">App shell</div>
-            <div class="metric-value">${esc(appRuntimeModeLabel(appRuntime))}</div>
-            ${appRuntime.close_copy ? `<div class="metric-copy">${esc(appRuntime.close_copy)}</div>` : ""}
-          </article>
-          <article class="summary-card">
-            <div class="metric-label">App process</div>
-            <div class="metric-value">${esc(appRuntime.pid ? `PID ${appRuntime.pid}` : "Unknown")}</div>
-            <div class="metric-copy">${esc(appRuntimeProcessCopy(appRuntime) || "Runtime metadata unavailable")}</div>
-          </article>
-          <article class="summary-card">
-            <div class="metric-label">Voice engine</div>
-            <div class="metric-value">${esc(workerLifecycleLabel(workerHealth))}</div>
-            <div class="metric-copy">${esc(workerInfo.copy || workerInfo.meta || "No voice-engine activity detected.")}</div>
-          </article>
-          <article class="summary-card">
-            <div class="metric-label">OpenAI API</div>
-            <div class="metric-value">${esc(openaiHealth.has_api_key ? "Ready" : "Key needed")}</div>
-            ${openaiHealth.has_api_key && openaiHealth.model_count ? `<div class="metric-copy">${esc(openaiHealth.model_count)} model${openaiHealth.model_count === 1 ? "" : "s"} cached</div>` : ""}
-          </article>
-          <article class="summary-card">
-            <div class="metric-label">Claude CLI</div>
-            <div class="metric-value">${esc(state.health?.providers?.claude?.logged_in ? "Ready" : state.health?.providers?.claude?.available ? "Login needed" : "Not installed")}</div>
-          </article>
-        </div>
-        <div class="badge-row" style="margin-top:16px;">
-          ${appRuntime.single_instance ? healthBadge("single app instance enforced", true) : ""}
-          ${appStartedAt ? statusBadge(`Started ${appStartedAt.toLocaleString()}`, "neutral") : ""}
-          ${healthBadge(`ffmpeg ${state.health?.alignment?.ffmpeg ? "ready" : "missing"}`, state.health?.alignment?.ffmpeg)}
-          ${healthBadge(`MFA ${state.health?.alignment?.mfa ? "ready" : "check"}`, state.health?.alignment?.mfa ? true : "warn")}
-          ${healthBadge(`WhisperX ${state.health?.alignment?.whisperx ? "ready" : "check"}`, state.health?.alignment?.whisperx ? true : "warn")}
-        </div>
-      </section>
-    </section>
+        <div class="settings-runtime-grid">${runtimeCards}</div>
+        ${runtimeBadges ? `<div class="badge-row settings-runtime-badges">${runtimeBadges}</div>` : ""}
+      </div>
+
+    </div>
   `;
 }
 
