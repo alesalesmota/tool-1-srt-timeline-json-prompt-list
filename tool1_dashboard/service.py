@@ -3096,7 +3096,6 @@ class Tool1Service:
         episode = self.db.get_episode(episode_id)
         if episode is None:
             raise FileNotFoundError("Episode not found.")
-        workspace = self._episode_workspace(episode)
 
         # Consistency guide
         guide_path = episode.get("consistency_guide_path")

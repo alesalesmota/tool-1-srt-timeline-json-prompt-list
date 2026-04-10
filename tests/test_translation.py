@@ -465,7 +465,7 @@ class TranslationServiceTests(unittest.TestCase):
             {"scene_id": "s1", "text": " ".join(["word"] * 500)},
             {"scene_id": "s2", "text": " ".join(["word"] * 500)},
         ]
-        result = self._run_async(svc.translate_script(
+        self._run_async(svc.translate_script(
             source_script="",
             source_lang="English",
             target_lang="Spanish",
