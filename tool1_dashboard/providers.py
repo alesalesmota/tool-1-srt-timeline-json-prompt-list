@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 import httpx
 import json
 import os
@@ -19,6 +20,16 @@ class CliExecutionError(RuntimeError):
         super().__init__(message)
         self.stdout = stdout
         self.stderr = stderr
+
+
+@dataclass
+class StreamingArgs:
+    command: list[str]
+    stdin_text: str
+    stdout_path: Path
+    stderr_path: Path
+    cwd: Path
+    timeout_seconds: float | None = None
 
 
 class CliRunner:
@@ -163,14 +174,15 @@ class CliRunner:
                 "--json-schema",
                 json.dumps(schema, ensure_ascii=False),
             ]
-            returncode, stdout_text, stderr_text = self._run_streaming(
-                command,
-                user_prompt,
-                stdout_path,
-                stderr_path,
-                workdir,
+            args = StreamingArgs(
+                command=command,
+                stdin_text=user_prompt,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                cwd=workdir,
                 timeout_seconds=self._structured_timeout_seconds,
             )
+            returncode, stdout_text, stderr_text = self._run_streaming(args)
             if returncode != 0:
                 raise CliExecutionError(
                     self._build_cli_error_message("claude", stdout_text, stderr_text),
@@ -294,40 +306,32 @@ class CliRunner:
         return payload
 
     @staticmethod
-    def _run_streaming(
-        command: list[str],
-        stdin_text: str,
-        stdout_path: Path,
-        stderr_path: Path,
-        cwd: Path,
-        *,
-        timeout_seconds: float | None = None,
-    ) -> tuple[int, str, str]:
+    def _run_streaming(args: StreamingArgs) -> tuple[int, str, str]:
         """Run a subprocess while streaming stdout/stderr to files in real-time."""
-        with open(stdout_path, "w", encoding="utf-8", errors="replace") as out_f, \
-             open(stderr_path, "w", encoding="utf-8", errors="replace") as err_f:
+        with open(args.stdout_path, "w", encoding="utf-8", errors="replace") as out_f, \
+             open(args.stderr_path, "w", encoding="utf-8", errors="replace") as err_f:
             proc = subprocess.Popen(
-                command,
+                args.command,
                 stdin=subprocess.PIPE,
                 stdout=out_f,
                 stderr=err_f,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                cwd=cwd,
+                cwd=args.cwd,
             )
-            if stdin_text:
+            if args.stdin_text:
                 try:
-                    proc.stdin.write(stdin_text)
+                    proc.stdin.write(args.stdin_text)
                     proc.stdin.close()
                 except BrokenPipeError:
                     pass
             timed_out = False
             try:
-                proc.wait(timeout=timeout_seconds)
+                proc.wait(timeout=args.timeout_seconds)
             except subprocess.TimeoutExpired:
                 timed_out = True
-                timeout_message = f"CLI execution timed out after {int(timeout_seconds or 0)} seconds."
+                timeout_message = f"CLI execution timed out after {int(args.timeout_seconds or 0)} seconds."
                 try:
                     if os.name == "nt":
                         subprocess.run(
@@ -351,8 +355,8 @@ class CliRunner:
                     pass
                 err_f.write(("\n" if err_f.tell() else "") + timeout_message + "\n")
                 err_f.flush()
-        stdout_text = read_text(stdout_path)
-        stderr_text = read_text(stderr_path)
+        stdout_text = read_text(args.stdout_path)
+        stderr_text = read_text(args.stderr_path)
         returncode = proc.returncode
         if timed_out and returncode is None:
             returncode = -1
