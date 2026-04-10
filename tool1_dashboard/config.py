@@ -149,6 +149,7 @@ DEFAULT_SETTINGS = {
     # Translation defaults
     "translation_chunk_max_words": 800,
     "translation_context_tail_words": 200,
+    "translation_ai_review_enabled": False,
     # TTS defaults
     "tts_chunk_max_chars": 200,
     "tts_audio_sample_rate": 24000,

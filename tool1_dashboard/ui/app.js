@@ -3862,10 +3862,17 @@ function renderEpisodeDetail() {
     const hasTranslation = ls.translation_status === "done" && ls.language_code !== (episode.master_language || "en");
     const ttsProgressLabel = languageTtsJobCopy(ls);
     const ttsProgress = ttsProgressLabel ? ' <span class="helper" style="font-size:0.7rem;">(' + esc(ttsProgressLabel) + ')</span>' : '';
+    const translationIssueBadge = ls.translation_issue_category ? renderTranslationIssueBadge({ category: ls.translation_issue_category }) : '';
+    const translationErrorCopy = [
+      ls.translation_issue_message ? '<div class="helper">' + esc(ls.translation_issue_message) + '</div>' : '',
+      ls.translation_issue_next_action ? '<div class="helper">Next: ' + esc(ls.translation_issue_next_action) + '</div>' : '',
+      !ls.translation_issue_message && ls.error_message ? '<div class="helper">' + esc(ls.error_message || "") + '</div>' : '',
+    ].filter(Boolean).join("");
 
     return '<tr>' +
       '<td><strong>' + esc(ls.language_code) + '</strong></td>' +
       '<td>' + langStatusBadge(ls.translation_status) +
+        (translationIssueBadge ? ' ' + translationIssueBadge : '') +
         (hasTranslation ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-preview-translation="' + esc(episode.id) + '" data-preview-lang="' + esc(ls.language_code) + '">Preview</button>' : '') +
         (canRetryTranslation ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="translation">Retry</button>' : '') +
       '</td>' +
@@ -3878,7 +3885,7 @@ function renderEpisodeDetail() {
       '<td>' + langStatusBadge(ls.timeline_status) +
         (canRetryTimeline ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="timeline_mapping">Retry</button>' : '') +
       '</td>' +
-      '<td class="helper" style="font-size:0.75rem;">' + esc(ls.error_message || "") + '</td>' +
+      '<td class="helper translation-error-cell" style="font-size:0.75rem;">' + translationErrorCopy + '</td>' +
     '</tr>';
   }).join("");
 
@@ -4331,13 +4338,35 @@ function renderTranslationPreviewModal() {
   const preview = state.translationPreview;
   if (!preview) return '';
   const statusBadgeHtml = langStatusBadge(preview.translation_status);
+  const diagnostics = preview.diagnostics || {};
+  const blockers = Array.isArray(diagnostics.blockers) ? diagnostics.blockers : [];
+  const warnings = Array.isArray(diagnostics.warnings) ? diagnostics.warnings : [];
+  const reviewMeta = preview.review_enabled
+    ? '<span class="badge badge-info">AI review on</span>'
+    : '<span class="badge badge-neutral">AI review off</span>';
+  const metaRow = [
+    preview.provider ? '<span class="badge badge-neutral">Provider: ' + esc(providerLabel(preview.provider)) + '</span>' : '',
+    preview.model ? '<span class="badge badge-neutral">Model: ' + esc(preview.model) + '</span>' : '',
+    reviewMeta,
+  ].filter(Boolean).join("");
   const logSummary = (preview.translation_log || []).map((c) =>
-    '<div class="helper" style="font-size:0.75rem;">' +
-      'Chunk ' + c.chunk_index + ': ' + c.words_in + ' → ' + c.words_out + ' words ' +
-      '<span class="badge badge-' + (c.status === "ok" ? "success" : "error") + '" style="font-size:0.65rem;">' + esc(c.status) + '</span>' +
-      (c.error ? ' <span class="helper" style="color:var(--error);">' + esc(c.error) + '</span>' : '') +
+    '<div class="translation-log-row">' +
+      '<div class="translation-log-row-head">' +
+        '<strong>Chunk ' + esc(String((Number(c.chunk_index) || 0) + 1)) + '</strong>' +
+        '<span class="helper">' + esc(String(c.words_in || 0)) + ' → ' + esc(String(c.words_out || 0)) + ' words</span>' +
+        '<span class="badge badge-' + (c.status === "ok" ? "success" : "error") + '" style="font-size:0.65rem;">' + esc(c.status) + '</span>' +
+        (c.category ? renderTranslationIssueBadge({ category: c.category }) : '') +
+      '</div>' +
+      ((c.error || c.next_action || c.offending_excerpt)
+        ? '<div class="translation-log-row-copy">' +
+            (c.error ? '<div class="helper" style="color:var(--error);">' + esc(c.error) + '</div>' : '') +
+            (c.offending_excerpt ? '<div class="helper">Excerpt: ' + esc(c.offending_excerpt) + '</div>' : '') +
+            (c.next_action ? '<div class="helper">Next: ' + esc(c.next_action) + '</div>' : '') +
+          '</div>'
+        : '') +
     '</div>'
   ).join("");
+  const diagnosticsHtml = renderTranslationDiagnosticsSection(blockers, warnings, preview.error_message);
 
   return `
     <div class="modal-backdrop" data-modal-backdrop="true">
@@ -4346,6 +4375,8 @@ function renderTranslationPreviewModal() {
           <h2>Translation Preview — ${esc(preview.language_code)} ${statusBadgeHtml}</h2>
           <button type="button" class="button button-ghost icon-only" data-close-modal="true">${iconContent("close", "Close", { iconOnly: true })}</button>
         </div>
+        ${metaRow ? '<div class="badge-row translation-preview-meta">' + metaRow + '</div>' : ''}
+        ${diagnosticsHtml}
         <div class="translation-preview-grid">
           <div class="translation-preview-col">
             <div class="eyebrow">Original</div>
@@ -4360,6 +4391,72 @@ function renderTranslationPreviewModal() {
       </div>
     </div>
   `;
+}
+
+function translationIssueLabel(category) {
+  const normalized = String(category || "").trim();
+  if (!normalized) return "";
+  const labels = {
+    quota_exceeded: "Quota exceeded",
+    invalid_api_key: "Invalid API key",
+    rate_limited: "Rate limited",
+    network_timeout: "Timeout",
+    empty_output: "Empty output",
+    source_text_leak: "Source text leaked",
+    english_cta_leak: "English CTA leaked",
+    source_channel_leak: "Source channel leaked",
+    missing_target_channel_name: "Target channel missing",
+    digits_present: "Digits found",
+    gibberish_output: "Gibberish output",
+    suspicious_length: "Suspicious length",
+    language_rule_violation: "Language rule",
+    ai_review_failed: "AI review failed",
+    ai_review_notice: "AI review note",
+    provider_error: "Provider error",
+    system_error: "System error",
+  };
+  return labels[normalized] || titleCase(normalized.replace(/_/g, " "));
+}
+
+function translationIssueTone(category) {
+  const normalized = String(category || "").trim();
+  if (["quota_exceeded", "rate_limited", "network_timeout"].includes(normalized)) return "warn";
+  if (normalized === "ai_review_notice") return "info";
+  if (!normalized) return "neutral";
+  return "error";
+}
+
+function renderTranslationIssueBadge(issue) {
+  const category = String(issue?.category || "").trim();
+  if (!category) return "";
+  return '<span class="badge badge-' + translationIssueTone(category) + ' translation-issue-badge">' + esc(translationIssueLabel(category)) + '</span>';
+}
+
+function renderTranslationDiagnosticsSection(blockers, warnings, fallbackMessage) {
+  const renderItems = (items, title) => {
+    if (!items.length) return "";
+    return '<div class="translation-diagnostic-section">' +
+      '<div class="eyebrow">' + esc(title) + '</div>' +
+      items.map((item) =>
+        '<div class="translation-diagnostic-card">' +
+          '<div class="translation-diagnostic-head">' +
+            renderTranslationIssueBadge(item) +
+            '<strong>' + esc(item.message || translationIssueLabel(item.category) || "Issue") + '</strong>' +
+          '</div>' +
+          (item.offending_excerpt ? '<div class="helper">Excerpt: ' + esc(item.offending_excerpt) + '</div>' : '') +
+          (item.next_action ? '<div class="helper">Next: ' + esc(item.next_action) + '</div>' : '') +
+        '</div>'
+      ).join("") +
+    '</div>';
+  };
+
+  const sections = [
+    renderItems(blockers || [], "Blockers"),
+    renderItems(warnings || [], "Warnings"),
+  ].filter(Boolean).join("");
+  if (sections) return '<div class="translation-diagnostics-shell">' + sections + '</div>';
+  if (!fallbackMessage) return "";
+  return '<div class="notice" data-tone="error" style="margin:12px 0 0;">' + esc(fallbackMessage) + '</div>';
 }
 
 function langStatusBadge(status) {

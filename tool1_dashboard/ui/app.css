@@ -3434,8 +3434,65 @@ details.editor-card summary::-webkit-details-marker {
   margin-top: 12px;
 }
 
+.translation-preview-meta {
+  margin-top: 6px;
+}
+
+.translation-diagnostics-shell {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.translation-diagnostic-section {
+  display: grid;
+  gap: 8px;
+}
+
+.translation-diagnostic-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+}
+
+.translation-diagnostic-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.translation-log-row {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  margin-top: 8px;
+}
+
+.translation-log-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.translation-log-row-copy {
+  display: grid;
+  gap: 4px;
+}
+
 @media (max-width: 980px) {
   .project-config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .translation-preview-grid {
     grid-template-columns: 1fr;
   }
 
@@ -3459,6 +3516,14 @@ details.editor-card summary::-webkit-details-marker {
   border-radius: 8px;
   background: var(--panel-strong);
   border: 1px solid var(--line);
+}
+
+.translation-error-cell {
+  min-width: 220px;
+}
+
+.translation-issue-badge {
+  vertical-align: middle;
 }
 
 .review-editors-grid {

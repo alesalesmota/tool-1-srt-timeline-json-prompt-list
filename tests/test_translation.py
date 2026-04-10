@@ -562,10 +562,9 @@ class TranslationServiceTests(unittest.TestCase):
         self.assertEqual(result.status, "done")
         self.assertEqual(result.translated_script, "")
 
-    def test_mixed_language_chunk_is_repaired_before_acceptance(self):
+    def test_mixed_language_chunk_fails_deterministic_validation(self):
         adapter = self._make_fake_adapter([
             "This source paragraph should not remain untranslated.\n\nEste parrafo aun no sirve.",
-            "Este parrafo ya fue traducido correctamente.",
         ])
         svc = TranslationService(adapter=adapter)
         result = self._run_async(svc.translate_script(
@@ -576,13 +575,14 @@ class TranslationServiceTests(unittest.TestCase):
             api_key="fake",
             model="gpt-5-nano",
         ))
-        self.assertEqual(result.status, "done")
-        self.assertEqual(result.translated_script, "Este parrafo ya fue traducido correctamente.")
-        self.assertEqual(result.chunk_results[0].status, "ok")
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.chunk_results[0].status, "error")
+        self.assertEqual(result.chunk_results[0].category, "source_text_leak")
+        self.assertIn("untranslated source paragraphs", (result.error_message or "").lower())
 
-    def test_inflated_duplicate_chunk_fails_after_repair_attempt(self):
+    def test_inflated_duplicate_chunk_fails_deterministic_validation(self):
         duplicate = "Hello world. " * 120
-        adapter = self._make_fake_adapter([duplicate, duplicate])
+        adapter = self._make_fake_adapter([duplicate])
         svc = TranslationService(adapter=adapter)
         result = self._run_async(svc.translate_script(
             source_script="Hello world.",
@@ -594,7 +594,42 @@ class TranslationServiceTests(unittest.TestCase):
         ))
         self.assertEqual(result.status, "error")
         self.assertEqual(result.chunk_results[0].status, "error")
-        self.assertIn("quality check failed", (result.error_message or "").lower())
+        self.assertEqual(result.chunk_results[0].category, "suspicious_length")
+        self.assertIn("suspiciously long", (result.error_message or "").lower())
+
+    def test_digits_in_translation_fail_deterministic_validation(self):
+        adapter = self._make_fake_adapter([
+            "Tengo 2 manzanas y 3 naranjas.",
+        ])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="I have two apples and three oranges.",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+        ))
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.chunk_results[0].category, "digits_present")
+        assert result.diagnostics is not None
+        self.assertEqual(result.diagnostics["blockers"][0]["category"], "digits_present")
+
+    def test_gibberish_output_fails_deterministic_validation(self):
+        adapter = self._make_fake_adapter([
+            "xqtrplmn xqtrplmn xqtrplmn",
+        ])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="This should be narrated naturally.",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+        ))
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.chunk_results[0].category, "gibberish_output")
 
     def test_hybrid_judge_accepts_good_output(self):
         adapter = self._make_fake_adapter([
@@ -615,13 +650,13 @@ class TranslationServiceTests(unittest.TestCase):
         self.assertEqual(result.status, "done")
         assert result.review_report is not None
         self.assertTrue(result.review_report["passed"])
+        assert result.diagnostics is not None
+        self.assertTrue(result.diagnostics["review_enabled"])
 
-    def test_judge_triggered_script_repair_runs_once(self):
+    def test_judge_rejection_fails_without_script_repair(self):
         adapter = self._make_fake_adapter([
             "Le texte est compréhensible.",
             '{"passed": false, "issues": ["The narration sounds too literal."], "scores": {"fluency": 3, "naturalness": 2, "faithfulness": 4, "cta_quality": 5, "channel_name_compliance": 5}, "summary": "Too literal."}',
-            "Le texte sonne naturellement.",
-            '{"passed": true, "issues": [], "scores": {"fluency": 5, "naturalness": 5, "faithfulness": 4, "cta_quality": 5, "channel_name_compliance": 5}, "summary": "Fixed."}',
         ])
         svc = TranslationService(adapter=adapter)
         result = self._run_async(svc.translate_script(
@@ -634,8 +669,10 @@ class TranslationServiceTests(unittest.TestCase):
             reviewer_required=True,
             reviewer_api_key="judge-key",
         ))
-        self.assertEqual(result.status, "done")
-        self.assertEqual(result.translated_script, "Le texte sonne naturellement.")
+        self.assertEqual(result.status, "error")
+        assert result.diagnostics is not None
+        self.assertEqual(result.diagnostics["blockers"][0]["category"], "ai_review_failed")
+        self.assertIn("too literal", result.diagnostics["blockers"][0]["message"].lower())
 
     def test_review_false_positive_channel_name_is_pruned_and_high_scores_pass(self):
         adapter = self._make_fake_adapter([
@@ -681,6 +718,8 @@ class TranslationServiceTests(unittest.TestCase):
         assert result.review_report is not None
         self.assertTrue(result.review_report["passed"])
         self.assertEqual(result.review_report["issues"], ["Minor phrasing suggestion."])
+        assert result.diagnostics is not None
+        self.assertEqual(result.diagnostics["warnings"][0]["category"], "ai_review_notice")
 
     def test_judge_unavailable_fails_closed(self):
         adapter = self._make_fake_adapter([
@@ -699,7 +738,9 @@ class TranslationServiceTests(unittest.TestCase):
             reviewer_api_key="judge-key",
         ))
         self.assertEqual(result.status, "error")
-        self.assertIn("judge unavailable", (result.error_message or "").lower())
+        self.assertIn("ai review failed", (result.error_message or "").lower())
+        assert result.diagnostics is not None
+        self.assertEqual(result.diagnostics["blockers"][0]["scope"], "review")
 
 
 class TranslationValidationTests(unittest.TestCase):
@@ -902,6 +943,78 @@ class TranslationRetryFlowTests(unittest.TestCase):
         status = self.service.db.get_episode_language_status(episode["id"], "es")
         self.assertTrue(status["spoken_script_path"])
         self.assertTrue(Path(status["spoken_script_path"]).exists())
+
+    def test_translation_preview_returns_diagnostics_payload(self):
+        from tool1_dashboard.runtime import utc_now
+
+        now = utc_now()
+        self.db.create_translation_profile({
+            "id": "tp-preview",
+            "name": "Preview Profile",
+            "provider": "openai",
+            "api_key_ref": "sk-test",
+            "model": "gpt-5-nano",
+            "is_default": 0,
+            "created_at": now,
+            "updated_at": now,
+        })
+        project_payload = self.service.create_niche_project(
+            name="Preview Project",
+            configured_languages=["en", "es"],
+            language_translation_profiles={"es": "tp-preview"},
+        )
+        episode_payload = self.service.submit_episode(
+            project_payload["project"]["id"],
+            title="Preview Episode",
+            script_text="Hello world.",
+        )
+        episode = episode_payload["episode"]
+        result = SimpleNamespace(
+            translated_script="Hola mundo.",
+            status="done",
+            chunk_results=[
+                SimpleNamespace(
+                    chunk_index=0,
+                    scene_ids=[],
+                    translated_text="Hola mundo.",
+                    words_in=2,
+                    words_out=2,
+                    status="ok",
+                    error=None,
+                    provider="openai",
+                    model="gpt-5-nano",
+                    category=None,
+                    offending_excerpt=None,
+                    next_action=None,
+                    diagnostics=[],
+                )
+            ],
+            provider="openai",
+            model="gpt-5-nano",
+            review_enabled=False,
+            diagnostics={
+                "status": "done",
+                "provider": "openai",
+                "model": "gpt-5-nano",
+                "review_enabled": False,
+                "blockers": [],
+                "warnings": [],
+                "recommended_next_action": None,
+                "review_report": None,
+            },
+        )
+        with patch(
+            "tool1_dashboard.translation.TranslationService.translate_script",
+            new=AsyncMock(return_value=result),
+        ):
+            self.service._episode_retry_single_translation(episode["id"], "es")
+
+        preview = self.service.get_translation_preview(episode["id"], "es")
+        self.assertEqual(preview["provider"], "openai")
+        self.assertEqual(preview["model"], "gpt-5-nano")
+        self.assertFalse(preview["review_enabled"])
+        self.assertEqual(preview["diagnostics"]["status"], "done")
+        self.assertEqual(preview["translation_log"][0]["provider"], "openai")
 
 
 class TranslationProfilePresentationTests(unittest.TestCase):
