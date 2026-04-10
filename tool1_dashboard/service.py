@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import httpx
 import json
@@ -115,6 +116,16 @@ STAGE_PROVIDER_OPENAI_MODELS_SETTING = "stage_provider_openai_models_json"
 STAGE_PROVIDER_OPENAI_RECOMMENDED_MODEL_SETTING = "stage_provider_openai_recommended_model"
 STAGE_PROVIDER_OPENAI_SYNCED_AT_SETTING = "stage_provider_openai_models_synced_at"
 
+
+
+@dataclass
+class ClientContext:
+    project: dict[str, Any] | None = None
+    provider_health: dict[str, Any] | None = None
+    voice_profiles: dict[str, dict[str, Any]] | None = None
+    translation_profiles: dict[str, dict[str, Any]] | None = None
+    worker_health: dict[str, Any] | None = None
+    active_tts_job: dict[str, Any] | None = None
 
 class QueueBlockedError(ValueError):
     def __init__(
@@ -1029,31 +1040,28 @@ class Tool1Service:
         self,
         episode: dict[str, Any],
         *,
-        project: dict[str, Any] | None = None,
-        provider_health: dict[str, Any] | None = None,
-        voice_profiles: dict[str, dict[str, Any]] | None = None,
-        translation_profiles: dict[str, dict[str, Any]] | None = None,
-        worker_health: dict[str, Any] | None = None,
-        active_tts_job: dict[str, Any] | None = None,
+        context: ClientContext | None = None,
     ) -> dict[str, Any]:
+        context = context or ClientContext()
         payload = self._hydrate_episode_record(episode) or {}
-        worker_health = worker_health or {}
+
         payload["queue_readiness"] = self._build_queue_readiness(
-            project=project,
+            project=context.project,
             episode=payload,
-            provider_health=provider_health,
-            voice_profiles=voice_profiles,
-            translation_profiles=translation_profiles,
-            worker_health=worker_health,
+            provider_health=context.provider_health,
+            voice_profiles=context.voice_profiles,
+            translation_profiles=context.translation_profiles,
+            worker_health=context.worker_health,
         )
-        payload["active_tts_job"] = active_tts_job
-        payload["tts_worker_device"] = worker_health.get("device")
-        payload["tts_cuda_available"] = worker_health.get("cuda_available")
-        payload["tts_gpu_name"] = worker_health.get("gpu_name")
-        payload["tts_torch_version"] = worker_health.get("torch_version")
-        payload["tts_torch_build"] = worker_health.get("torch_build")
-        payload["tts_active_generate_jobs"] = worker_health.get("active_generate_jobs")
-        payload["tts_queued_generate_jobs"] = worker_health.get("queued_generate_jobs")
+        payload["active_tts_job"] = context.active_tts_job
+        worker_health_dict = context.worker_health or {}
+        payload["tts_worker_device"] = worker_health_dict.get("device")
+        payload["tts_cuda_available"] = worker_health_dict.get("cuda_available")
+        payload["tts_gpu_name"] = worker_health_dict.get("gpu_name")
+        payload["tts_torch_version"] = worker_health_dict.get("torch_version")
+        payload["tts_torch_build"] = worker_health_dict.get("torch_build")
+        payload["tts_active_generate_jobs"] = worker_health_dict.get("active_generate_jobs")
+        payload["tts_queued_generate_jobs"] = worker_health_dict.get("queued_generate_jobs")
         return payload
 
     def _decorate_stage_run_for_client(self, run: dict[str, Any]) -> dict[str, Any]:
@@ -2210,15 +2218,15 @@ class Tool1Service:
 
         # Attach per-episode language statuses
         hydrated_episodes: list[dict[str, Any]] = []
+        context = ClientContext(
+            project=project,
+            provider_health=provider_health,
+            voice_profiles=voice_profiles,
+            translation_profiles=translation_profiles,
+            worker_health=worker_health,
+        )
         for ep in episodes:
-            hydrated = self._decorate_episode_for_client(
-                ep,
-                project=project,
-                provider_health=provider_health,
-                voice_profiles=voice_profiles,
-                translation_profiles=translation_profiles,
-                worker_health=worker_health,
-            )
+            hydrated = self._decorate_episode_for_client(ep, context=context)
             hydrated["language_statuses"] = self.db.get_episode_language_statuses(ep["id"])
             hydrated_episodes.append(hydrated)
 
@@ -2395,7 +2403,7 @@ class Tool1Service:
 
         episode = self._decorate_episode_for_client(
             self.db.get_episode(episode_id) or {},
-            project=self._hydrate_project_record(project),
+            context=ClientContext(project=self._hydrate_project_record(project)),
         )
         return {"episode": episode}
 
@@ -2424,12 +2432,14 @@ class Tool1Service:
         }
         hydrated_episode = self._decorate_episode_for_client(
             episode,
-            project=project,
-            provider_health=provider_health,
-            voice_profiles=voice_profiles,
-            translation_profiles=translation_profiles,
-            worker_health=worker_health,
-            active_tts_job=active_tts_job,
+            context=ClientContext(
+                project=project,
+                provider_health=provider_health,
+                voice_profiles=voice_profiles,
+                translation_profiles=translation_profiles,
+                worker_health=worker_health,
+                active_tts_job=active_tts_job,
+            ),
         )
 
         return {
@@ -2579,12 +2589,14 @@ class Tool1Service:
                 project_cache[project_id] = self._hydrate_project_record(self.db.get_niche_project(project_id))
             decorated = self._decorate_episode_for_client(
                 ep,
-                project=project_cache[project_id],
-                provider_health=provider_health,
-                voice_profiles=voice_profiles,
-                translation_profiles=translation_profiles,
-                worker_health=worker_health,
-                active_tts_job=active_tts_job,
+                context=ClientContext(
+                    project=project_cache[project_id],
+                    provider_health=provider_health,
+                    voice_profiles=voice_profiles,
+                    translation_profiles=translation_profiles,
+                    worker_health=worker_health,
+                    active_tts_job=active_tts_job,
+                ),
             )
             ep.update(decorated)
         return episodes
