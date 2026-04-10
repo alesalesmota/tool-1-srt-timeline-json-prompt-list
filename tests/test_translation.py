@@ -694,9 +694,9 @@ class TranslationServiceTests(unittest.TestCase):
 
 class TranslationValidationTests(unittest.TestCase):
 
-    def test_validated_translation_script_repairs_exact_subscribe_prefix(self):
+    def test_validated_translation_script_preserves_valid_channel_name_output(self):
         result = SimpleNamespace(
-            translated_script="Subscribe to Biblo Viral if you need a community.",
+            translated_script="Suscríbete a Biblo Viral si necesitas una comunidad.",
             status="done",
             chunk_results=[],
         )
@@ -707,7 +707,23 @@ class TranslationValidationTests(unittest.TestCase):
             source_channel_name="True Light",
             target_channel_name="Biblo Viral",
         )
-        self.assertEqual(translated, "Suscríbete a Biblo Viral if you need a community.")
+        self.assertEqual(translated, "Suscríbete a Biblo Viral si necesitas una comunidad.")
+
+    def test_validated_translation_script_rejects_source_channel_name_leak(self):
+        result = SimpleNamespace(
+            translated_script="Suscríbete a True Light si necesitas una comunidad.",
+            status="done",
+            chunk_results=[],
+        )
+        with self.assertRaises(ValueError) as ctx:
+            Tool1Service._validated_translation_script(
+                result,
+                language_code="es",
+                source_script="Subscribe to True Light if you need a community.",
+                source_channel_name="True Light",
+                target_channel_name="Biblo Viral",
+            )
+        self.assertIn("source channel name", str(ctx.exception).lower())
 
     def test_validated_translation_script_rejects_leaked_source_paragraphs(self):
         result = SimpleNamespace(

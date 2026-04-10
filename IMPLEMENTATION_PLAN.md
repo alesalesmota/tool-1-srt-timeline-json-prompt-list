@@ -4,6 +4,16 @@
 > [!IMPORTANT]
 > Historical migration record. This plan is complete and intentionally preserves the old cleanup context from the transition period. Do not treat the phase narrative below as the current architecture source of truth; use `README.md` and `PROJECT_REGISTRY.md` for the live product shape.
 
+## Supplemental implementation note — 2026-04-10 channel-name simplification
+
+Implemented in code and regression-tested on 2026-04-10:
+
+- Channel-name replacement is now prompt-led. Translation, repair, and script-repair prompts explicitly instruct the model to replace the source YouTube channel name with the configured localized name and not partially preserve the source name.
+- The backend no longer rewrites translated scripts after generation with regex source-name swaps or CTA fallback logic.
+- Validation remains in place: if the translated script still contains the source channel name or fails to use the configured localized name when required, the translation is rejected.
+- New niche projects now default `channel_replace_post = false`, and the language-configuration UI no longer presents a second post-translation replacement toggle.
+- Verified with `python -m pytest tests/test_translation.py -q`, `python -m pytest tests/test_video_pipeline.py -q`, `python -m compileall tool1_dashboard`, and `node --check tool1_dashboard/ui/app.js`.
+
 ## Context
 
 Tool 1 is the multilingual video planning pipeline for Creator Studio. The user (Blue) creates niche-based YouTube content (e.g., Religion) and produces the **same episode in multiple languages** for different YouTube channels.

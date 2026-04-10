@@ -268,7 +268,7 @@ class Tool1Database:
                     "source_channel_name": "TEXT NOT NULL DEFAULT ''",
                     "language_channel_names": "TEXT NOT NULL DEFAULT '{}'",
                     "channel_replace_prompt": "INTEGER NOT NULL DEFAULT 1",
-                    "channel_replace_post": "INTEGER NOT NULL DEFAULT 1",
+                    "channel_replace_post": "INTEGER NOT NULL DEFAULT 0",
                 },
             )
             self._ensure_columns(

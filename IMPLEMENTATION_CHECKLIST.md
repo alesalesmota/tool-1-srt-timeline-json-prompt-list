@@ -4,6 +4,13 @@
 > [!IMPORTANT]
 > Historical completed checklist. Keep this for audit/history, but use `README.md` and `PROJECT_REGISTRY.md` for the current app behavior.
 
+## Channel-name Simplification (2026-04-10)
+- [x] Strengthen translation prompts so channel renaming is handled explicitly by the model
+- [x] Remove backend post-translation channel-name/CTA rewrites
+- [x] Keep validation for leaked source channel names and missing configured localized names
+- [x] Simplify the niche-project language config UI to prompt replacement plus validation messaging
+- [x] Verify with `python -m pytest tests/test_translation.py -q`, `python -m pytest tests/test_video_pipeline.py -q`, `python -m compileall tool1_dashboard`, and `node --check tool1_dashboard/ui/app.js`
+
 ## Subtitle Density Hardening (2026-04-04)
 - [x] Replace the greedy subtitle splitter with a deterministic DP readability-first segmenter
 - [x] Add shared subtitle-profile rules to the language rulepacks for `de/es/fr/it`

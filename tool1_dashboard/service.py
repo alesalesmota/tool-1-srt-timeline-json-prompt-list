@@ -62,7 +62,6 @@ from .srt_chunker.srt_io import parse_srt_text
 from .templates import TemplateStore
 from .translation.language_rules import build_spoken_script
 from .translation.quality import (
-    apply_channel_cta_fallback,
     collect_translation_quality_issues,
 )
 from .translation_profiles import (
@@ -323,7 +322,7 @@ class Tool1Service:
         payload["language_translation_profiles"] = self._parse_json_dict(payload.get("language_translation_profiles"))
         payload["language_channel_names"] = self._parse_json_dict(payload.get("language_channel_names"))
         payload["channel_replace_prompt"] = bool(int(payload.get("channel_replace_prompt", 1) or 1))
-        payload["channel_replace_post"] = bool(int(payload.get("channel_replace_post", 1) or 1))
+        payload["channel_replace_post"] = bool(int(payload.get("channel_replace_post", 0) or 0))
         return payload
 
     def _hydrate_episode_record(self, episode: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1647,20 +1646,6 @@ class Tool1Service:
         return not normalized.startswith("en")
 
     @classmethod
-    def _apply_channel_cta_fallback(
-        cls,
-        translated_script: str,
-        *,
-        language_code: str,
-        target_channel_name: str,
-    ) -> str:
-        return apply_channel_cta_fallback(
-            translated_script,
-            language_code=language_code,
-            target_channel_name=target_channel_name,
-        )
-
-    @classmethod
     def _translation_script_validation_issues(
         cls,
         *,
@@ -1712,19 +1697,6 @@ class Tool1Service:
             raise ValueError(f"Translation failed for {language_code}.{suffix}")
         if status not in {"done", "completed", "success"}:
             raise ValueError(f"Translation status for {language_code} was '{status or 'unknown'}'.{suffix}")
-
-        if source_channel_name and target_channel_name:
-            translated_script = re.sub(
-                re.escape(source_channel_name),
-                target_channel_name,
-                translated_script,
-                flags=re.IGNORECASE,
-            )
-            translated_script = cls._apply_channel_cta_fallback(
-                translated_script,
-                language_code=language_code,
-                target_channel_name=target_channel_name,
-            )
 
         issues = cls._translation_script_validation_issues(
             source_script=source_script,
@@ -2194,6 +2166,8 @@ class Tool1Service:
             "video_prompt_model": video_prompt_model,
             "image_prompt_model": image_prompt_model,
             "leading_video_scene_count": leading_video_scene_count,
+            "channel_replace_prompt": 1,
+            "channel_replace_post": 0,
             "created_at": now,
             "updated_at": now,
         })
@@ -2685,7 +2659,6 @@ class Tool1Service:
         source_channel_name = str(project.get("source_channel_name") or "").strip()
         language_channel_names = json.loads(project.get("language_channel_names") or "{}")
         enable_prompt = bool(int(project.get("channel_replace_prompt", 1) or 1))
-        enable_post = bool(int(project.get("channel_replace_post", 1) or 1))
         settings = self._global_settings()
         workspace = self._episode_workspace(episode)
         reviewer_api_key = self._stage_provider_openai_api_key()
@@ -2746,8 +2719,8 @@ class Tool1Service:
                 result,
                 language_code=lang,
                 source_script=episode["script_text"],
-                source_channel_name=source_channel_name if enable_post else "",
-                target_channel_name=target_channel if enable_post else "",
+                source_channel_name=source_channel_name if enable_prompt else "",
+                target_channel_name=target_channel if enable_prompt else "",
             )
             translated_path, spoken_path = self._write_language_script_assets(
                 workspace=workspace,
@@ -3487,7 +3460,6 @@ class Tool1Service:
         source_channel_name = str(project.get("source_channel_name") or "").strip()
         language_channel_names = json.loads(project.get("language_channel_names") or "{}")
         enable_prompt = bool(int(project.get("channel_replace_prompt", 1) or 1))
-        enable_post = bool(int(project.get("channel_replace_post", 1) or 1))
         settings = self._global_settings()
         reviewer_api_key = self._stage_provider_openai_api_key()
         source_script = episode["script_text"]
@@ -3570,8 +3542,8 @@ class Tool1Service:
                     result,
                     language_code=lang,
                     source_script=source_script,
-                    source_channel_name=source_channel_name if enable_post else "",
-                    target_channel_name=target_channel if enable_post else "",
+                    source_channel_name=source_channel_name if enable_prompt else "",
+                    target_channel_name=target_channel if enable_prompt else "",
                 )
                 translated_path, spoken_path = self._write_language_script_assets(
                     workspace=workspace,

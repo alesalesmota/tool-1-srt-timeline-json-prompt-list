@@ -62,6 +62,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
   - Multilingual quality upgrade on 2026-04-04: translation now uses shared per-language rulepacks, deterministic chunk/script audits, a fixed OpenAI reviewer pass (`gpt-5.4-mini`), fail-closed repair behavior, readable + spoken script artifacts, spoken reference/number normalization for TTS/alignment, and export packaging that includes both readable and spoken scripts
   - OpenAI long-chunk retry on 2026-04-04: when a Responses API translation call ends with `status = incomplete` because of `max_output_tokens`, the adapter now retries once with a larger output budget before failing the language
   - Reviewer-sanity follow-up on 2026-04-04: script-review prompts now require exact translated evidence, structured reviewer issues are normalized instead of blindly stringified, unsupported source-channel complaints are pruned, and contradictory reviewer failures with all scores `>= 4` now downgrade to pass-with-suggestions instead of blocking a good script
+  - Channel-name simplification on 2026-04-10: channel localization is now prompt-led and validated only. The backend no longer rewrites translated scripts with regex source-name swaps or CTA fallback logic after the model returns; new projects default `channel_replace_post = false`, and the language-config UI now describes the behavior as prompt replacement plus validation instead of a second hidden rewrite layer
 - **Alignment tool** (`tool1_dashboard/alignment_tool/`)
   - Subtitle-density hardening on 2026-04-04: subtitle segmentation now uses a deterministic DP readability-first segmenter, shared language-rulepack break rules, timing-gap redistribution for dense cues, and richer `alignment_report.json` density diagnostics (`segment_profile`, `segments_over_*_cps`, fast-segment buckets, averages, optimization passes)
   - French-first subtitle cleanup follow-up on 2026-04-05: added a fast segmentation-only benchmark path that reuses existing `words.json` + `segments.json`, lets the segmenter seed from an existing cue layout, repairs only the local 3-block neighborhood around the worst dense cues, and re-optimizes silence-gap distribution pairwise between adjacent subtitle blocks
@@ -117,6 +118,7 @@ Remaining French/Italian density is inherent to the text-to-audio ratio for thos
 - Live workflow smoke can fail immediately when Claude quota is exhausted; on 2026-03-27 the provider returned `Claude limit reached. You've hit your limit · resets Mar 28, 5pm (America/Sao_Paulo)`, and the frontend now surfaces that inline correctly but cannot resolve the quota issue itself
 - French/Italian subtitle density is accepted at current levels (FR 23/723 warnings = 3.2%, IT 20/695 = 2.9%). Zero segments over 30 CPS. Any future density improvements should target upstream translation length or TTS pacing, not segmentation tuning.
 - The new translation QA is intentionally stricter than the previous pipeline: weak translation profiles now fail closed instead of shipping awkward literal phrasing. Episode `205` French already forced one operational upgrade from `openai / gpt-5-nano` to `openai / gpt-5.4-mini`, and similar borderline language profiles may need the same treatment.
+- Channel-name handling is intentionally simpler now: if a model misses the localized channel name, the correct fix is prompt/model quality or QA rules, not reintroducing hidden post-translation rewrites.
 - Reviewer outputs from the LLM judge can still be noisy, but the new sanity filter now rejects unsupported source-channel complaints and minor contradictory failures; any future French work should focus on alignment behavior, not translation acceptance
 - The project board still relies on manual/smoke browser verification for live workflow transitions; the inline status row and active polling are now in place, but there is still no automated frontend regression suite covering draft->queued/running movement
 - XTTS runtime availability still matters operationally, but the UI no longer asks the user to manually start or restart the worker
@@ -124,8 +126,8 @@ Remaining French/Italian density is inherent to the text-to-audio ratio for thos
 - Fresh Windows environments still need the XTTS runtime installed manually; long-form throughput is only acceptable when the dashboard Python environment uses the CUDA build of the pinned `torch` / `torchaudio`, and Coqui TTS may still require Microsoft C++ Build Tools before voice cloning can work
 
 ### Git State
-- Branch: `main` (active, all feature work merged 2026-04-05)
-- Previous feature branches: `codex/french-first-subtitle-cleanup`, `fix/italian-alignment-retry` — all merged
+- Branch: `codex/fix-fail-stop-translation-tts` (active local branch carrying the fail-stop translation/TTS work, LM Studio profile support, settings redesign, and the 2026-04-10 translation channel-name simplification)
+- Previous feature branches: `main`, `codex/french-first-subtitle-cleanup`, `fix/italian-alignment-retry` — historical reference only
 - Remote: `https://github.com/alesalesmota/tool-1-srt-timeline-json-prompt-list.git`
 
 ## Architecture Decisions
@@ -150,6 +152,7 @@ Remaining French/Italian density is inherent to the text-to-audio ratio for thos
 | Narration pacing is tuned per voice profile and snapped into each TTS job | Different voices need different stability/variation bands, and queued jobs must stay reproducible even if the profile is edited later | 2026-03-26 |
 | App-side TTS chunking is authoritative; XTTS internal splitting stays off | Long-form narration must be resumable and predictable, so the repo controls chunk boundaries instead of leaving them to model-side splitting | 2026-03-26 |
 | Translation Profiles use a dedicated provider-mode setup flow | Translation execution currently runs through API providers, so the setup UI must distinguish runnable OpenAI API profiles from future CLI preview modes instead of reusing the stage-provider catalog | 2026-03-26 |
+| Channel-name replacement should happen in the prompt, with validation after translation, not through backend rewrites | The older cheap OpenAI models already handled this reliably; regex/CTA post-processing made the stack brittle and harder to reason about | 2026-04-10 |
 | Stale provider stage-runs fail automatically after a timeout | Provider-driven stages must stop in an actionable retry state instead of appearing to run forever when the external CLI stalls or never returns output | 2026-03-27 |
 | Workflow-stage model fields use select dropdowns from MODEL_CATALOG and OpenAI stages share one saved API key | Model selection should be discoverable via dropdown, not free-text; OpenAI-backed scene/style/prompt stages reuse one settings-level key | 2026-03-29 |
 | Codex CLI removed; both `codex` and `openai` providers route through OpenAI HTTP API | `codex exec` is an agentic tool that spawns agents with filesystem access, fundamentally wrong for pure structured JSON generation; the OpenAI Responses API is the correct path | 2026-03-29 |
@@ -165,6 +168,7 @@ Remaining French/Italian density is inherent to the text-to-audio ratio for thos
 ## User Observations & Insights
 
 - **2026-04-04**: Per-language YouTube channel names are intentional product behavior, not translation drift; when a source script mentions the channel name, the translation layer should replace it with the configured localized name (`Biblo Viral` for ES, `Orizzonte` for IT, etc.) while still translating the surrounding CTA text fully into the target language
+- **2026-04-10**: The model should own channel-name replacement through the prompt. The app can validate the result, but hidden post-translation rewrites made the stack feel overcomplicated and less trustworthy than the older cheap OpenAI flow.
 - **2026-04-04**: Old concept/spec files left at the repo root can mislead future AI work; when a document no longer matches the shipped app, archive it or mark it explicitly historical instead of leaving it to look current
 - **2026-04-04**: For live repair work, go one issue at a time and verify after each stage so the fix does not drift into mistakes or hallucinated changes
 - **2026-04-04**: An idle terminal does not mean the TTS worker is hung; when a long narration run is active in the background, the user needs a reliable way to tell the difference between real progress and a stuck agent without hunting through Task Manager

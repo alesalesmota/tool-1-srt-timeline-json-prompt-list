@@ -3042,7 +3042,6 @@ function renderLanguageConfigSection(project, voiceProfiles, translationProfiles
   const cns = project.language_channel_names || {};
   const sourceChannel = project.source_channel_name || "";
   const replacePrompt = project.channel_replace_prompt !== false && project.channel_replace_prompt !== 0;
-  const replacePost = project.channel_replace_post !== false && project.channel_replace_post !== 0;
   const allLangs = state.targetLanguages || [];
   const usedSet = new Set(langs);
 
@@ -3088,13 +3087,10 @@ function renderLanguageConfigSection(project, voiceProfiles, translationProfiles
         <div class="toggle-row" style="display:flex;gap:16px;margin-top:8px;">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
             <input id="channel-replace-prompt" type="checkbox" ${replacePrompt ? "checked" : ""} />
-            <span class="field-label" style="margin:0;">Prompt-based replacement</span>
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-            <input id="channel-replace-post" type="checkbox" ${replacePost ? "checked" : ""} />
-            <span class="field-label" style="margin:0;">Post-translation replacement</span>
+            <span class="field-label" style="margin:0;">Prompt-based channel replacement</span>
           </label>
         </div>
+        <div class="helper" style="margin-top:8px;max-width:60ch;">The translator now handles channel renaming in the prompt. The app validates the result after translation, but it no longer rewrites the script in code.</div>
       </div>
       <table class="lang-config-table">
         <thead><tr><th>Language</th><th>Voice Profile</th><th>Translation Profile</th><th>Channel Name</th><th></th></tr></thead>
@@ -5648,7 +5644,6 @@ document.addEventListener("click", async (event) => {
       });
       const sourceChannelName = ($("source-channel-name") || {}).value || "";
       const channelReplacePrompt = !!($("channel-replace-prompt") || {}).checked;
-      const channelReplacePost = !!($("channel-replace-post") || {}).checked;
       await api('/api/niche-projects/' + encodeURIComponent(projectId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -5658,7 +5653,7 @@ document.addEventListener("click", async (event) => {
           language_channel_names: langChannelNames,
           source_channel_name: sourceChannelName,
           channel_replace_prompt: channelReplacePrompt,
-          channel_replace_post: channelReplacePost,
+          channel_replace_post: false,
         }),
       });
       await refreshData();

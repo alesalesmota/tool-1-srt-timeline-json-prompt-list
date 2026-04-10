@@ -154,9 +154,9 @@ def build_translation_prompt(
     language_guidance = _guidance_block(target_lang, target_channel_name=target_channel_name)
     if source_channel_name and target_channel_name:
         channel_name_instruction = (
-            f'IMPORTANT: Whenever the text mentions the channel name '
-            f'"{source_channel_name}", replace it with "{target_channel_name}" '
-            f'in your translation.\n'
+            f'IMPORTANT: If the script mentions the YouTube channel name '
+            f'"{source_channel_name}", always replace it with "{target_channel_name}". '
+            f'Do not keep, translate, paraphrase, or partially preserve the source channel name.\n'
         )
     else:
         channel_name_instruction = ""
@@ -206,9 +206,9 @@ def build_translation_repair_prompt(
     language_guidance = _guidance_block(target_lang, target_channel_name=target_channel_name)
     if source_channel_name and target_channel_name:
         channel_name_instruction = (
-            f'IMPORTANT: Whenever the text mentions the channel name '
-            f'"{source_channel_name}", replace it with "{target_channel_name}" '
-            f'in your translation.\n'
+            f'IMPORTANT: If the script mentions the YouTube channel name '
+            f'"{source_channel_name}", always replace it with "{target_channel_name}". '
+            f'Do not keep, translate, paraphrase, or partially preserve the source channel name.\n'
         )
     else:
         channel_name_instruction = ""
@@ -243,8 +243,9 @@ def build_translation_script_repair_prompt(
     language_guidance = _guidance_block(target_lang, target_channel_name=target_channel_name)
     if source_channel_name and target_channel_name:
         channel_name_instruction = (
-            f'IMPORTANT: Whenever the text mentions the channel name "{source_channel_name}", '
-            f'replace it with "{target_channel_name}" in your translation.\n'
+            f'IMPORTANT: If the script mentions the YouTube channel name "{source_channel_name}", '
+            f'always replace it with "{target_channel_name}". '
+            f'Do not keep, translate, paraphrase, or partially preserve the source channel name.\n'
         )
     else:
         channel_name_instruction = ""

@@ -34,22 +34,6 @@ def is_non_english_target(language_code: str) -> bool:
     return resolve_language_rulepack(language_code).code != "en"
 
 
-def apply_channel_cta_fallback(
-    translated_script: str,
-    *,
-    language_code: str,
-    target_channel_name: str,
-) -> str:
-    if not translated_script or not target_channel_name:
-        return translated_script
-    pack = resolve_language_rulepack(language_code)
-    if pack.code == "en":
-        return translated_script
-    replacement = pack.cta_template.format(channel=target_channel_name)
-    pattern = re.compile(rf"\bSubscribe to\s+{re.escape(target_channel_name)}\b", re.IGNORECASE)
-    return pattern.sub(replacement, translated_script)
-
-
 def collect_translation_quality_issues(
     *,
     source_text: str,
