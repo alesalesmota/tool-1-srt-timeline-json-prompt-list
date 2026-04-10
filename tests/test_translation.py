@@ -305,7 +305,12 @@ class PromptBuildingTests(unittest.TestCase):
 class TranslationAdapterOpenAiTests(unittest.TestCase):
 
     def _run_async(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
 
     def test_gpt5_translation_uses_minimal_reasoning_and_reads_message_text(self):
         recorder: list[dict[str, Any]] = []
@@ -411,7 +416,12 @@ class TranslationAdapterOpenAiTests(unittest.TestCase):
 class TranslationServiceTests(unittest.TestCase):
 
     def _run_async(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
 
     def _make_fake_adapter(self, responses: list[str | Exception]) -> TranslationAdapter:
         adapter = TranslationAdapter()
