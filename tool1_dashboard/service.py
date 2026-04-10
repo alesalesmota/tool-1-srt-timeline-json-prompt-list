@@ -24,7 +24,6 @@ from .database import StageRunResult
 from .config import (
     AGENTS_ROOT,
     DEFAULT_SETTINGS,
-    EPISODE_PIPELINE_STAGES,
     EPISODE_RUNNABLE_STAGES,
     EPISODES_ROOT,
     IMAGE_PROMPT_STAGE,
