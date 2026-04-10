@@ -65,6 +65,7 @@ from .translation.language_rules import build_spoken_script
 from .translation.quality import (
     apply_channel_cta_fallback,
     categorize_translation_issue_text,
+    collect_translation_quality_findings,
     collect_translation_quality_issues,
     summarize_translation_categories,
 )
@@ -1329,6 +1330,26 @@ class Tool1Service:
 
         return enriched_statuses, active_job
 
+    def _decorate_language_statuses_with_translation_diagnostics(
+        self,
+        episode: dict[str, Any],
+        language_statuses: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        workspace = self._episode_workspace(episode)
+        enriched_statuses: list[dict[str, Any]] = []
+        for lang_status in language_statuses:
+            payload = dict(lang_status)
+            language_code = str(payload.get("language_code") or "").strip()
+            diagnostics = self._load_translation_diagnostics(workspace, language_code) if language_code else None
+            payload["translation_diagnostics"] = diagnostics
+            primary = self._translation_primary_diagnostic(diagnostics)
+            payload["translation_issue_category"] = primary.get("category") if primary else None
+            payload["translation_issue_next_action"] = primary.get("next_action") if primary else None
+            payload["translation_issue_excerpt"] = primary.get("offending_excerpt") if primary else None
+            payload["translation_issue_message"] = primary.get("message") if primary else None
+            enriched_statuses.append(payload)
+        return enriched_statuses
+
     def _decorate_episode_for_client(
         self,
         episode: dict[str, Any],
@@ -1960,6 +1981,48 @@ class Tool1Service:
         )
 
     @classmethod
+    def _translation_script_validation_findings(
+        cls,
+        *,
+        source_script: str,
+        translated_script: str,
+        language_code: str,
+        source_channel_name: str = "",
+        target_channel_name: str = "",
+    ) -> list[dict[str, Any]]:
+        return collect_translation_quality_findings(
+            source_text=source_script,
+            translated_text=translated_script,
+            language_code=language_code,
+            source_channel_name=source_channel_name,
+            target_channel_name=target_channel_name,
+        )
+
+    @staticmethod
+    def _translation_primary_diagnostic(diagnostics: dict[str, Any] | None) -> dict[str, Any] | None:
+        blockers = diagnostics.get("blockers") if isinstance(diagnostics, dict) else []
+        if blockers:
+            return blockers[0]
+        warnings = diagnostics.get("warnings") if isinstance(diagnostics, dict) else []
+        if warnings:
+            return warnings[0]
+        return None
+
+    @classmethod
+    def _translation_diagnostic_summary(
+        cls,
+        diagnostics: dict[str, Any] | None,
+        *,
+        fallback: str = "",
+    ) -> str:
+        primary = cls._translation_primary_diagnostic(diagnostics)
+        if primary:
+            message = str(primary.get("message") or "").strip()
+            if message:
+                return message
+        return str(fallback or "").strip()
+
+    @classmethod
     def _validated_translation_script(
         cls,
         result: Any,
@@ -1973,6 +2036,7 @@ class Tool1Service:
         status = str(getattr(result, "status", "done") or "done").strip().lower()
         chunk_results = list(getattr(result, "chunk_results", []) or [])
         result_error = str(getattr(result, "error_message", "") or "").strip()
+        result_diagnostics = getattr(result, "diagnostics", None)
 
         first_chunk_error = next(
             (
@@ -1983,7 +2047,7 @@ class Tool1Service:
             ),
             "",
         )
-        detail = result_error or first_chunk_error
+        detail = result_error or cls._translation_diagnostic_summary(result_diagnostics) or first_chunk_error
         suffix = f" First chunk error: {detail}" if detail else ""
         if not translated_script:
             raise ValueError(f"Translation returned empty text for {language_code}.{suffix}")
@@ -1994,15 +2058,15 @@ class Tool1Service:
         if status not in {"done", "completed", "success"}:
             raise ValueError(f"Translation status for {language_code} was '{status or 'unknown'}'.{suffix}")
 
-        issues = cls._translation_script_validation_issues(
+        findings = cls._translation_script_validation_findings(
             source_script=source_script,
             translated_script=translated_script,
             language_code=language_code,
             source_channel_name=source_channel_name,
             target_channel_name=target_channel_name,
         )
-        if issues:
-            issue_text = "; ".join(issues)
+        if findings:
+            issue_text = "; ".join(str(item.get("message") or "").strip() for item in findings if str(item.get("message") or "").strip())
             raise ValueError(f"Translation quality validation failed for {language_code}: {issue_text}.{suffix}")
         return translated_script
 
@@ -2018,6 +2082,12 @@ class Tool1Service:
                 "words_out": cr.words_out,
                 "status": cr.status,
                 "error": cr.error,
+                "provider": getattr(cr, "provider", "") or "",
+                "model": getattr(cr, "model", "") or "",
+                "category": getattr(cr, "category", None),
+                "offending_excerpt": getattr(cr, "offending_excerpt", None),
+                "next_action": getattr(cr, "next_action", None),
+                "diagnostics": list(getattr(cr, "diagnostics", []) or []),
             }
             for cr in getattr(result, "chunk_results", []) or []
         ]
@@ -2150,6 +2220,125 @@ class Tool1Service:
         spoken_path = workspace / cls._language_spoken_script_filename(language_code, master_language)
         write_text(spoken_path, build_spoken_script(readable_script, language_code))
         return readable_path, spoken_path
+
+    @staticmethod
+    def _translation_ai_review_enabled(settings: dict[str, Any]) -> bool:
+        return bool(settings.get("translation_ai_review_enabled"))
+
+    @staticmethod
+    def _translation_log_path(workspace: Path, language_code: str) -> Path:
+        return workspace / f"translation_log_{language_code}.json"
+
+    @staticmethod
+    def _translation_diagnostics_path(workspace: Path, language_code: str) -> Path:
+        return workspace / f"translation_diagnostics_{language_code}.json"
+
+    @staticmethod
+    def _translation_review_path(workspace: Path, language_code: str) -> Path:
+        return workspace / f"translation_review_{language_code}.json"
+
+    @classmethod
+    def _serialize_translation_chunk_log(cls, result: Any) -> list[dict[str, Any]]:
+        return [
+            {
+                "chunk_index": cr.chunk_index,
+                "scene_ids": cr.scene_ids,
+                "words_in": cr.words_in,
+                "words_out": cr.words_out,
+                "status": cr.status,
+                "error": cr.error,
+                "provider": getattr(cr, "provider", "") or "",
+                "model": getattr(cr, "model", "") or "",
+                "category": getattr(cr, "category", None),
+                "offending_excerpt": getattr(cr, "offending_excerpt", None),
+                "next_action": getattr(cr, "next_action", None),
+                "diagnostics": list(getattr(cr, "diagnostics", []) or []),
+            }
+            for cr in list(getattr(result, "chunk_results", []) or [])
+        ]
+
+    @classmethod
+    def _default_translation_diagnostics(
+        cls,
+        *,
+        status: str,
+        provider: str = "",
+        model: str = "",
+        review_enabled: bool = False,
+        blockers: list[dict[str, Any]] | None = None,
+        warnings: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        blockers = list(blockers or [])
+        warnings = list(warnings or [])
+        return {
+            "status": status,
+            "provider": provider,
+            "model": model,
+            "review_enabled": review_enabled,
+            "blockers": blockers,
+            "warnings": warnings,
+            "recommended_next_action": cls._translation_primary_diagnostic(
+                {"blockers": blockers, "warnings": warnings}
+            ).get("next_action") if cls._translation_primary_diagnostic({"blockers": blockers, "warnings": warnings}) else None,
+            "review_report": None,
+        }
+
+    @classmethod
+    def _normalize_translation_diagnostics(
+        cls,
+        result: Any,
+        *,
+        fallback_status: str,
+        provider: str = "",
+        model: str = "",
+        review_enabled: bool = False,
+        blockers: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        diagnostics = getattr(result, "diagnostics", None)
+        if isinstance(diagnostics, dict):
+            return diagnostics
+        return cls._default_translation_diagnostics(
+            status=fallback_status,
+            provider=str(getattr(result, "provider", "") or provider or ""),
+            model=str(getattr(result, "model", "") or model or ""),
+            review_enabled=bool(getattr(result, "review_enabled", review_enabled)),
+            blockers=blockers,
+        )
+
+    @classmethod
+    def _write_translation_artifacts(
+        cls,
+        *,
+        workspace: Path,
+        language_code: str,
+        result: Any,
+    ) -> dict[str, Any]:
+        chunk_log = cls._serialize_translation_chunk_log(result)
+        diagnostics = cls._normalize_translation_diagnostics(
+            result,
+            fallback_status=str(getattr(result, "status", "done") or "done"),
+            provider=str(getattr(result, "provider", "") or ""),
+            model=str(getattr(result, "model", "") or ""),
+            review_enabled=bool(getattr(result, "review_enabled", False)),
+        )
+        write_json(cls._translation_log_path(workspace, language_code), chunk_log)
+        write_json(cls._translation_diagnostics_path(workspace, language_code), diagnostics)
+        review_report_raw = getattr(result, "review_report", None)
+        review_report = review_report_raw if isinstance(review_report_raw, dict) else None
+        review_path = cls._translation_review_path(workspace, language_code)
+        if review_report:
+            write_json(review_path, review_report)
+        elif review_path.exists():
+            review_path.unlink()
+        return diagnostics
+
+    @classmethod
+    def _load_translation_diagnostics(cls, workspace: Path, language_code: str) -> dict[str, Any] | None:
+        path = cls._translation_diagnostics_path(workspace, language_code)
+        if not path.exists():
+            return None
+        data = read_json(path, default=None)
+        return data if isinstance(data, dict) else None
 
     def _ensure_spoken_script_asset(
         self,
@@ -2905,6 +3094,7 @@ class Tool1Service:
             )
             for status in lang_statuses
         ]
+        lang_statuses = self._decorate_language_statuses_with_translation_diagnostics(episode, lang_statuses)
         stage_runs = [
             self._decorate_stage_run_for_client(run)
             for run in self.db.list_stage_runs(episode_id)
@@ -4202,6 +4392,7 @@ class Tool1Service:
                 self.db.get_episode_language_statuses(ep["id"]),
                 worker_health=worker_health,
             )
+            lang_statuses = self._decorate_language_statuses_with_translation_diagnostics(ep, lang_statuses)
             ep["language_statuses"] = lang_statuses
             project_id = ep.get("niche_project_id")
             if project_id not in project_cache:
@@ -4301,6 +4492,7 @@ class Tool1Service:
         reviewer_provider = str(settings.get("translation_reviewer_provider") or "openai").strip() or "openai"
         reviewer_model = str(settings.get("translation_reviewer_model") or "gpt-4.1-mini").strip() or "gpt-4.1-mini"
         reviewer_base_url = normalize_translation_profile_base_url(reviewer_provider, "")
+        review_enabled = self._translation_ai_review_enabled(settings)
 
         profile_id = translation_profiles.get(lang)
         if not profile_id:
@@ -4353,12 +4545,17 @@ class Tool1Service:
                 context_tail_words=settings.get("translation_context_tail_words", 200),
                 source_channel_name=source_channel_name if enable_prompt else "",
                 target_channel_name=target_channel if enable_prompt else "",
-                reviewer_required=False,
+                reviewer_required=review_enabled,
                 reviewer_provider=reviewer_provider,
                 reviewer_api_key=reviewer_api_key,
                 reviewer_model=reviewer_model,
                 reviewer_base_url=reviewer_base_url,
             ))
+            diagnostics = self._write_translation_artifacts(
+                workspace=workspace,
+                language_code=lang,
+                result=result,
+            )
             translated_script = self._validated_translation_script(
                 result,
                 language_code=lang,
@@ -4387,7 +4584,41 @@ class Tool1Service:
                 error_message=None,
             )
         except Exception as exc:
-            error_message = self._truncate_error_message(exc)
+            diagnostics = (
+                self._write_translation_artifacts(
+                    workspace=workspace,
+                    language_code=lang,
+                    result=result,
+                )
+                if result is not None
+                else self._normalize_translation_diagnostics(
+                    result,
+                    fallback_status="failed",
+                    provider=profile["provider"],
+                    model=profile["model"],
+                    review_enabled=review_enabled,
+                    blockers=[
+                        {
+                            "category": "system_error",
+                            "message": str(exc)[:500],
+                            "offending_excerpt": None,
+                            "next_action": "Inspect the translation pipeline logs and retry.",
+                            "blocking": True,
+                            "scope": "system",
+                        }
+                    ],
+                )
+            )
+            if result is None:
+                write_json(self._translation_log_path(workspace, lang), [])
+                review_path = self._translation_review_path(workspace, lang)
+                if review_path.exists():
+                    review_path.unlink()
+                write_json(self._translation_diagnostics_path(workspace, lang), diagnostics)
+            error_message = self._translation_diagnostic_summary(
+                diagnostics,
+                fallback=self._truncate_error_message(exc),
+            )[:500]
             self._write_translation_report_artifacts(
                 workspace=workspace,
                 language_code=lang,
@@ -4699,7 +4930,7 @@ class Tool1Service:
             translated = read_text(Path(script_path))
 
         workspace = self._episode_workspace(episode)
-        log_path = workspace / f"translation_log_{language_code}.json"
+        log_path = self._translation_log_path(workspace, language_code)
         translation_log = read_json(log_path, default=[]) if log_path.exists() else []
         translation_report = self._read_translation_report_payload(
             workspace=workspace,
@@ -4713,6 +4944,8 @@ class Tool1Service:
             error_categories=list(translation_report.get("error_categories") or []),
             review_report=translation_report.get("review_report") if isinstance(translation_report.get("review_report"), dict) else None,
         )
+        diagnostics = self._load_translation_diagnostics(workspace, language_code)
+        primary = self._translation_primary_diagnostic(diagnostics)
 
         return {
             "language_code": language_code,
@@ -4726,6 +4959,13 @@ class Tool1Service:
             "review_scores": feedback["review_scores"],
             "review_passed": feedback["review_passed"],
             "translation_report": translation_report,
+            "provider": (diagnostics or {}).get("provider"),
+            "model": (diagnostics or {}).get("model"),
+            "review_enabled": bool((diagnostics or {}).get("review_enabled")),
+            "diagnostics": diagnostics,
+            "translation_issue_category": primary.get("category") if primary else None,
+            "translation_issue_next_action": primary.get("next_action") if primary else None,
+            "translation_issue_message": primary.get("message") if primary else None,
         }
 
     def get_worker_health(self) -> dict[str, Any]:
@@ -5166,6 +5406,7 @@ class Tool1Service:
         enable_post = bool(int(project.get("channel_replace_post", 1) or 1))
         settings = self._global_settings()
         reviewer_api_key = self._stage_provider_openai_api_key()
+        review_enabled = self._translation_ai_review_enabled(settings)
         reviewer_provider = str(settings.get("translation_reviewer_provider") or "openai").strip() or "openai"
         reviewer_model = str(settings.get("translation_reviewer_model") or "gpt-4.1-mini").strip() or "gpt-4.1-mini"
         reviewer_base_url = normalize_translation_profile_base_url(reviewer_provider, "")
@@ -5242,11 +5483,16 @@ class Tool1Service:
                     context_tail_words=settings.get("translation_context_tail_words", 200),
                     source_channel_name=source_channel_name if enable_prompt else "",
                     target_channel_name=target_channel if enable_prompt else "",
-                    reviewer_required=True,
+                    reviewer_required=review_enabled,
                     reviewer_provider=reviewer_provider,
                     reviewer_api_key=reviewer_api_key,
                     reviewer_model=reviewer_model,
                     reviewer_base_url=reviewer_base_url,
+                )
+                diagnostics = self._write_translation_artifacts(
+                    workspace=workspace,
+                    language_code=lang,
+                    result=result,
                 )
                 translated_script = self._validated_translation_script(
                     result,
@@ -5277,7 +5523,41 @@ class Tool1Service:
                     error_message=None,
                 )
             except Exception as exc:
-                error_message = self._truncate_error_message(exc)
+                diagnostics = (
+                    self._write_translation_artifacts(
+                        workspace=workspace,
+                        language_code=lang,
+                        result=result,
+                    )
+                    if result is not None
+                    else self._normalize_translation_diagnostics(
+                        result,
+                        fallback_status="failed",
+                        provider=profile["provider"],
+                        model=profile["model"],
+                        review_enabled=review_enabled,
+                        blockers=[
+                            {
+                                "category": "system_error",
+                                "message": str(exc)[:500],
+                                "offending_excerpt": None,
+                                "next_action": "Inspect the translation pipeline logs and retry.",
+                                "blocking": True,
+                                "scope": "system",
+                            }
+                        ],
+                    )
+                )
+                if result is None:
+                    write_json(self._translation_log_path(workspace, lang), [])
+                    review_path = self._translation_review_path(workspace, lang)
+                    if review_path.exists():
+                        review_path.unlink()
+                    write_json(self._translation_diagnostics_path(workspace, lang), diagnostics)
+                error_message = self._translation_diagnostic_summary(
+                    diagnostics,
+                    fallback=self._truncate_error_message(exc),
+                )[:500]
                 self._write_translation_report_artifacts(
                     workspace=workspace,
                     language_code=lang,

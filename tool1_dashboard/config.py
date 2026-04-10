@@ -157,6 +157,7 @@ DEFAULT_SETTINGS = {
     "translation_context_tail_words": 200,
     "translation_reviewer_provider": "openai",
     "translation_reviewer_model": "gpt-4.1-mini",
+    "translation_ai_review_enabled": False,
     # TTS defaults
     "tts_chunk_max_chars": 200,
     "tts_audio_sample_rate": 24000,

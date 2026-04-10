@@ -17,6 +17,23 @@ _ENGLISH_CTA_PATTERNS = (
 _SUSPICIOUS_WORD_EXPANSION_RATIO = 1.6
 _SUSPICIOUS_WORD_EXPANSION_MARGIN = 180
 _MIN_PARAGRAPH_WORDS = 6
+_MAX_EXCERPT_CHARS = 180
+_DIGIT_PATTERN = re.compile(r"\d")
+_REPEATED_CHAR_TOKEN = re.compile(r"(.)\1{5,}")
+_ASCII_CONSONANT_CLUSTER = re.compile(r"^[bcdfghjklmnpqrstvwxyz]{8,}$", re.IGNORECASE)
+
+_NEXT_ACTION_HINTS = {
+    "empty_output": "Inspect provider/model behavior or adjust the translation prompt.",
+    "suspicious_length": "Inspect provider/model output or prompt leakage before retrying.",
+    "duplication": "Inspect provider/model output because the translation contains duplicated passages.",
+    "source_text_leak": "Inspect the translation prompt/profile and verify the source text is fully translated.",
+    "english_cta_leak": "Inspect the prompt/profile so CTA language is fully localized.",
+    "source_channel_leak": "Inspect the prompt/profile and channel replacement settings.",
+    "missing_target_channel_name": "Inspect prompt/profile/config so the localized channel name is inserted.",
+    "digits_present": "Adjust prompt and normalization logic so narration writes numbers as words.",
+    "gibberish_output": "Inspect provider/model output or prompt because the text is not usable narration.",
+    "language_rule_violation": "Inspect prompt/profile and language-specific guidance before retrying.",
+}
 
 ERROR_CATEGORY_LABELS: dict[str, str] = {
     "wrong_name": "Wrong names",
@@ -28,6 +45,17 @@ ERROR_CATEGORY_LABELS: dict[str, str] = {
     "duplication": "Duplicated text",
     "empty_output": "Empty output",
     "provider_error": "Provider unavailable",
+    "quota_exceeded": "Quota exceeded",
+    "invalid_api_key": "Invalid API key",
+    "rate_limited": "Rate limited",
+    "network_timeout": "Timeout",
+    "source_text_leak": "Source text leaked",
+    "english_cta_leak": "English CTA leaked",
+    "source_channel_leak": "Source channel leaked",
+    "missing_target_channel_name": "Target channel missing",
+    "digits_present": "Digits present",
+    "gibberish_output": "Gibberish output",
+    "language_rule_violation": "Language rule issue",
 }
 
 _REVIEW_CATEGORY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -149,12 +177,32 @@ def categorize_translation_issue_text(issue: Any) -> str:
     text = normalize_compare_text(str(issue or ""))
     if not text:
         return "provider_error"
+    if "quota exceeded" in text or ("quota" in text and "exceeded" in text):
+        return "quota_exceeded"
+    if "invalid api key" in text or "api key is invalid" in text or "authentication" in text or "unauthorized" in text:
+        return "invalid_api_key"
+    if "rate limited" in text or "too many requests" in text:
+        return "rate_limited"
+    if "timed out" in text or "timeout" in text:
+        return "network_timeout"
     if "empty translation" in text or "empty output" in text or "empty chunk" in text:
         return "empty_output"
+    if "digits" in text and "words" in text:
+        return "digits_present"
+    if "gibberish" in text or "non-word output" in text:
+        return "gibberish_output"
+    if "source channel" in text:
+        return "source_channel_leak"
+    if "configured channel name" in text or "target channel name" in text:
+        return "missing_target_channel_name"
+    if "untranslated source paragraphs" in text:
+        return "source_text_leak"
+    if "english cta wording" in text:
+        return "english_cta_leak"
     for category, fragments in _REVIEW_CATEGORY_PATTERNS:
         if any(fragment in text for fragment in fragments):
             return category
-    if "failed to connect" in text or "connection refused" in text or "timed out" in text:
+    if "failed to connect" in text or "connection refused" in text:
         return "provider_error"
     return "faithfulness"
 
@@ -181,19 +229,191 @@ def summarize_translation_categories(
     return f"{labels[0]} and {labels[1]}"
 
 
-def _append_issue(
-    issues: list[str],
-    categories: list[str],
-    *,
-    issue: str,
+def _trim_excerpt(value: str, limit: int = _MAX_EXCERPT_CHARS) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _excerpt_from_match(text: str, match: re.Match[str] | None, *, radius: int = 36) -> str | None:
+    if not match:
+        return None
+    start = max(0, match.start() - radius)
+    end = min(len(text), match.end() + radius)
+    return _trim_excerpt(text[start:end])
+
+
+def _make_finding(
     category: str,
-) -> None:
-    issue_text = str(issue or "").strip()
-    if issue_text and issue_text not in issues:
-        issues.append(issue_text)
-    category_text = str(category or "").strip()
-    if category_text and category_text not in categories:
-        categories.append(category_text)
+    message: str,
+    *,
+    offending_excerpt: str | None = None,
+    next_action: str | None = None,
+    blocking: bool = True,
+) -> dict[str, Any]:
+    return {
+        "category": category,
+        "message": message,
+        "offending_excerpt": _trim_excerpt(offending_excerpt) if offending_excerpt else None,
+        "next_action": next_action or _NEXT_ACTION_HINTS.get(category, "Inspect the translation prompt/profile and retry."),
+        "blocking": blocking,
+        "scope": "content",
+    }
+
+
+def _dedupe_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for finding in findings:
+        key = (
+            str(finding.get("category") or "").strip(),
+            str(finding.get("message") or "").strip(),
+            str(finding.get("offending_excerpt") or "").strip(),
+        )
+        if key in seen:
+            continue
+        deduped.append(finding)
+        seen.add(key)
+    return deduped
+
+
+def _find_gibberish_excerpt(translated_text: str) -> str | None:
+    for raw_token in re.findall(r"\S+", str(translated_text or "")):
+        token = raw_token.strip("()[]{}<>\"'.,;:!?")
+        if len(token) < 6:
+            continue
+        if _REPEATED_CHAR_TOKEN.search(token):
+            return raw_token
+        normalized = re.sub(r"[^A-Za-z]", "", token)
+        if len(normalized) >= 8 and _ASCII_CONSONANT_CLUSTER.fullmatch(normalized):
+            return raw_token
+    return None
+
+
+def collect_translation_quality_findings(
+    *,
+    source_text: str,
+    translated_text: str,
+    language_code: str,
+    words_in: int | None = None,
+    words_out: int | None = None,
+    source_channel_name: str = "",
+    target_channel_name: str = "",
+) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    translated_clean = str(translated_text or "").strip()
+    if not translated_clean:
+        return [
+            _make_finding(
+                "empty_output",
+                "Model returned empty translation.",
+            )
+        ]
+
+    if words_in and words_in > 0 and words_out is not None:
+        suspicious_limit = max(
+            int(words_in * _SUSPICIOUS_WORD_EXPANSION_RATIO),
+            words_in + _SUSPICIOUS_WORD_EXPANSION_MARGIN,
+        )
+        if words_out > suspicious_limit:
+            findings.append(
+                _make_finding(
+                    "suspicious_length",
+                    "Output is suspiciously long and may contain duplicated source text.",
+                    offending_excerpt=translated_clean,
+                )
+            )
+
+    translated_norm = normalize_compare_text(translated_clean)
+    leaked_source = [paragraph for paragraph in significant_paragraphs(source_text) if paragraph and paragraph in translated_norm]
+    if leaked_source:
+        findings.append(
+            _make_finding(
+                "source_text_leak",
+                "Translation still contains untranslated source paragraphs.",
+                offending_excerpt=leaked_source[0],
+            )
+        )
+
+    translated_paragraphs = significant_paragraphs(translated_clean)
+    duplicate_counts = Counter(translated_paragraphs)
+    duplicate_excerpt = next((paragraph for paragraph, count in duplicate_counts.items() if count > 1), None)
+    if str(source_text or "").strip() and duplicate_excerpt:
+        findings.append(
+            _make_finding(
+                "duplication",
+                "Translation contains duplicated translated paragraphs.",
+                offending_excerpt=duplicate_excerpt,
+            )
+        )
+
+    if is_non_english_target(language_code):
+        cta_match = next((pattern.search(translated_clean) for pattern in _ENGLISH_CTA_PATTERNS if pattern.search(translated_clean)), None)
+        if cta_match:
+            findings.append(
+                _make_finding(
+                    "english_cta_leak",
+                    "Translation still contains English CTA wording.",
+                    offending_excerpt=_excerpt_from_match(translated_clean, cta_match),
+                )
+            )
+
+    pack = resolve_language_rulepack(language_code)
+    for pattern, issue in pack.bad_literal_patterns:
+        match = re.search(pattern, translated_clean, flags=re.IGNORECASE)
+        if match:
+            findings.append(
+                _make_finding(
+                    "language_rule_violation",
+                    issue,
+                    offending_excerpt=_excerpt_from_match(translated_clean, match),
+                )
+            )
+
+    if source_channel_name and target_channel_name:
+        source_channel_match = re.search(re.escape(source_channel_name), translated_clean, flags=re.IGNORECASE)
+        if source_channel_match:
+            findings.append(
+                _make_finding(
+                    "source_channel_leak",
+                    f'Translation still contains the source channel name "{source_channel_name}".',
+                    offending_excerpt=_excerpt_from_match(translated_clean, source_channel_match),
+                )
+            )
+        if re.search(re.escape(source_channel_name), source_text, flags=re.IGNORECASE) and not re.search(
+            re.escape(target_channel_name),
+            translated_clean,
+            flags=re.IGNORECASE,
+        ):
+            findings.append(
+                _make_finding(
+                    "missing_target_channel_name",
+                    f'Translation did not use the configured channel name "{target_channel_name}".',
+                )
+            )
+
+    digit_match = _DIGIT_PATTERN.search(translated_clean)
+    if digit_match:
+        findings.append(
+            _make_finding(
+                "digits_present",
+                "Translation still contains digits; narration must use numbers written as words.",
+                offending_excerpt=_excerpt_from_match(translated_clean, digit_match),
+            )
+        )
+
+    gibberish_excerpt = _find_gibberish_excerpt(translated_clean)
+    if gibberish_excerpt:
+        findings.append(
+            _make_finding(
+                "gibberish_output",
+                "Translation contains gibberish or non-word output that is unsafe for narration.",
+                offending_excerpt=gibberish_excerpt,
+            )
+        )
+
+    return _dedupe_findings(findings)
 
 
 def analyze_translation_quality(
@@ -206,103 +426,30 @@ def analyze_translation_quality(
     source_channel_name: str = "",
     target_channel_name: str = "",
 ) -> dict[str, Any]:
-    issues: list[str] = []
+    findings = collect_translation_quality_findings(
+        source_text=source_text,
+        translated_text=translated_text,
+        language_code=language_code,
+        words_in=words_in,
+        words_out=words_out,
+        source_channel_name=source_channel_name,
+        target_channel_name=target_channel_name,
+    )
+    issues = [
+        str(finding.get("message") or "").strip()
+        for finding in findings
+        if str(finding.get("message") or "").strip()
+    ]
     categories: list[str] = []
-    translated_clean = str(translated_text or "").strip()
-    if not translated_clean:
-        _append_issue(
-            issues,
-            categories,
-            issue="Model returned empty translation.",
-            category="empty_output",
-        )
-        return {
-            "issues": issues,
-            "categories": categories,
-            "summary": summarize_translation_categories(categories, issues=issues),
-        }
-
-    if words_in and words_in > 0 and words_out is not None:
-        suspicious_limit = max(
-            int(words_in * _SUSPICIOUS_WORD_EXPANSION_RATIO),
-            words_in + _SUSPICIOUS_WORD_EXPANSION_MARGIN,
-        )
-        if words_out > suspicious_limit:
-            _append_issue(
-                issues,
-                categories,
-                issue="Output is suspiciously long and may contain duplicated source text.",
-                category="duplication",
-            )
-
-    translated_norm = normalize_compare_text(translated_clean)
-    leaked_source = [paragraph for paragraph in significant_paragraphs(source_text) if paragraph and paragraph in translated_norm]
-    if leaked_source:
-        _append_issue(
-            issues,
-            categories,
-            issue="Translation still contains untranslated source paragraphs.",
-            category="leftover_source_language",
-        )
-
-    if is_non_english_target(language_code) and any(pattern.search(translated_clean) for pattern in _ENGLISH_CTA_PATTERNS):
-        _append_issue(
-            issues,
-            categories,
-            issue="Translation still contains English CTA wording.",
-            category="leftover_source_language",
-        )
-        _append_issue(
-            issues,
-            categories,
-            issue="CTA wording still needs a natural localized rewrite.",
-            category="cta_quality",
-        )
-
-    translated_paragraphs = significant_paragraphs(translated_clean)
-    duplicate_counts = Counter(translated_paragraphs)
-    if str(source_text or "").strip() and any(count > 1 for count in duplicate_counts.values()):
-        _append_issue(
-            issues,
-            categories,
-            issue="Translation contains duplicated translated paragraphs.",
-            category="duplication",
-        )
-
-    pack = resolve_language_rulepack(language_code)
-    for pattern, issue in pack.bad_literal_patterns:
-        if re.search(pattern, translated_clean, flags=re.IGNORECASE):
-            _append_issue(
-                issues,
-                categories,
-                issue=issue,
-                category="literal_phrasing",
-            )
-
-    if source_channel_name and target_channel_name:
-        if re.search(re.escape(source_channel_name), translated_clean, flags=re.IGNORECASE):
-            _append_issue(
-                issues,
-                categories,
-                issue=f'Translation still contains the source channel name "{source_channel_name}".',
-                category="channel_name",
-            )
-        if re.search(re.escape(source_channel_name), source_text, flags=re.IGNORECASE) and not re.search(
-            re.escape(target_channel_name),
-            translated_clean,
-            flags=re.IGNORECASE,
-        ):
-            _append_issue(
-                issues,
-                categories,
-                issue=f'Translation did not use the configured channel name "{target_channel_name}".',
-                category="channel_name",
-            )
-
+    for finding in findings:
+        category = str(finding.get("category") or "").strip()
+        if category and category not in categories:
+            categories.append(category)
     return {
         "issues": issues,
         "categories": categories,
         "summary": summarize_translation_categories(categories, issues=issues),
+        "findings": findings,
     }
 
 
@@ -316,12 +463,16 @@ def collect_translation_quality_issues(
     source_channel_name: str = "",
     target_channel_name: str = "",
 ) -> list[str]:
-    return analyze_translation_quality(
-        source_text=source_text,
-        translated_text=translated_text,
-        language_code=language_code,
-        words_in=words_in,
-        words_out=words_out,
-        source_channel_name=source_channel_name,
-        target_channel_name=target_channel_name,
-    )["issues"]
+    return [
+        str(finding.get("message") or "").strip()
+        for finding in collect_translation_quality_findings(
+            source_text=source_text,
+            translated_text=translated_text,
+            language_code=language_code,
+            words_in=words_in,
+            words_out=words_out,
+            source_channel_name=source_channel_name,
+            target_channel_name=target_channel_name,
+        )
+        if str(finding.get("message") or "").strip()
+    ]

@@ -22,11 +22,12 @@ DEFAULT_TRANSLATION_PROMPT = (
     "4. Do NOT add, remove, or summarize any content\n"
     "5. Aim to keep the translated text approximately the same length as the original\n"
     "6. If the text contains names, brands, or technical terms, keep them as-is\n"
-    "7. Output ONLY the translated text — no explanations, no headers\n"
+    "7. Output ONLY the translated text — no explanations, no headers, and no markup\n"
     "8. Translate EVERYTHING into {target_lang}; do not leave any sentence, paragraph, or CTA in the source language\n"
     "9. Do NOT output both the original text and the translation; never duplicate source paragraphs\n"
     "10. If the text contains calls to action like subscribe, share, or tell someone, translate those calls to action fully into {target_lang}\n" \
     "11. Always write numbers in plain text words (e.g., \"one, two, three\") rather than digits (\"1, 2, 3\").\n"
+    "12. Keep the output as plain readable narration that can be sent directly to text-to-speech without cleanup.\n"
     "{language_guidance}"
     "{sensitive_terms_block}"
     "{channel_name_instruction}"
