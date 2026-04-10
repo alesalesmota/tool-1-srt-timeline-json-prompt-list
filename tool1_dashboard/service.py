@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from .alignment_tool.extract_script import extract_script_text
-from .alignment_tool.normalize_script import normalize_script
 from .alignment_tool.config import LANGUAGE_PROFILES
 from .alignment_tool.config import OUTPUT_ROOT as ALIGNMENT_OUTPUT_ROOT
 from .alignment_tool.config import TEMP_ROOT as ALIGNMENT_TEMP_ROOT
