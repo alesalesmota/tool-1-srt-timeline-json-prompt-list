@@ -26,7 +26,6 @@ from .chunking import build_gap_fill_batches, build_planning_chunks, build_promp
 from .database import StageRunResult
 from .config import (
     AGENTS_ROOT,
-    BOARD_STATUSES,
     DEFAULT_ALIGNMENT_OPTIONS,
     DEFAULT_SETTINGS,
     EPISODE_PIPELINE_STAGES,
