@@ -767,16 +767,24 @@ function activeTtsJob(episode) {
   return ["queued", "processing"].includes(String(job.status || "").toLowerCase()) ? job : null;
 }
 
+function formatChunkProgress(current, total, percent) {
+  const currentChunk = Number(current);
+  const totalChunks = Number(total);
+  const pct = Number(percent);
+  if (Number.isFinite(currentChunk) && currentChunk > 0 && Number.isFinite(totalChunks) && totalChunks > 0) {
+    const pctSuffix = Number.isFinite(pct) ? ` (${Math.max(0, Math.min(100, Math.round(pct)))}%)` : "";
+    return `chunk ${currentChunk}/${totalChunks}${pctSuffix}`;
+  }
+  return null;
+}
+
 function activeTtsJobCopy(job) {
   if (!job) return "";
   const language = String(job.language_code || "").trim().toUpperCase();
   const prefix = language ? `${language} ` : "";
-  const currentChunk = Number(job.current_chunk);
-  const totalChunks = Number(job.total_chunks);
-  const percent = Number(job.percent);
-  if (Number.isFinite(currentChunk) && currentChunk > 0 && Number.isFinite(totalChunks) && totalChunks > 0) {
-    const pctSuffix = Number.isFinite(percent) ? ` (${Math.max(0, Math.min(100, Math.round(percent)))}%)` : "";
-    return `${prefix}chunk ${currentChunk}/${totalChunks}${pctSuffix}`;
+  const chunkText = formatChunkProgress(job.current_chunk, job.total_chunks, job.percent);
+  if (chunkText) {
+    return `${prefix}${chunkText}`;
   }
   if (job.progress) return `${prefix}${job.progress}`;
   return language ? `${language} narration in progress` : "Narration in progress";
@@ -850,13 +858,8 @@ function renderActiveTtsProgress(episode) {
 
 function languageTtsJobCopy(langStatus) {
   if (!langStatus) return "";
-  const currentChunk = Number(langStatus.tts_job_current_chunk);
-  const totalChunks = Number(langStatus.tts_job_total_chunks);
-  const percent = Number(langStatus.tts_job_percent);
-  if (Number.isFinite(currentChunk) && currentChunk > 0 && Number.isFinite(totalChunks) && totalChunks > 0) {
-    const pctSuffix = Number.isFinite(percent) ? ` (${Math.max(0, Math.min(100, Math.round(percent)))}%)` : "";
-    return `chunk ${currentChunk}/${totalChunks}${pctSuffix}`;
-  }
+  const chunkText = formatChunkProgress(langStatus.tts_job_current_chunk, langStatus.tts_job_total_chunks, langStatus.tts_job_percent);
+  if (chunkText) return chunkText;
   return String(langStatus.tts_job_progress || "").trim();
 }
 
