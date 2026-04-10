@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import threading
 import unittest
@@ -9,6 +10,7 @@ from unittest.mock import patch
 from tool1_dashboard.launch_runtime import (
     SingleInstanceLock,
     clear_runtime_info,
+    default_runtime_info,
     get_runtime_info,
     register_shutdown_callback,
     request_runtime_shutdown,
@@ -37,6 +39,17 @@ class LaunchRuntimeTests(unittest.TestCase):
             patcher.stop()
         self._tmpdir.cleanup()
 
+    def test_default_runtime_info(self) -> None:
+        info = default_runtime_info()
+        self.assertIsInstance(info, dict)
+        self.assertEqual(info["mode"], "server")
+        self.assertFalse(info["window_controls_shutdown"])
+        self.assertIsNone(info["port"])
+        self.assertIsNone(info["url"])
+        self.assertIn("pid", info)
+        self.assertIn("host", info)
+        self.assertIn("started_at", info)
+
     def test_runtime_info_roundtrip_and_url(self) -> None:
         payload = set_runtime_info(
             pid=999,
@@ -63,6 +76,7 @@ class LaunchRuntimeTests(unittest.TestCase):
         self.assertTrue(request_runtime_shutdown())
         self.assertTrue(triggered.wait(timeout=1.0))
 
+    @unittest.skipIf(os.name != "nt", "Single-instance locking is only supported on Windows.")
     def test_single_instance_lock_blocks_duplicate_handle(self) -> None:
         lock_path = self.runtime_dir / "instance.lock"
         first = SingleInstanceLock(lock_path)

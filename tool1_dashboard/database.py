@@ -4,12 +4,205 @@ import json
 import sqlite3
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
 from .config import DATABASE_PATH, DEFAULT_SETTINGS
 from .runtime import ensure_dir, utc_now
 
+@dataclass
+class StageRunResult:
+    status: str
+    exit_code: int | None
+    parsed_output_path: str | None = None
+    validation_path: str | None = None
+    error_text: str | None = None
+    command_payload: Any | None = None
+    stdout_path: str | None = None
+    stderr_path: str | None = None
+
+@dataclass
+class StageRunParams:
+    episode_id: str
+    stage: str
+    provider: str | None
+    template_hash: str | None
+    workdir: str
+    command_payload: Any
+    stdout_path: str | None
+    stderr_path: str | None
+    parsed_output_path: str | None = None
+    validation_path: str | None = None
+
+@dataclass
+class WorkerHeartbeat:
+    worker_id: str
+    status: str
+    current_job_id: str | None
+    pid: int
+    started_at: float
+    last_error: str | None = None
+
+ALLOWED_COLUMNS: dict[str, set[str]] = {
+    "settings": {
+        "key",
+        "updated_at",
+        "value",
+    },
+    "templates": {
+        "body",
+        "hash",
+        "path",
+        "provider",
+        "stage",
+        "updated_at",
+    },
+    "niche_projects": {
+        "board_status",
+        "channel_replace_post",
+        "channel_replace_prompt",
+        "configured_languages",
+        "created_at",
+        "id",
+        "image_prompt_model",
+        "image_prompt_provider",
+        "language_channel_names",
+        "language_translation_profiles",
+        "language_voice_profiles",
+        "last_error",
+        "leading_video_scene_count",
+        "master_language",
+        "scene_planning_model",
+        "scene_planning_provider",
+        "source_channel_name",
+        "title",
+        "updated_at",
+        "video_prompt_model",
+        "video_prompt_provider",
+        "visual_bible_model",
+        "visual_bible_provider",
+        "warning_count",
+        "workspace_dir",
+    },
+    "episodes": {
+        "board_status",
+        "configured_languages",
+        "consistency_guide_path",
+        "created_at",
+        "current_stage",
+        "export_image_prompt_list_path",
+        "export_prompt_list_path",
+        "export_timeline_path",
+        "export_video_prompt_list_path",
+        "id",
+        "last_error",
+        "master_language",
+        "master_scenes_path",
+        "niche_project_id",
+        "pause_requested",
+        "pipeline_status",
+        "planning_manifest_path",
+        "prompt_blueprint_path",
+        "prompt_list_draft_path",
+        "prompt_validation_path",
+        "queued_from_stage",
+        "review_ready",
+        "script_text",
+        "timeline_draft_path",
+        "timeline_validation_path",
+        "title",
+        "updated_at",
+        "visual_bible_validation_path",
+        "warning_count",
+        "workspace_dir",
+    },
+    "episode_language_status": {
+        "episode_id",
+        "error_message",
+        "id",
+        "language_code",
+        "script_path",
+        "spoken_script_path",
+        "srt_path",
+        "srt_status",
+        "timeline_path",
+        "timeline_status",
+        "translation_status",
+        "tts_audio_path",
+        "tts_job_id",
+        "tts_status",
+        "updated_at",
+    },
+    "stage_runs": {
+        "command_json",
+        "episode_id",
+        "error_text",
+        "exit_code",
+        "finished_at",
+        "id",
+        "parsed_output_path",
+        "provider",
+        "stage",
+        "started_at",
+        "status",
+        "stderr_path",
+        "stdout_path",
+        "template_hash",
+        "validation_path",
+        "workdir",
+    },
+    "voice_profiles": {
+        "audio_file",
+        "audio_path",
+        "created_at",
+        "has_latents",
+        "id",
+        "language_code",
+        "latents_path",
+        "name",
+        "tts_config_json",
+        "updated_at",
+    },
+    "translation_profiles": {
+        "api_key_ref",
+        "created_at",
+        "id",
+        "is_default",
+        "model",
+        "name",
+        "provider",
+        "updated_at",
+    },
+    "tts_jobs": {
+        "build_id",
+        "control_action",
+        "created_at",
+        "error_message",
+        "filename",
+        "finished_at",
+        "job_id",
+        "job_type",
+        "meta_json",
+        "payload_json",
+        "profile_id",
+        "progress",
+        "queue_priority",
+        "result_path",
+        "status",
+        "updated_at",
+        "worker_id",
+    },
+    "worker_heartbeats": {
+        "current_job_id",
+        "heartbeat_at",
+        "last_error",
+        "pid",
+        "started_at",
+        "status",
+        "worker_id",
+    },
+}
 
 class Tool1Database:
     def __init__(self, path: Path | None = None) -> None:
@@ -299,7 +492,7 @@ class Tool1Database:
                     "source_channel_name": "TEXT NOT NULL DEFAULT ''",
                     "language_channel_names": "TEXT NOT NULL DEFAULT '{}'",
                     "channel_replace_prompt": "INTEGER NOT NULL DEFAULT 1",
-                    "channel_replace_post": "INTEGER NOT NULL DEFAULT 1",
+                    "channel_replace_post": "INTEGER NOT NULL DEFAULT 0",
                 },
             )
             self._ensure_columns(
@@ -329,6 +522,16 @@ class Tool1Database:
         table_name: str,
         columns: dict[str, str],
     ) -> None:
+        # Validate table name exists to prevent SQL injection in PRAGMA statement
+        tables = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if table_name not in tables:
+            raise ValueError(f"Table '{table_name}' does not exist.")
+
         existing = {
             row["name"]
             for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
@@ -368,6 +571,12 @@ class Tool1Database:
             return int(cursor.lastrowid or 0)
 
     def _insert(self, table: str, payload: dict[str, Any]) -> None:
+        if table not in ALLOWED_COLUMNS:
+            raise ValueError(f"Table '{table}' is not allowed.")
+        allowed = ALLOWED_COLUMNS[table]
+        for key in payload.keys():
+            if key not in allowed:
+                raise ValueError(f"Column '{key}' is not allowed in table '{table}'.")
         columns = ", ".join(payload.keys())
         placeholders = ", ".join(["?"] * len(payload))
         self._execute(
@@ -376,10 +585,18 @@ class Tool1Database:
         )
 
     def _update(self, table: str, pk_column: str, pk_value: Any, **fields: Any) -> None:
+        if table not in ALLOWED_COLUMNS:
+            raise ValueError(f"Table '{table}' is not allowed.")
+        allowed = ALLOWED_COLUMNS[table]
+        if pk_column not in allowed:
+            raise ValueError(f"Column '{pk_column}' is not allowed in table '{table}'.")
         if not fields:
             return
         if "updated_at" not in fields:
             fields["updated_at"] = utc_now()
+        for key in fields:
+            if key not in allowed:
+                raise ValueError(f"Column '{key}' is not allowed in table '{table}'.")
         assignments = ", ".join(f"{key} = ?" for key in fields)
         params = list(fields.values()) + [pk_value]
         self._execute(f"UPDATE {table} SET {assignments} WHERE {pk_column} = ?", params)
@@ -439,16 +656,7 @@ class Tool1Database:
 
     def start_stage_run(
         self,
-        episode_id: str,
-        stage: str,
-        provider: str | None,
-        template_hash: str | None,
-        workdir: str,
-        command_payload: Any,
-        stdout_path: str | None,
-        stderr_path: str | None,
-        parsed_output_path: str | None = None,
-        validation_path: str | None = None,
+        params: StageRunParams,
     ) -> int:
         return self._execute(
             """
@@ -459,48 +667,40 @@ class Tool1Database:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                episode_id,
-                stage,
-                provider,
+                params.episode_id,
+                params.stage,
+                params.provider,
                 "running",
                 utc_now(),
-                template_hash,
-                workdir,
-                json.dumps(command_payload, ensure_ascii=False),
-                stdout_path,
-                stderr_path,
-                parsed_output_path,
-                validation_path,
+                params.template_hash,
+                params.workdir,
+                json.dumps(params.command_payload, ensure_ascii=False),
+                params.stdout_path,
+                params.stderr_path,
+                params.parsed_output_path,
+                params.validation_path,
             ),
         )
 
     def finish_stage_run(
         self,
         run_id: int,
-        *,
-        status: str,
-        exit_code: int | None,
-        parsed_output_path: str | None = None,
-        validation_path: str | None = None,
-        error_text: str | None = None,
-        command_payload: Any | None = None,
-        stdout_path: str | None = None,
-        stderr_path: str | None = None,
+        result: StageRunResult,
     ) -> None:
         fields: dict[str, Any] = {
-            "status": status,
+            "status": result.status,
             "finished_at": utc_now(),
-            "exit_code": exit_code,
-            "parsed_output_path": parsed_output_path,
-            "validation_path": validation_path,
-            "error_text": error_text,
+            "exit_code": result.exit_code,
+            "parsed_output_path": result.parsed_output_path,
+            "validation_path": result.validation_path,
+            "error_text": result.error_text,
         }
-        if command_payload is not None:
-            fields["command_json"] = json.dumps(command_payload, ensure_ascii=False)
-        if stdout_path is not None:
-            fields["stdout_path"] = stdout_path
-        if stderr_path is not None:
-            fields["stderr_path"] = stderr_path
+        if result.command_payload is not None:
+            fields["command_json"] = json.dumps(result.command_payload, ensure_ascii=False)
+        if result.stdout_path is not None:
+            fields["stdout_path"] = result.stdout_path
+        if result.stderr_path is not None:
+            fields["stderr_path"] = result.stderr_path
         assignments = ", ".join(f"{key} = ?" for key in fields)
         params = list(fields.values()) + [run_id]
         self._execute(f"UPDATE stage_runs SET {assignments} WHERE id = ?", params)
@@ -907,16 +1107,7 @@ class Tool1Database:
 
     # ── worker heartbeats ────────────────────────────────────────────
 
-    def record_worker_heartbeat(
-        self,
-        *,
-        worker_id: str,
-        status: str,
-        current_job_id: str | None,
-        pid: int,
-        started_at: float,
-        last_error: str | None = None,
-    ) -> None:
+    def record_worker_heartbeat(self, heartbeat: WorkerHeartbeat) -> None:
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
@@ -932,7 +1123,15 @@ class Tool1Database:
                     heartbeat_at = excluded.heartbeat_at,
                     last_error = excluded.last_error
                 """,
-                (worker_id, status, current_job_id, pid, started_at, time.time(), last_error),
+                (
+                    heartbeat.worker_id,
+                    heartbeat.status,
+                    heartbeat.current_job_id,
+                    heartbeat.pid,
+                    heartbeat.started_at,
+                    time.time(),
+                    heartbeat.last_error,
+                ),
             )
 
     def get_latest_worker_heartbeat(self) -> dict[str, Any] | None:

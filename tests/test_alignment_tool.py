@@ -545,7 +545,7 @@ class SegmentationBenchmarkTests(unittest.TestCase):
                     "chunk_count": 1,
                     "warnings": [],
                     "warning_summary": {},
-                    "output_dir": str(baseline_root.relative_to(root)).replace("/", "\\"),
+                    "output_dir": baseline_root.relative_to(root).as_posix(),
                 }
             ]
             summary_path = root / "benchmarks" / "baseline" / "summary.json"

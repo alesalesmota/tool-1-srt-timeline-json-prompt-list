@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 
@@ -18,7 +19,7 @@ project_dirs()
 app = FastAPI(title="Quebrador de SRT")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -84,14 +85,19 @@ async def health() -> dict[str, object]:
     }
 
 
+@dataclass
+class ChunkRequestParams:
+    max_words: int = Form(800)
+    max_chars: int = Form(5000)
+    max_entries: int = Form(120)
+    max_duration_seconds: int = Form(300)
+    restart_numbering: str = Form("true")
+
+
 @app.post("/api/chunk")
 async def chunk_srt(
     srt_file: UploadFile = File(...),
-    max_words: int = Form(800),
-    max_chars: int = Form(5000),
-    max_entries: int = Form(120),
-    max_duration_seconds: int = Form(300),
-    restart_numbering: str = Form("true"),
+    params: ChunkRequestParams = Depends(),
 ) -> dict[str, object]:
     filename = srt_file.filename or "subtitles.srt"
     if not filename.lower().endswith(".srt"):
@@ -101,12 +107,12 @@ async def chunk_srt(
     if not payload:
         raise HTTPException(status_code=400, detail="The uploaded file is empty.")
 
-    restart = restart_numbering.strip().lower() not in {"false", "0", "no", "off"}
+    restart = params.restart_numbering.strip().lower() not in {"false", "0", "no", "off"}
     config = ChunkConfig(
-        max_words=max(0, max_words),
-        max_chars=max(0, max_chars),
-        max_entries=max(0, max_entries),
-        max_duration_seconds=max(0, max_duration_seconds),
+        max_words=max(0, params.max_words),
+        max_chars=max(0, params.max_chars),
+        max_entries=max(0, params.max_entries),
+        max_duration_seconds=max(0, params.max_duration_seconds),
         restart_numbering=restart,
     )
 

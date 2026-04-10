@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import httpx
 import json
-import subprocess
 import tempfile
 import unittest
-from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from tool1_dashboard.providers import CliExecutionError, CliRunner
+from tool1_dashboard.providers import CliExecutionError, CliRunner, StructuredRunArgs
 
 
 def _make_fake_popen(returncode: int, stdout_text: str, stderr_text: str, *, side_effect=None):
@@ -87,13 +85,15 @@ class CliRunnerTests(unittest.TestCase):
             temp_path = Path(temp_dir)
             with patch("tool1_dashboard.providers.subprocess.Popen", side_effect=fake):
                 result = runner.run_structured(
-                    provider="claude",
-                    model="haiku",
-                    system_prompt="system",
-                    user_prompt="user",
-                    schema={"type": "object", "properties": {"scenes": {"type": "array"}}, "required": ["scenes"]},
-                    workdir=temp_path,
-                    artifact_dir=temp_path / "artifacts",
+                    StructuredRunArgs(
+                        provider="claude",
+                        model="haiku",
+                        system_prompt="system",
+                        user_prompt="user",
+                        schema={"type": "object", "properties": {"scenes": {"type": "array"}}, "required": ["scenes"]},
+                        workdir=temp_path,
+                        artifact_dir=temp_path / "artifacts",
+                    )
                 )
         self.assertIn("--system-prompt", captured_command)
         self.assertIn("--json-schema", captured_command)
@@ -122,14 +122,16 @@ class CliRunnerTests(unittest.TestCase):
                 mock_client.return_value.__enter__ = MagicMock(return_value=MagicMock(post=fake_post))
                 mock_client.return_value.__exit__ = MagicMock(return_value=False)
                 result = runner.run_structured(
-                    provider="codex",
-                    model="gpt-5.4",
-                    api_key="test-key",
-                    system_prompt="system",
-                    user_prompt="user",
-                    schema={"type": "object", "properties": {"prompts": {"type": "array"}}, "required": ["prompts"]},
-                    workdir=temp_path,
-                    artifact_dir=temp_path / "artifacts",
+                    StructuredRunArgs(
+                        provider="codex",
+                        model="gpt-5.4",
+                        api_key="test-key",
+                        system_prompt="system",
+                        user_prompt="user",
+                        schema={"type": "object", "properties": {"prompts": {"type": "array"}}, "required": ["prompts"]},
+                        workdir=temp_path,
+                        artifact_dir=temp_path / "artifacts",
+                    )
                 )
         self.assertEqual(result["parsed"], {"prompts": ["a", "b"]})
         self.assertEqual(recorder[0]["json"]["model"], "gpt-5.4")
@@ -149,13 +151,15 @@ class CliRunnerTests(unittest.TestCase):
             with patch("tool1_dashboard.providers.subprocess.Popen", side_effect=fake):
                 with self.assertRaises(CliExecutionError) as context:
                     runner.run_structured(
-                        provider="claude",
-                        model="haiku",
-                        system_prompt="system",
-                        user_prompt="user",
-                        schema={"type": "object", "properties": {"scenes": {"type": "array"}}, "required": ["scenes"]},
-                        workdir=temp_path,
-                        artifact_dir=temp_path / "artifacts",
+                        StructuredRunArgs(
+                            provider="claude",
+                            model="haiku",
+                            system_prompt="system",
+                            user_prompt="user",
+                            schema={"type": "object", "properties": {"scenes": {"type": "array"}}, "required": ["scenes"]},
+                            workdir=temp_path,
+                            artifact_dir=temp_path / "artifacts",
+                        )
                     )
         self.assertIn("Claude limit reached.", str(context.exception))
         self.assertIn("You've hit your limit", str(context.exception))
@@ -173,14 +177,16 @@ class CliRunnerTests(unittest.TestCase):
                 mock_client.return_value.__exit__ = MagicMock(return_value=False)
                 with self.assertRaises(CliExecutionError) as context:
                     runner.run_structured(
-                        provider="codex",
-                        model="gpt-5.4-mini",
-                        api_key="test-key",
-                        system_prompt="system",
-                        user_prompt="user",
-                        schema={"type": "object", "properties": {"prompts": {"type": "array"}}, "required": ["prompts"]},
-                        workdir=temp_path,
-                        artifact_dir=temp_path / "artifacts",
+                        StructuredRunArgs(
+                            provider="codex",
+                            model="gpt-5.4-mini",
+                            api_key="test-key",
+                            system_prompt="system",
+                            user_prompt="user",
+                            schema={"type": "object", "properties": {"prompts": {"type": "array"}}, "required": ["prompts"]},
+                            workdir=temp_path,
+                            artifact_dir=temp_path / "artifacts",
+                        )
                     )
         self.assertIn("timed out", str(context.exception))
 
@@ -202,14 +208,16 @@ class CliRunnerTests(unittest.TestCase):
                 side_effect=lambda *args, **kwargs: FakeHttpxClient(FakeHttpxResponse(200, response_payload), recorder),
             ):
                 result = runner.run_structured(
-                    provider="openai",
-                    model="gpt-5.4-mini",
-                    api_key="sk-stage",
-                    system_prompt="system",
-                    user_prompt="user",
-                    schema={"type": "object", "properties": {"scenes": {"type": "array"}}, "required": ["scenes"]},
-                    workdir=temp_path,
-                    artifact_dir=temp_path / "artifacts",
+                    StructuredRunArgs(
+                        provider="openai",
+                        model="gpt-5.4-mini",
+                        api_key="sk-stage",
+                        system_prompt="system",
+                        user_prompt="user",
+                        schema={"type": "object", "properties": {"scenes": {"type": "array"}}, "required": ["scenes"]},
+                        workdir=temp_path,
+                        artifact_dir=temp_path / "artifacts",
+                    )
                 )
 
         self.assertEqual(result["parsed"]["scenes"][0]["text"], "Opening scene")
@@ -262,6 +270,44 @@ class CliRunnerTests(unittest.TestCase):
                     runner.probe(force=True)
 
         self.assertEqual(len(calls), 4)  # 2 calls per probe (version + auth) x 2 probes
+
+    def test_deep_extract_error_message_depth_limit(self) -> None:
+        runner = CliRunner()
+
+        # Test just within depth limit (depth=0, 1, 2, 3 -> 4 levels, but we start _depth=0 at top level)
+        # top level: _depth=0
+        # "error" 1: _depth=1
+        # "error" 2: _depth=2
+        # "error" 3: _depth=3
+        payload_ok = {
+            "error": {
+                "error": {
+                    "error": {
+                        "message": "Just deep enough"
+                    }
+                }
+            }
+        }
+        self.assertEqual(runner._deep_extract_error_message(payload_ok), "Just deep enough")
+
+        # Test exceeding depth limit
+        # top level: _depth=0
+        # "error" 1: _depth=1
+        # "error" 2: _depth=2
+        # "error" 3: _depth=3
+        # "error" 4: _depth=4 (> 3) -> returns ""
+        payload_too_deep = {
+            "error": {
+                "error": {
+                    "error": {
+                        "error": {
+                            "message": "Too deep"
+                        }
+                    }
+                }
+            }
+        }
+        self.assertEqual(runner._deep_extract_error_message(payload_too_deep), "")
 
 
 if __name__ == "__main__":

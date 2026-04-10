@@ -1088,16 +1088,24 @@ function activeTtsJob(episode) {
   return ["queued", "processing"].includes(String(job.status || "").toLowerCase()) ? job : null;
 }
 
+function formatChunkProgress(current, total, percent) {
+  const currentChunk = Number(current);
+  const totalChunks = Number(total);
+  const pct = Number(percent);
+  if (Number.isFinite(currentChunk) && currentChunk > 0 && Number.isFinite(totalChunks) && totalChunks > 0) {
+    const pctSuffix = Number.isFinite(pct) ? ` (${Math.max(0, Math.min(100, Math.round(pct)))}%)` : "";
+    return `chunk ${currentChunk}/${totalChunks}${pctSuffix}`;
+  }
+  return null;
+}
+
 function activeTtsJobCopy(job) {
   if (!job) return "";
   const language = String(job.language_code || "").trim().toUpperCase();
   const prefix = language ? `${language} ` : "";
-  const currentChunk = Number(job.current_chunk);
-  const totalChunks = Number(job.total_chunks);
-  const percent = Number(job.percent);
-  if (Number.isFinite(currentChunk) && currentChunk > 0 && Number.isFinite(totalChunks) && totalChunks > 0) {
-    const pctSuffix = Number.isFinite(percent) ? ` (${Math.max(0, Math.min(100, Math.round(percent)))}%)` : "";
-    return `${prefix}chunk ${currentChunk}/${totalChunks}${pctSuffix}`;
+  const chunkText = formatChunkProgress(job.current_chunk, job.total_chunks, job.percent);
+  if (chunkText) {
+    return `${prefix}${chunkText}`;
   }
   if (job.progress) return `${prefix}${job.progress}`;
   return language ? `${language} narration in progress` : "Narration in progress";
@@ -1175,13 +1183,8 @@ function renderActiveTtsProgress(episode) {
 
 function languageTtsJobCopy(langStatus) {
   if (!langStatus) return "";
-  const currentChunk = Number(langStatus.tts_job_current_chunk);
-  const totalChunks = Number(langStatus.tts_job_total_chunks);
-  const percent = Number(langStatus.tts_job_percent);
-  if (Number.isFinite(currentChunk) && currentChunk > 0 && Number.isFinite(totalChunks) && totalChunks > 0) {
-    const pctSuffix = Number.isFinite(percent) ? ` (${Math.max(0, Math.min(100, Math.round(percent)))}%)` : "";
-    return `chunk ${currentChunk}/${totalChunks}${pctSuffix}`;
-  }
+  const chunkText = formatChunkProgress(langStatus.tts_job_current_chunk, langStatus.tts_job_total_chunks, langStatus.tts_job_percent);
+  if (chunkText) return chunkText;
   return String(langStatus.tts_job_progress || "").trim();
 }
 
@@ -1843,6 +1846,7 @@ function renderSetupCard({ icon, title, copy, fields, tone = "neutral", compact 
   `;
 }
 
+
 function renderStageSetupCard({
   icon,
   title,
@@ -1857,19 +1861,18 @@ function renderStageSetupCard({
     copy: "",
     tone: "active",
     fields: `
-      <div class="setup-card-field-grid">
-        <label class="field">
-          <span class="field-label">Provider</span>
-          <select id="${esc(providerId)}">${providerOptions(providerValue)}</select>
-        </label>
-        <label class="field">
-          <span class="field-label">Model</span>
-          <select id="${esc(modelId)}" data-provider="${esc(providerValue || "claude")}">${modelOptions(providerValue, modelValue)}</select>
-        </label>
-      </div>
+      <label class="field">
+        <span class="field-label">Provider</span>
+        <select id="${esc(providerId)}">${providerOptions(providerValue)}</select>
+      </label>
+      <label class="field">
+        <span class="field-label">Model</span>
+        <select id="${esc(modelId)}" data-provider="${esc(providerValue || "claude")}">${modelOptions(providerValue, modelValue)}</select>
+      </label>
     `,
   });
 }
+
 
 function pipelineTone(status) {
   if (status === "running") return "info";
@@ -2831,7 +2834,7 @@ function renderStageProviderOpenAiMeta(stageProviderOpenAi = state.stageProvider
       : statusBadge("No saved key", "warn"),
     stageProviderOpenAi.modelCount
       ? statusBadge(
-        `${stageProviderOpenAi.modelCount} cached model${stageProviderOpenAi.modelCount === 1 ? "" : "s"}`,
+        `${stageProviderOpenAi.modelCount} cached models`,
         "success"
       )
       : "",
@@ -2851,6 +2854,7 @@ function renderStageProviderOpenAiMeta(stageProviderOpenAi = state.stageProvider
     </div>
   `;
 }
+
 
 function renderStageProviderOpenAiStatus(stageProviderOpenAi = state.stageProviderOpenAi) {
   if (!stageProviderOpenAi) return "";
@@ -3649,7 +3653,6 @@ function renderLanguageConfigSection(project, voiceProfiles, translationProfiles
   const cns = project.language_channel_names || {};
   const sourceChannel = project.source_channel_name || "";
   const replacePrompt = project.channel_replace_prompt !== false && project.channel_replace_prompt !== 0;
-  const replacePost = project.channel_replace_post !== false && project.channel_replace_post !== 0;
   const allLangs = state.targetLanguages || [];
   const usedSet = new Set(langs);
 
@@ -3695,13 +3698,10 @@ function renderLanguageConfigSection(project, voiceProfiles, translationProfiles
         <div class="toggle-row" style="display:flex;gap:16px;margin-top:8px;">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
             <input id="channel-replace-prompt" type="checkbox" ${replacePrompt ? "checked" : ""} />
-            <span class="field-label" style="margin:0;">Prompt-based replacement</span>
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-            <input id="channel-replace-post" type="checkbox" ${replacePost ? "checked" : ""} />
-            <span class="field-label" style="margin:0;">Post-translation replacement</span>
+            <span class="field-label" style="margin:0;">Prompt-based channel replacement</span>
           </label>
         </div>
+        <div class="helper" style="margin-top:8px;max-width:60ch;">The translator now handles channel renaming in the prompt. The app validates the result after translation, but it no longer rewrites the script in code.</div>
       </div>
       <table class="lang-config-table">
         <thead><tr><th>Language</th><th>Voice Profile</th><th>Translation Profile</th><th>Channel Name</th><th></th></tr></thead>
@@ -5077,6 +5077,57 @@ function renderSettings() {
   const workerHealth = state.workerHealth || {};
   const workerInfo = describeWorkerHealth(workerHealth);
   const appStartedAt = appRuntime.started_at ? formatDate(appRuntime.started_at) : null;
+
+  const runtimeItems = [
+    {
+      label: "App shell",
+      value: appRuntimeModeLabel(appRuntime),
+      copy: appRuntime.close_copy || null,
+    },
+    {
+      label: "App process",
+      value: appRuntime.pid ? `PID ${appRuntime.pid}` : "Unknown",
+      copy: appRuntimeProcessCopy(appRuntime) || null,
+    },
+    {
+      label: "Voice engine",
+      value: workerLifecycleLabel(workerHealth),
+      copy: workerInfo.copy || workerInfo.meta || null,
+    },
+    {
+      label: "OpenAI API",
+      value: openaiHealth.has_api_key ? "Ready" : "Key needed",
+      copy: openaiHealth.has_api_key && openaiHealth.model_count
+        ? `${openaiHealth.model_count} model${openaiHealth.model_count === 1 ? "" : "s"} cached`
+        : null,
+    },
+    {
+      label: "Claude CLI",
+      value: state.health?.providers?.claude?.logged_in
+        ? "Ready"
+        : state.health?.providers?.claude?.available
+          ? "Login needed"
+          : "Not installed",
+      copy: null,
+    },
+  ];
+
+  const runtimeCards = runtimeItems.map((item) => `
+    <div class="settings-runtime-item">
+      <div class="settings-runtime-label">${esc(item.label)}</div>
+      <div class="settings-runtime-value">${esc(item.value)}</div>
+      ${item.copy ? `<div class="settings-runtime-copy">${esc(item.copy)}</div>` : ""}
+    </div>
+  `).join("");
+
+  const runtimeBadges = [
+    appRuntime.single_instance ? healthBadge("Single instance", true) : "",
+    appStartedAt ? statusBadge(`Started ${appStartedAt.toLocaleString()}`, "neutral") : "",
+    healthBadge(`ffmpeg ${state.health?.alignment?.ffmpeg ? "ready" : "missing"}`, state.health?.alignment?.ffmpeg),
+    healthBadge(`MFA ${state.health?.alignment?.mfa ? "ready" : "check"}`, state.health?.alignment?.mfa ? true : "warn"),
+    healthBadge(`WhisperX ${state.health?.alignment?.whisperx ? "ready" : "check"}`, state.health?.alignment?.whisperx ? true : "warn"),
+  ].filter(Boolean).join("");
+
   $("view").innerHTML = `
     <section class="split-grid settings-page-grid">
       <section class="surface">
@@ -5249,48 +5300,18 @@ function renderSettings() {
         </form>
       </section>
 
-      <section class="surface">
-        <div class="section-head">
-          <div>
-            <div class="eyebrow">Health</div>
-            <h2 class="section-title">Runtime overview</h2>
-          </div>
+      </form>
+
+      <div class="settings-runtime">
+        <div class="settings-runtime-header">
+          <span class="eyebrow">Health</span>
+          <span class="settings-runtime-title">Runtime</span>
         </div>
-        <div class="provider-grid">
-          <article class="summary-card">
-            <div class="metric-label">App shell</div>
-            <div class="metric-value">${esc(appRuntimeModeLabel(appRuntime))}</div>
-            ${appRuntime.close_copy ? `<div class="metric-copy">${esc(appRuntime.close_copy)}</div>` : ""}
-          </article>
-          <article class="summary-card">
-            <div class="metric-label">App process</div>
-            <div class="metric-value">${esc(appRuntime.pid ? `PID ${appRuntime.pid}` : "Unknown")}</div>
-            <div class="metric-copy">${esc(appRuntimeProcessCopy(appRuntime) || "Runtime metadata unavailable")}</div>
-          </article>
-          <article class="summary-card">
-            <div class="metric-label">Voice engine</div>
-            <div class="metric-value">${esc(workerLifecycleLabel(workerHealth))}</div>
-            <div class="metric-copy">${esc(workerInfo.copy || workerInfo.meta || "No voice-engine activity detected.")}</div>
-          </article>
-          <article class="summary-card">
-            <div class="metric-label">OpenAI API</div>
-            <div class="metric-value">${esc(openaiHealth.has_api_key ? "Ready" : "Key needed")}</div>
-            ${openaiHealth.has_api_key && openaiHealth.model_count ? `<div class="metric-copy">${esc(openaiHealth.model_count)} model${openaiHealth.model_count === 1 ? "" : "s"} cached</div>` : ""}
-          </article>
-          <article class="summary-card">
-            <div class="metric-label">Claude CLI</div>
-            <div class="metric-value">${esc(state.health?.providers?.claude?.logged_in ? "Ready" : state.health?.providers?.claude?.available ? "Login needed" : "Not installed")}</div>
-          </article>
-        </div>
-        <div class="badge-row" style="margin-top:16px;">
-          ${appRuntime.single_instance ? healthBadge("single app instance enforced", true) : ""}
-          ${appStartedAt ? statusBadge(`Started ${appStartedAt.toLocaleString()}`, "neutral") : ""}
-          ${healthBadge(`ffmpeg ${state.health?.alignment?.ffmpeg ? "ready" : "missing"}`, state.health?.alignment?.ffmpeg)}
-          ${healthBadge(`MFA ${state.health?.alignment?.mfa ? "ready" : "check"}`, state.health?.alignment?.mfa ? true : "warn")}
-          ${healthBadge(`WhisperX ${state.health?.alignment?.whisperx ? "ready" : "check"}`, state.health?.alignment?.whisperx ? true : "warn")}
-        </div>
-      </section>
-    </section>
+        <div class="settings-runtime-grid">${runtimeCards}</div>
+        ${runtimeBadges ? `<div class="badge-row settings-runtime-badges">${runtimeBadges}</div>` : ""}
+      </div>
+
+    </div>
   `;
 }
 
@@ -6565,7 +6586,6 @@ document.addEventListener("click", async (event) => {
       });
       const sourceChannelName = ($("source-channel-name") || {}).value || "";
       const channelReplacePrompt = !!($("channel-replace-prompt") || {}).checked;
-      const channelReplacePost = !!($("channel-replace-post") || {}).checked;
       await api('/api/niche-projects/' + encodeURIComponent(projectId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -6575,7 +6595,7 @@ document.addEventListener("click", async (event) => {
           language_channel_names: langChannelNames,
           source_channel_name: sourceChannelName,
           channel_replace_prompt: channelReplacePrompt,
-          channel_replace_post: channelReplacePost,
+          channel_replace_post: false,
         }),
       });
       await refreshData();

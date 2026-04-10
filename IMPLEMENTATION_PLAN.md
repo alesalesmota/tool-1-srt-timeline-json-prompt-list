@@ -35,6 +35,16 @@ Implemented in code on 2026-04-10:
 - The redesign followed the existing dark dashboard system instead of introducing a new aesthetic, and the first implemented slice passed a code-plus-screenshot `design-review` check for rollout readiness.
 - Verified with `node --check tool1_dashboard/ui/app.js` and a live local `GET http://127.0.0.1:8020/#settings` response. Screenshot-based smoke is still pending because headless Chrome refused to write a file on this machine during the session.
 
+## Supplemental implementation note — 2026-04-10 channel-name simplification
+
+Implemented in code and regression-tested on 2026-04-10:
+
+- Channel-name replacement is now prompt-led. Translation, repair, and script-repair prompts explicitly instruct the model to replace the source YouTube channel name with the configured localized name and not partially preserve the source name.
+- The backend no longer rewrites translated scripts after generation with regex source-name swaps or CTA fallback logic.
+- Validation remains in place: if the translated script still contains the source channel name or fails to use the configured localized name when required, the translation is rejected.
+- New niche projects now default `channel_replace_post = false`, and the language-configuration UI no longer presents a second post-translation replacement toggle.
+- Verified with `python -m pytest tests/test_translation.py -q`, `python -m pytest tests/test_video_pipeline.py -q`, `python -m compileall tool1_dashboard`, and `node --check tool1_dashboard/ui/app.js`.
+
 ## Context
 
 After exporting an episode and uploading the generated images/videos through the assembly modal, the user has no clear way to move the card forward into the next assembly stages (assembly_validation → video_render → final_review). The episode card still shows the regular **"Resume from step"** dropdown, which is built only from the upstream `EPISODE_RUNNABLE_STAGES` list. Because `asset_upload` is **not** in that list, clicking that button silently sends the card back to `translation` (the closest runnable fallback) and triggers `delete_stage_runs_for(...)`, which **looks** like the user lost all their uploaded assets.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import importlib.util
 import os
 import re
@@ -92,17 +93,24 @@ def make_run_id(seed: str) -> str:
     return f"{timestamp}-{sanitize_name(seed)[:32]}"
 
 
+_log_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+
 def log_event(message: str, collector: Callable[[str], None] | None = None) -> None:
     timestamp = time.strftime("%H:%M:%S")
     line = f"[{timestamp}] {message}"
     if collector is not None:
         collector(line)
-    try:
-        ensure_dir(LOG_ROOT)
-        with (LOG_ROOT / "alignment_tool.log").open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-    except Exception:
-        pass
+
+    def _write_log() -> None:
+        try:
+            ensure_dir(LOG_ROOT)
+            with (LOG_ROOT / "alignment_tool.log").open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except Exception:
+            pass
+
+    _log_executor.submit(_write_log)
 
 
 def write_run_log(path: Path, entries: list[str]) -> None:

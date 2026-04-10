@@ -15,6 +15,55 @@ from tool1_dashboard.validators import (
 )
 
 
+from tool1_dashboard.chunking import PlanningChunk
+
+class PlanningChunkTests(unittest.TestCase):
+    def test_duration_seconds(self) -> None:
+        chunk = PlanningChunk(
+            chunk_id=1,
+            start_seconds=1.234,
+            end_seconds=4.567,
+            cue_start_index=1,
+            cue_end_index=2,
+            cues=[SubtitleCue(index=1, start_ms=1234, end_ms=4567, text="A")]
+        )
+        self.assertEqual(chunk.duration_seconds, 3.333)
+
+        chunk2 = PlanningChunk(
+            chunk_id=2,
+            start_seconds=0.0,
+            end_seconds=10.0,
+            cue_start_index=1,
+            cue_end_index=2,
+            cues=[SubtitleCue(index=1, start_ms=0, end_ms=10000, text="A")]
+        )
+        self.assertEqual(chunk2.duration_seconds, 10.0)
+
+    def test_to_dict(self) -> None:
+        cues = [
+            SubtitleCue(index=1, start_ms=1000, end_ms=2000, text="A"),
+            SubtitleCue(index=2, start_ms=2000, end_ms=3000, text="B")
+        ]
+        chunk = PlanningChunk(
+            chunk_id=42,
+            start_seconds=1.0,
+            end_seconds=3.0,
+            cue_start_index=1,
+            cue_end_index=2,
+            cues=cues
+        )
+        expected = {
+            "chunk_id": 42,
+            "start_seconds": 1.0,
+            "end_seconds": 3.0,
+            "duration_seconds": 2.0,
+            "cue_start_index": 1,
+            "cue_end_index": 2,
+            "cue_count": 2,
+        }
+        self.assertEqual(chunk.to_dict(), expected)
+
+
 class ChunkingValidationTests(unittest.TestCase):
     def test_overlap_chunking_creates_multiple_chunks(self) -> None:
         cues = [
@@ -378,6 +427,50 @@ class GapFillBatchTests(unittest.TestCase):
         scenes = self._scenes(["s1", "s2"])
         result = build_gap_fill_batches(scenes, set(), batch_size=10, batch_id_offset=5)
         self.assertEqual(result[0]["batch_id"], 6)
+
+    def test_gap_fill_handles_non_positive_batch_size(self) -> None:
+        scenes = self._scenes(["s1", "s2", "s3"])
+        # batch_size=0 should default to all missing in one batch
+        result = build_gap_fill_batches(scenes, set(), batch_size=0)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(len(result[0]["scenes"]), 3)
+
+        # batch_size < 0 should also work
+        result_neg = build_gap_fill_batches(scenes, set(), batch_size=-5)
+        self.assertEqual(len(result_neg), 1)
+        self.assertEqual(len(result_neg[0]["scenes"]), 3)
+
+    def test_gap_fill_handles_empty_scenes_list(self) -> None:
+        result = build_gap_fill_batches([], {"s1"}, batch_size=10)
+        self.assertEqual(result, [])
+
+    def test_gap_fill_handles_missing_scene_id_key(self) -> None:
+        scenes = [
+            {"scene_id": "s1"},
+            {"text": "no id"},
+            {"scene_id": "s2"},
+        ]
+        # s1 is received, others are not. {"text": "no id"} has scene_id=None
+        result = build_gap_fill_batches(scenes, {"s1"}, batch_size=10)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(len(result[0]["scenes"]), 2)
+        self.assertIsNone(result[0]["scenes"][0].get("scene_id"))
+        self.assertEqual(result[0]["scenes"][1]["scene_id"], "s2")
+
+    def test_gap_fill_verifies_indices(self) -> None:
+        scenes = self._scenes([f"s{i}" for i in range(1, 6)])
+        # missing: s1, s2, s3, s4, s5
+        result = build_gap_fill_batches(scenes, set(), batch_size=2)
+        # Batch 1: s1, s2 -> scene_start=1, scene_end=2
+        # Batch 2: s3, s4 -> scene_start=3, scene_end=4
+        # Batch 3: s5     -> scene_start=5, scene_end=5
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0]["scene_start"], 1)
+        self.assertEqual(result[0]["scene_end"], 2)
+        self.assertEqual(result[1]["scene_start"], 3)
+        self.assertEqual(result[1]["scene_end"], 4)
+        self.assertEqual(result[2]["scene_start"], 5)
+        self.assertEqual(result[2]["scene_end"], 5)
 
 
 if __name__ == "__main__":

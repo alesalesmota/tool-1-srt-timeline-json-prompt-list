@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 import httpx
 import json
 import os
@@ -19,6 +20,28 @@ class CliExecutionError(RuntimeError):
         super().__init__(message)
         self.stdout = stdout
         self.stderr = stderr
+
+
+@dataclass
+class StructuredRunArgs:
+    provider: str
+    model: str | None
+    system_prompt: str
+    user_prompt: str
+    schema: dict[str, Any]
+    workdir: Path
+    artifact_dir: Path
+    api_key: str | None = None
+
+
+@dataclass
+class StreamingArgs:
+    command: list[str]
+    stdin_text: str
+    stdout_path: Path
+    stderr_path: Path
+    cwd: Path
+    timeout_seconds: float | None = None
 
 
 class CliRunner:
@@ -92,115 +115,25 @@ class CliRunner:
             "auth": auth_payload,
         }
 
-    def run_structured(
-        self,
-        *,
-        provider: str,
-        model: str | None,
-        api_key: str | None = None,
-        system_prompt: str,
-        user_prompt: str,
-        schema: dict[str, Any],
-        workdir: Path,
-        artifact_dir: Path,
-    ) -> dict[str, Any]:
-        ensure_dir(artifact_dir)
-        prompt_path = write_text(artifact_dir / "prompt.txt", user_prompt)
-        schema_path = write_json(artifact_dir / "schema.json", schema)
-        stdout_path = artifact_dir / "stdout.txt"
-        stderr_path = artifact_dir / "stderr.txt"
-        parsed_path = artifact_dir / "parsed.json"
+    def run_structured(self, args: StructuredRunArgs) -> dict[str, Any]:
+        ensure_dir(args.artifact_dir)
+        prompt_path = write_text(args.artifact_dir / "prompt.txt", args.user_prompt)
+        schema_path = write_json(args.artifact_dir / "schema.json", args.schema)
+        stdout_path = args.artifact_dir / "stdout.txt"
+        stderr_path = args.artifact_dir / "stderr.txt"
+        parsed_path = args.artifact_dir / "parsed.json"
         command_payload: dict[str, Any]
 
-        if provider in ("openai", "codex"):
-            default_model = "gpt-5.4-mini" if provider == "openai" else "gpt-5.4"
-            request_path = artifact_dir / "request.json"
-            request_payload = {
-                "model": model or default_model,
-                "instructions": system_prompt,
-                "input": user_prompt,
-                "store": False,
-                "max_output_tokens": 16384,
-                "text": {
-                    "format": {
-                        "type": "json_schema",
-                        "name": "structured_output",
-                        "strict": True,
-                        "schema": schema,
-                    }
-                },
-            }
-            write_json(request_path, request_payload)
-            response_data = self._run_openai_structured(
-                api_key=str(api_key or "").strip(),
-                request_payload=request_payload,
-                stdout_path=stdout_path,
-                stderr_path=stderr_path,
-                timeout_seconds=self._structured_timeout_seconds,
+        if args.provider in ("openai", "codex"):
+            parsed, command_payload = self._run_structured_openai(
+                args, prompt_path, schema_path, stdout_path, stderr_path
             )
-            raw_text = self._extract_openai_output_text(response_data)
-            parsed = self._parse_structured_response(raw_text or json.dumps(response_data))
-            command_payload = {
-                "provider": provider,
-                "endpoint": "https://api.openai.com/v1/responses",
-                "workdir": str(workdir),
-                "prompt_path": str(prompt_path),
-                "schema_path": str(schema_path),
-                "request_path": str(request_path),
-                "model": model or default_model,
-                "transport": "https",
-            }
-        elif provider == "claude":
-            command = [
-                self.claude_bin,
-                "-p",
-                "--model",
-                model or "haiku",
-                "--system-prompt",
-                system_prompt,
-                "--output-format",
-                "json",
-                "--json-schema",
-                json.dumps(schema, ensure_ascii=False),
-            ]
-            returncode, stdout_text, stderr_text = self._run_streaming(
-                command,
-                user_prompt,
-                stdout_path,
-                stderr_path,
-                workdir,
-                timeout_seconds=self._structured_timeout_seconds,
+        elif args.provider == "claude":
+            parsed, command_payload = self._run_structured_claude(
+                args, prompt_path, schema_path, stdout_path, stderr_path
             )
-            if returncode != 0:
-                raise CliExecutionError(
-                    self._build_cli_error_message("claude", stdout_text, stderr_text),
-                    stdout=stdout_text,
-                    stderr=stderr_text,
-                )
-            parsed = self._parse_structured_response(stdout_text)
-            command_payload = {
-                "provider": provider,
-                "command": [
-                    self.claude_bin,
-                    "-p",
-                    "--model",
-                    model or "haiku",
-                    "<stdin>",
-                    "--system-prompt",
-                    "<inline>",
-                    "--output-format",
-                    "json",
-                    "--json-schema",
-                    "<inline>",
-                ],
-                "workdir": str(workdir),
-                "prompt_path": str(prompt_path),
-                "schema_path": str(schema_path),
-                "prompt_transport": "stdin",
-                "model": model or "haiku",
-            }
         else:
-            raise ValueError(f"Unsupported provider '{provider}'.")
+            raise ValueError(f"Unsupported provider '{args.provider}'.")
 
         write_json(parsed_path, parsed)
         return {
@@ -210,6 +143,112 @@ class CliRunner:
             "parsed_path": str(parsed_path),
             "command_payload": command_payload,
         }
+
+    def _run_structured_openai(
+        self,
+        args: StructuredRunArgs,
+        prompt_path: Path,
+        schema_path: Path,
+        stdout_path: Path,
+        stderr_path: Path,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        default_model = "gpt-5.4-mini" if args.provider == "openai" else "gpt-5.4"
+        request_path = args.artifact_dir / "request.json"
+        request_payload = {
+            "model": args.model or default_model,
+            "instructions": args.system_prompt,
+            "input": args.user_prompt,
+            "store": False,
+            "max_output_tokens": 16384,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "structured_output",
+                    "strict": True,
+                    "schema": args.schema,
+                }
+            },
+        }
+        write_json(request_path, request_payload)
+        response_data = self._run_openai_structured(
+            api_key=str(args.api_key or "").strip(),
+            request_payload=request_payload,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_seconds=self._structured_timeout_seconds,
+        )
+        raw_text = self._extract_openai_output_text(response_data)
+        parsed = self._parse_structured_response(raw_text or json.dumps(response_data))
+        command_payload = {
+            "provider": args.provider,
+            "endpoint": "https://api.openai.com/v1/responses",
+            "workdir": str(args.workdir),
+            "prompt_path": str(prompt_path),
+            "schema_path": str(schema_path),
+            "request_path": str(request_path),
+            "model": args.model or default_model,
+            "transport": "https",
+        }
+        return parsed, command_payload
+
+    def _run_structured_claude(
+        self,
+        args: StructuredRunArgs,
+        prompt_path: Path,
+        schema_path: Path,
+        stdout_path: Path,
+        stderr_path: Path,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        command = [
+            self.claude_bin,
+            "-p",
+            "--model",
+            args.model or "haiku",
+            "--system-prompt",
+            args.system_prompt,
+            "--output-format",
+            "json",
+            "--json-schema",
+            json.dumps(args.schema, ensure_ascii=False),
+        ]
+        streaming_args = StreamingArgs(
+            command=command,
+            stdin_text=args.user_prompt,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            cwd=args.workdir,
+            timeout_seconds=self._structured_timeout_seconds,
+        )
+        returncode, stdout_text, stderr_text = self._run_streaming(streaming_args)
+        if returncode != 0:
+            raise CliExecutionError(
+                self._build_cli_error_message("claude", stdout_text, stderr_text),
+                stdout=stdout_text,
+                stderr=stderr_text,
+            )
+        parsed = self._parse_structured_response(stdout_text)
+        command_payload = {
+            "provider": args.provider,
+            "command": [
+                self.claude_bin,
+                "-p",
+                "--model",
+                args.model or "haiku",
+                "<stdin>",
+                "--system-prompt",
+                "<inline>",
+                "--output-format",
+                "json",
+                "--json-schema",
+                "<inline>",
+            ],
+            "workdir": str(args.workdir),
+            "prompt_path": str(prompt_path),
+            "schema_path": str(schema_path),
+            "prompt_transport": "stdin",
+            "model": args.model or "haiku",
+        }
+        return parsed, command_payload
 
     @staticmethod
     def _extract_openai_output_text(payload: dict[str, Any]) -> str:
@@ -294,40 +333,32 @@ class CliRunner:
         return payload
 
     @staticmethod
-    def _run_streaming(
-        command: list[str],
-        stdin_text: str,
-        stdout_path: Path,
-        stderr_path: Path,
-        cwd: Path,
-        *,
-        timeout_seconds: float | None = None,
-    ) -> tuple[int, str, str]:
+    def _run_streaming(args: StreamingArgs) -> tuple[int, str, str]:
         """Run a subprocess while streaming stdout/stderr to files in real-time."""
-        with open(stdout_path, "w", encoding="utf-8", errors="replace") as out_f, \
-             open(stderr_path, "w", encoding="utf-8", errors="replace") as err_f:
+        with open(args.stdout_path, "w", encoding="utf-8", errors="replace") as out_f, \
+             open(args.stderr_path, "w", encoding="utf-8", errors="replace") as err_f:
             proc = subprocess.Popen(
-                command,
+                args.command,
                 stdin=subprocess.PIPE,
                 stdout=out_f,
                 stderr=err_f,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                cwd=cwd,
+                cwd=args.cwd,
             )
-            if stdin_text:
+            if args.stdin_text:
                 try:
-                    proc.stdin.write(stdin_text)
+                    proc.stdin.write(args.stdin_text)
                     proc.stdin.close()
                 except BrokenPipeError:
                     pass
             timed_out = False
             try:
-                proc.wait(timeout=timeout_seconds)
+                proc.wait(timeout=args.timeout_seconds)
             except subprocess.TimeoutExpired:
                 timed_out = True
-                timeout_message = f"CLI execution timed out after {int(timeout_seconds or 0)} seconds."
+                timeout_message = f"CLI execution timed out after {int(args.timeout_seconds or 0)} seconds."
                 try:
                     if os.name == "nt":
                         subprocess.run(
@@ -351,8 +382,8 @@ class CliRunner:
                     pass
                 err_f.write(("\n" if err_f.tell() else "") + timeout_message + "\n")
                 err_f.flush()
-        stdout_text = read_text(stdout_path)
-        stderr_text = read_text(stderr_path)
+        stdout_text = read_text(args.stdout_path)
+        stderr_text = read_text(args.stderr_path)
         returncode = proc.returncode
         if timed_out and returncode is None:
             returncode = -1

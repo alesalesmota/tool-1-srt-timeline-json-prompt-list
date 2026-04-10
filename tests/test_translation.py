@@ -305,7 +305,12 @@ class PromptBuildingTests(unittest.TestCase):
 class TranslationAdapterOpenAiTests(unittest.TestCase):
 
     def _run_async(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
 
     def test_gpt5_translation_uses_minimal_reasoning_and_reads_message_text(self):
         recorder: list[dict[str, Any]] = []
@@ -411,7 +416,12 @@ class TranslationAdapterOpenAiTests(unittest.TestCase):
 class TranslationServiceTests(unittest.TestCase):
 
     def _run_async(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
 
     def _make_fake_adapter(self, responses: list[str | Exception]) -> TranslationAdapter:
         adapter = TranslationAdapter()
@@ -465,7 +475,7 @@ class TranslationServiceTests(unittest.TestCase):
             {"scene_id": "s1", "text": " ".join(["word"] * 500)},
             {"scene_id": "s2", "text": " ".join(["word"] * 500)},
         ]
-        result = self._run_async(svc.translate_script(
+        self._run_async(svc.translate_script(
             source_script="",
             source_lang="English",
             target_lang="Spanish",
@@ -694,9 +704,9 @@ class TranslationServiceTests(unittest.TestCase):
 
 class TranslationValidationTests(unittest.TestCase):
 
-    def test_validated_translation_script_repairs_exact_subscribe_prefix(self):
+    def test_validated_translation_script_preserves_valid_channel_name_output(self):
         result = SimpleNamespace(
-            translated_script="Subscribe to Biblo Viral if you need a community.",
+            translated_script="Suscríbete a Biblo Viral si necesitas una comunidad.",
             status="done",
             chunk_results=[],
         )
@@ -707,7 +717,23 @@ class TranslationValidationTests(unittest.TestCase):
             source_channel_name="True Light",
             target_channel_name="Biblo Viral",
         )
-        self.assertEqual(translated, "Suscríbete a Biblo Viral if you need a community.")
+        self.assertEqual(translated, "Suscríbete a Biblo Viral si necesitas una comunidad.")
+
+    def test_validated_translation_script_rejects_source_channel_name_leak(self):
+        result = SimpleNamespace(
+            translated_script="Suscríbete a True Light si necesitas una comunidad.",
+            status="done",
+            chunk_results=[],
+        )
+        with self.assertRaises(ValueError) as ctx:
+            Tool1Service._validated_translation_script(
+                result,
+                language_code="es",
+                source_script="Subscribe to True Light if you need a community.",
+                source_channel_name="True Light",
+                target_channel_name="Biblo Viral",
+            )
+        self.assertIn("source channel name", str(ctx.exception).lower())
 
     def test_validated_translation_script_rejects_leaked_source_paragraphs(self):
         result = SimpleNamespace(
@@ -872,7 +898,7 @@ class TranslationRetryFlowTests(unittest.TestCase):
             self.service._episode_retry_single_translation(episode["id"], "es")
 
         self.assertTrue(mocked_translate.await_args.kwargs["master_scenes"])
-        self.assertTrue(mocked_translate.await_args.kwargs["reviewer_required"])
+        self.assertFalse(mocked_translate.await_args.kwargs["reviewer_required"])
         status = self.service.db.get_episode_language_status(episode["id"], "es")
         self.assertTrue(status["spoken_script_path"])
         self.assertTrue(Path(status["spoken_script_path"]).exists())

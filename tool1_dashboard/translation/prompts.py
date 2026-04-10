@@ -25,7 +25,8 @@ DEFAULT_TRANSLATION_PROMPT = (
     "7. Output ONLY the translated text — no explanations, no headers\n"
     "8. Translate EVERYTHING into {target_lang}; do not leave any sentence, paragraph, or CTA in the source language\n"
     "9. Do NOT output both the original text and the translation; never duplicate source paragraphs\n"
-    "10. If the text contains calls to action like subscribe, share, or tell someone, translate those calls to action fully into {target_lang}\n"
+    "10. If the text contains calls to action like subscribe, share, or tell someone, translate those calls to action fully into {target_lang}\n" \
+    "11. Always write numbers in plain text words (e.g., \"one, two, three\") rather than digits (\"1, 2, 3\").\n"
     "{language_guidance}"
     "{sensitive_terms_block}"
     "{channel_name_instruction}"
@@ -212,9 +213,9 @@ def build_translation_prompt(
     language_guidance = _guidance_block(target_lang, target_channel_name=target_channel_name)
     if source_channel_name and target_channel_name:
         channel_name_instruction = (
-            f'IMPORTANT: Whenever the text mentions the channel name '
-            f'"{source_channel_name}", replace it with "{target_channel_name}" '
-            f'in your translation.\n'
+            f'IMPORTANT: If the script mentions the YouTube channel name '
+            f'"{source_channel_name}", always replace it with "{target_channel_name}". '
+            f'Do not keep, translate, paraphrase, or partially preserve the source channel name.\n'
         )
     else:
         channel_name_instruction = ""
@@ -266,9 +267,9 @@ def build_translation_repair_prompt(
     language_guidance = _guidance_block(target_lang, target_channel_name=target_channel_name)
     if source_channel_name and target_channel_name:
         channel_name_instruction = (
-            f'IMPORTANT: Whenever the text mentions the channel name '
-            f'"{source_channel_name}", replace it with "{target_channel_name}" '
-            f'in your translation.\n'
+            f'IMPORTANT: If the script mentions the YouTube channel name '
+            f'"{source_channel_name}", always replace it with "{target_channel_name}". '
+            f'Do not keep, translate, paraphrase, or partially preserve the source channel name.\n'
         )
     else:
         channel_name_instruction = ""
@@ -305,8 +306,9 @@ def build_translation_script_repair_prompt(
     language_guidance = _guidance_block(target_lang, target_channel_name=target_channel_name)
     if source_channel_name and target_channel_name:
         channel_name_instruction = (
-            f'IMPORTANT: Whenever the text mentions the channel name "{source_channel_name}", '
-            f'replace it with "{target_channel_name}" in your translation.\n'
+            f'IMPORTANT: If the script mentions the YouTube channel name "{source_channel_name}", '
+            f'always replace it with "{target_channel_name}". '
+            f'Do not keep, translate, paraphrase, or partially preserve the source channel name.\n'
         )
     else:
         channel_name_instruction = ""
