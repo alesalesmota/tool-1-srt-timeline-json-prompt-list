@@ -290,6 +290,16 @@ class Tool1Database:
         table_name: str,
         columns: dict[str, str],
     ) -> None:
+        # Validate table name exists to prevent SQL injection in PRAGMA statement
+        tables = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if table_name not in tables:
+            raise ValueError(f"Table '{table_name}' does not exist.")
+
         existing = {
             row["name"]
             for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
