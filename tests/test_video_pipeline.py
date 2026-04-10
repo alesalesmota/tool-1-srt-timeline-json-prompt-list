@@ -695,7 +695,8 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
-                service = _make_service(temp_path)
+                runner = ProbeStateCliRunner(probe_state={"codex": {"available": True}, "claude": {"available": True}, "openai": {"available": True}, "gemini": {"available": True}})
+                service = _make_service(temp_path, cli_runner=runner)
                 client, original = _make_client(self.app_module, service)
                 try:
                     voice_profiles, translation_profiles = _build_profile_assignments(service, temp_path, ["en", "pt-BR"])
@@ -848,7 +849,8 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
-                service = _make_service(temp_path)
+                runner = ProbeStateCliRunner(probe_state={"codex": {"available": True}, "claude": {"available": True}, "openai": {"available": True}, "gemini": {"available": True}})
+                service = _make_service(temp_path, cli_runner=runner)
                 client, original = _make_client(self.app_module, service)
                 try:
                     voice_profiles, translation_profiles = _build_profile_assignments(service, temp_path, ["en", "pt-BR"])
@@ -875,7 +877,8 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
-                service = _make_service(temp_path)
+                runner = ProbeStateCliRunner(probe_state={"codex": {"available": True}, "claude": {"available": True}, "openai": {"available": True}, "gemini": {"available": True}})
+                service = _make_service(temp_path, cli_runner=runner)
                 client, original = _make_client(self.app_module, service)
                 try:
                     shared_voice = _seed_voice_profile(
@@ -913,7 +916,8 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
-                service = _make_service(temp_path)
+                runner = ProbeStateCliRunner(probe_state={"codex": {"available": True}, "claude": {"available": True}, "openai": {"available": True}, "gemini": {"available": True}})
+                service = _make_service(temp_path, cli_runner=runner)
                 client, original = _make_client(self.app_module, service)
                 try:
                     voice_profiles, translation_profiles = _build_profile_assignments(service, temp_path, ["en", "pt-BR"])
@@ -955,7 +959,8 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
-                service = _make_service(temp_path)
+                runner = ProbeStateCliRunner(probe_state={"codex": {"available": True}, "claude": {"available": True}, "openai": {"available": True}, "gemini": {"available": True}})
+                service = _make_service(temp_path, cli_runner=runner)
                 client, original = _make_client(self.app_module, service)
                 try:
                     voice_profiles, translation_profiles = _build_profile_assignments(service, temp_path, ["en", "pt-BR"])

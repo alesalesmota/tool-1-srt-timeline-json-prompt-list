@@ -2769,7 +2769,7 @@ class Tool1Service:
                 context_tail_words=settings.get("translation_context_tail_words", 200),
                 source_channel_name=source_channel_name if enable_prompt else "",
                 target_channel_name=target_channel if enable_prompt else "",
-                reviewer_required=True,
+                reviewer_required=False,
                 reviewer_api_key=reviewer_api_key,
                 reviewer_model="gpt-5.4-mini",
             ))
@@ -3570,7 +3570,7 @@ class Tool1Service:
                 context_tail_words=ctx.settings.get("translation_context_tail_words", 200),
                 source_channel_name=ctx.source_channel_name if ctx.enable_prompt else "",
                 target_channel_name=target_channel if ctx.enable_prompt else "",
-                reviewer_required=True,
+                reviewer_required=False,
                 reviewer_api_key=ctx.reviewer_api_key,
                 reviewer_model="gpt-5.4-mini",
             ))

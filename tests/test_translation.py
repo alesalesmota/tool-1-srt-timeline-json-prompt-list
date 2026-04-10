@@ -898,7 +898,7 @@ class TranslationRetryFlowTests(unittest.TestCase):
             self.service._episode_retry_single_translation(episode["id"], "es")
 
         self.assertTrue(mocked_translate.await_args.kwargs["master_scenes"])
-        self.assertTrue(mocked_translate.await_args.kwargs["reviewer_required"])
+        self.assertFalse(mocked_translate.await_args.kwargs["reviewer_required"])
         status = self.service.db.get_episode_language_status(episode["id"], "es")
         self.assertTrue(status["spoken_script_path"])
         self.assertTrue(Path(status["spoken_script_path"]).exists())
