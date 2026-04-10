@@ -584,7 +584,6 @@ def _materialize_segments(
 
     starts = [float(draft["raw_start"]) for draft in drafts]
     ends = [float(draft["raw_end"]) for draft in drafts]
-    first_target = _target_duration(int(drafts[0]["char_count"]), config.max_reading_cps)
     first_duration = max(ends[0] - starts[0], 0.01)
     first_need = _gap_priority(
         char_count=int(drafts[0]["char_count"]),
