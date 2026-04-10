@@ -23,6 +23,19 @@ class StageRunResult:
     stderr_path: str | None = None
 
 @dataclass
+class StageRunParams:
+    episode_id: str
+    stage: str
+    provider: str | None
+    template_hash: str | None
+    workdir: str
+    command_payload: Any
+    stdout_path: str | None
+    stderr_path: str | None
+    parsed_output_path: str | None = None
+    validation_path: str | None = None
+
+@dataclass
 class WorkerHeartbeat:
     worker_id: str
     status: str
@@ -400,16 +413,7 @@ class Tool1Database:
 
     def start_stage_run(
         self,
-        episode_id: str,
-        stage: str,
-        provider: str | None,
-        template_hash: str | None,
-        workdir: str,
-        command_payload: Any,
-        stdout_path: str | None,
-        stderr_path: str | None,
-        parsed_output_path: str | None = None,
-        validation_path: str | None = None,
+        params: StageRunParams,
     ) -> int:
         return self._execute(
             """
@@ -420,18 +424,18 @@ class Tool1Database:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                episode_id,
-                stage,
-                provider,
+                params.episode_id,
+                params.stage,
+                params.provider,
                 "running",
                 utc_now(),
-                template_hash,
-                workdir,
-                json.dumps(command_payload, ensure_ascii=False),
-                stdout_path,
-                stderr_path,
-                parsed_output_path,
-                validation_path,
+                params.template_hash,
+                params.workdir,
+                json.dumps(params.command_payload, ensure_ascii=False),
+                params.stdout_path,
+                params.stderr_path,
+                params.parsed_output_path,
+                params.validation_path,
             ),
         )
 

@@ -23,7 +23,7 @@ from .alignment_tool.mfa_resources import mfa_resource_status, prepare_mfa_langu
 from .alignment_tool.orchestrator import run_alignment_job
 from .alignment_tool.runtime import probe_health as alignment_health
 from .chunking import build_gap_fill_batches, build_planning_chunks, build_prompt_batches
-from .database import StageRunResult
+from .database import StageRunParams, StageRunResult
 from .config import (
     AGENTS_ROOT,
     BOARD_STATUSES,
@@ -1104,14 +1104,16 @@ class Tool1Service:
             "artifact_dir": str(artifact_dir),
         }
         return self.db.start_stage_run(
-            episode_id=episode_id,
-            stage=stage,
-            provider=provider,
-            template_hash=template_hash,
-            workdir=str(workdir),
-            command_payload=command_payload,
-            stdout_path=None,
-            stderr_path=None,
+            StageRunParams(
+                episode_id=episode_id,
+                stage=stage,
+                provider=provider,
+                template_hash=template_hash,
+                workdir=str(workdir),
+                command_payload=command_payload,
+                stdout_path=None,
+                stderr_path=None,
+            )
         )
 
     @staticmethod
