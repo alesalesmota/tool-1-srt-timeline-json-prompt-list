@@ -502,16 +502,18 @@ class Tool1Database:
 
     def delete_niche_project(self, project_id: str) -> None:
         with self._lock, self._connect() as connection:
-            episode_ids = [
-                row["id"]
-                for row in connection.execute(
-                    "SELECT id FROM episodes WHERE niche_project_id = ?", (project_id,)
-                ).fetchall()
-            ]
-            for eid in episode_ids:
-                connection.execute("DELETE FROM episode_language_status WHERE episode_id = ?", (eid,))
-                connection.execute("DELETE FROM stage_runs WHERE episode_id = ?", (eid,))
-                connection.execute("DELETE FROM tts_jobs WHERE build_id = ?", (eid,))
+            connection.execute(
+                "DELETE FROM episode_language_status WHERE episode_id IN (SELECT id FROM episodes WHERE niche_project_id = ?)",
+                (project_id,)
+            )
+            connection.execute(
+                "DELETE FROM stage_runs WHERE episode_id IN (SELECT id FROM episodes WHERE niche_project_id = ?)",
+                (project_id,)
+            )
+            connection.execute(
+                "DELETE FROM tts_jobs WHERE build_id IN (SELECT id FROM episodes WHERE niche_project_id = ?)",
+                (project_id,)
+            )
             connection.execute("DELETE FROM episodes WHERE niche_project_id = ?", (project_id,))
             connection.execute("DELETE FROM niche_projects WHERE id = ?", (project_id,))
             connection.commit()
