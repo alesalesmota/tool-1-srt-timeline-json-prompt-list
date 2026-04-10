@@ -136,7 +136,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 - **Worker idle polling backoff on 2026-04-08** — `tool1_dashboard/service.py` now uses `_idle_wait_seconds` with `5s -> 10s -> 20s -> 30s` exponential backoff while the queue is idle, resets to `5s` immediately after real work is found, and still wakes immediately on the existing `Condition.notify()` path when a workflow is queued. `_check_paused_tts_episodes()` remains polling-only inside `_worker_loop()`, and the resulting `<=30s` resume lag is accepted because narration jobs already run for minutes
 - **Drawbridge assembly scroll-glitch repair on 2026-04-07** — passive dashboard refreshes now reuse the existing assembly section when the user is still on the same episode/stage, so the `#episode-assembly-section` no longer flashes a transient loading surface or replaces in-view content during background polling; passive refresh failures now keep the current assembly UI mounted and raise a notice instead of blowing away the scrolled section
 - **Video assembly unit coverage** — `tests/test_video_assembly/` now covers flat-array timeline conversion, project validation, asset filename/type matching, and `DashboardRenderObserver` writes into `render_jobs` / `render_logs`
-- **Test suite** — 239 tests passing, 4 subtests passing (`python -m pytest tests -q` on 2026-04-05)
+- **Test suite** — 293 tests passing, 4 subtests passing (`python -m pytest tests -q` on 2026-04-10)
 
 ### What's Being Worked On
 
@@ -167,8 +167,8 @@ Remaining French/Italian density is inherent to the text-to-audio ratio for thos
 - Fresh Windows environments still need the XTTS runtime installed manually; long-form throughput is only acceptable when the dashboard Python environment uses the CUDA build of the pinned `torch` / `torchaudio`, and Coqui TTS may still require Microsoft C++ Build Tools before voice cloning can work
 
 ### Git State
-- Branch: `codex/fix-fail-stop-translation-tts` (active local branch carrying the fail-stop translation/TTS fixes plus the 2026-04-09 translation recovery UX + LM Studio profile support follow-up)
-- Previous feature branches: `codex/french-first-subtitle-cleanup`, `fix/italian-alignment-retry`, `codex/tool2-phase0`, `codex/tool2-phase1-db-schema`, `codex/tool2-phase2-stage-config`, `codex/tool2-phase3-assets` — merged or superseded by current Tool 2 integration work
+- Branch: `main` (local branch now carries the restored unified Tool 1 + Tool 2 pipeline after fast-forwarding through `codex/restore-tool2-main-sync`)
+- Previous feature branches: `codex/restore-tool2-main-sync`, `codex/fix-fail-stop-translation-tts`, `codex/french-first-subtitle-cleanup`, `fix/italian-alignment-retry`, `codex/tool2-phase0`, `codex/tool2-phase1-db-schema`, `codex/tool2-phase2-stage-config`, `codex/tool2-phase3-assets` — merged or superseded by the current mainline
 - Remote: `https://github.com/alesalesmota/tool-1-srt-timeline-json-prompt-list.git`
 
 - **Repo cleanup audit** (`docs/REPO_CLEANUP_REVIEW_2026-04-08.md`) — created a plain-English review of archive candidates after a deep size/usage audit. Main conclusion: the integrated `translation`, `tts`, `alignment_tool`, `video_assembly`, and `srt_chunker` packages are still live production code and should stay; the biggest cleanup opportunities are generated runtime folders such as `tool1_dashboard/alignment_tool/temp/`, `workspace/benchmarks/`, `workspace/tts/output/`, `workspace/videos/`, Playwright logs/screenshots, ad-hoc helper files, and finished episode workspaces reviewed one-by-one
