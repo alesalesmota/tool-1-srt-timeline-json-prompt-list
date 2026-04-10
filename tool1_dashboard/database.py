@@ -11,6 +11,16 @@ from typing import Any, Iterable
 from .config import DATABASE_PATH, DEFAULT_SETTINGS
 from .runtime import ensure_dir, utc_now
 
+@dataclass
+class StageRunResult:
+    status: str
+    exit_code: int | None
+    parsed_output_path: str | None = None
+    validation_path: str | None = None
+    error_text: str | None = None
+    command_payload: Any | None = None
+    stdout_path: str | None = None
+    stderr_path: str | None = None
 
 @dataclass
 class WorkerHeartbeat:
@@ -20,7 +30,6 @@ class WorkerHeartbeat:
     pid: int
     started_at: float
     last_error: str | None = None
-
 
 class Tool1Database:
     def __init__(self, path: Path | None = None) -> None:
@@ -429,30 +438,22 @@ class Tool1Database:
     def finish_stage_run(
         self,
         run_id: int,
-        *,
-        status: str,
-        exit_code: int | None,
-        parsed_output_path: str | None = None,
-        validation_path: str | None = None,
-        error_text: str | None = None,
-        command_payload: Any | None = None,
-        stdout_path: str | None = None,
-        stderr_path: str | None = None,
+        result: StageRunResult,
     ) -> None:
         fields: dict[str, Any] = {
-            "status": status,
+            "status": result.status,
             "finished_at": utc_now(),
-            "exit_code": exit_code,
-            "parsed_output_path": parsed_output_path,
-            "validation_path": validation_path,
-            "error_text": error_text,
+            "exit_code": result.exit_code,
+            "parsed_output_path": result.parsed_output_path,
+            "validation_path": result.validation_path,
+            "error_text": result.error_text,
         }
-        if command_payload is not None:
-            fields["command_json"] = json.dumps(command_payload, ensure_ascii=False)
-        if stdout_path is not None:
-            fields["stdout_path"] = stdout_path
-        if stderr_path is not None:
-            fields["stderr_path"] = stderr_path
+        if result.command_payload is not None:
+            fields["command_json"] = json.dumps(result.command_payload, ensure_ascii=False)
+        if result.stdout_path is not None:
+            fields["stdout_path"] = result.stdout_path
+        if result.stderr_path is not None:
+            fields["stderr_path"] = result.stderr_path
         assignments = ", ".join(f"{key} = ?" for key in fields)
         params = list(fields.values()) + [run_id]
         self._execute(f"UPDATE stage_runs SET {assignments} WHERE id = ?", params)
