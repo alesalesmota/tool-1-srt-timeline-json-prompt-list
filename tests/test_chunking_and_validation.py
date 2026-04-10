@@ -14,6 +14,55 @@ from tool1_dashboard.validators import (
 )
 
 
+from tool1_dashboard.chunking import PlanningChunk
+
+class PlanningChunkTests(unittest.TestCase):
+    def test_duration_seconds(self) -> None:
+        chunk = PlanningChunk(
+            chunk_id=1,
+            start_seconds=1.234,
+            end_seconds=4.567,
+            cue_start_index=1,
+            cue_end_index=2,
+            cues=[SubtitleCue(index=1, start_ms=1234, end_ms=4567, text="A")]
+        )
+        self.assertEqual(chunk.duration_seconds, 3.333)
+
+        chunk2 = PlanningChunk(
+            chunk_id=2,
+            start_seconds=0.0,
+            end_seconds=10.0,
+            cue_start_index=1,
+            cue_end_index=2,
+            cues=[SubtitleCue(index=1, start_ms=0, end_ms=10000, text="A")]
+        )
+        self.assertEqual(chunk2.duration_seconds, 10.0)
+
+    def test_to_dict(self) -> None:
+        cues = [
+            SubtitleCue(index=1, start_ms=1000, end_ms=2000, text="A"),
+            SubtitleCue(index=2, start_ms=2000, end_ms=3000, text="B")
+        ]
+        chunk = PlanningChunk(
+            chunk_id=42,
+            start_seconds=1.0,
+            end_seconds=3.0,
+            cue_start_index=1,
+            cue_end_index=2,
+            cues=cues
+        )
+        expected = {
+            "chunk_id": 42,
+            "start_seconds": 1.0,
+            "end_seconds": 3.0,
+            "duration_seconds": 2.0,
+            "cue_start_index": 1,
+            "cue_end_index": 2,
+            "cue_count": 2,
+        }
+        self.assertEqual(chunk.to_dict(), expected)
+
+
 class ChunkingValidationTests(unittest.TestCase):
     def test_overlap_chunking_creates_multiple_chunks(self) -> None:
         cues = [
