@@ -242,10 +242,13 @@ class TTSManager:
             self._schedule_shutdown_check()
             return
 
-        time.sleep(startup_wait_seconds)
-        if self.is_worker_alive():
-            self._schedule_shutdown_check()
-            return
+        start_wait = time.time()
+        while time.time() - start_wait < startup_wait_seconds:
+            time.sleep(0.05)
+            if self.is_worker_alive():
+                self._schedule_shutdown_check()
+                return
+
         error = "TTS worker failed to start. Check workspace/tts/worker.log for the startup traceback."
         with self._lock:
             self._last_startup_error = error
