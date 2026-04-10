@@ -271,6 +271,44 @@ class CliRunnerTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 4)  # 2 calls per probe (version + auth) x 2 probes
 
+    def test_deep_extract_error_message_depth_limit(self) -> None:
+        runner = CliRunner()
+
+        # Test just within depth limit (depth=0, 1, 2, 3 -> 4 levels, but we start _depth=0 at top level)
+        # top level: _depth=0
+        # "error" 1: _depth=1
+        # "error" 2: _depth=2
+        # "error" 3: _depth=3
+        payload_ok = {
+            "error": {
+                "error": {
+                    "error": {
+                        "message": "Just deep enough"
+                    }
+                }
+            }
+        }
+        self.assertEqual(runner._deep_extract_error_message(payload_ok), "Just deep enough")
+
+        # Test exceeding depth limit
+        # top level: _depth=0
+        # "error" 1: _depth=1
+        # "error" 2: _depth=2
+        # "error" 3: _depth=3
+        # "error" 4: _depth=4 (> 3) -> returns ""
+        payload_too_deep = {
+            "error": {
+                "error": {
+                    "error": {
+                        "error": {
+                            "message": "Too deep"
+                        }
+                    }
+                }
+            }
+        }
+        self.assertEqual(runner._deep_extract_error_message(payload_too_deep), "")
+
 
 if __name__ == "__main__":
     unittest.main()
