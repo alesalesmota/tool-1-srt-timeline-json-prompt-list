@@ -81,6 +81,7 @@ from .tts.voice_config import (
     voice_tts_presets_payload,
 )
 from .validators import (
+    SceneMergeConfig,
     apply_default_asset_types,
     image_prompt_output_schema,
     merge_scene_chunks,
@@ -4008,9 +4009,11 @@ class Tool1Service:
 
         timeline, report = merge_scene_chunks(
             all_scene_groups,
-            chunk_metadata=manifest["chunks"],
-            overlap_seconds=float(manifest.get("overlap_seconds", 0)),
-            cues=cues,
+            config=SceneMergeConfig(
+                chunk_metadata=manifest["chunks"],
+                overlap_seconds=float(manifest.get("overlap_seconds", 0)),
+                cues=cues,
+            ),
         )
         timeline = apply_default_asset_types(timeline, config["leading_video_scene_count"])
         report["warnings"].extend(warnings)

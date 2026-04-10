@@ -5,6 +5,7 @@ import unittest
 from tool1_dashboard.chunking import build_gap_fill_batches, build_planning_chunks, build_prompt_batches
 from tool1_dashboard.srt_chunker.models import SubtitleCue
 from tool1_dashboard.validators import (
+    SceneMergeConfig,
     apply_default_asset_types,
     merge_scene_chunks,
     normalize_scene_payload,
@@ -56,11 +57,13 @@ class ChunkingValidationTests(unittest.TestCase):
                     {"start": 360.0, "end": 390.0, "duration": 30.0, "text": "Core B", "asset_type": "video", "_source_chunk_id": 2},
                 ],
             ],
-            chunk_metadata=[
-                {"chunk_id": 1, "start_seconds": 0.0, "end_seconds": 360.0},
-                {"chunk_id": 2, "start_seconds": 330.0, "end_seconds": 690.0},
-            ],
-            overlap_seconds=30.0,
+            config=SceneMergeConfig(
+                chunk_metadata=[
+                    {"chunk_id": 1, "start_seconds": 0.0, "end_seconds": 360.0},
+                    {"chunk_id": 2, "start_seconds": 330.0, "end_seconds": 690.0},
+                ],
+                overlap_seconds=30.0,
+            ),
         )
         self.assertEqual([scene["text"] for scene in scenes], ["Edge A", "Edge B", "Core B"])
         self.assertEqual(report["ownership_dropped"], 1)
@@ -79,11 +82,13 @@ class ChunkingValidationTests(unittest.TestCase):
                     }
                 ]
             ],
-            cues=[
-                SubtitleCue(index=1, start_ms=0, end_ms=8000, text="One."),
-                SubtitleCue(index=2, start_ms=8000, end_ms=16000, text="Two."),
-                SubtitleCue(index=3, start_ms=16000, end_ms=24000, text="Three."),
-            ],
+            config=SceneMergeConfig(
+                cues=[
+                    SubtitleCue(index=1, start_ms=0, end_ms=8000, text="One."),
+                    SubtitleCue(index=2, start_ms=8000, end_ms=16000, text="Two."),
+                    SubtitleCue(index=3, start_ms=16000, end_ms=24000, text="Three."),
+                ]
+            ),
         )
         self.assertEqual(len(scenes), 2)
         self.assertTrue(all(scene["duration"] <= 18.0 for scene in scenes))
@@ -212,15 +217,17 @@ class ChunkingValidationTests(unittest.TestCase):
                     }
                 ],
             ],
-            chunk_metadata=[
-                {"chunk_id": 10, "start_seconds": 2970.0, "end_seconds": 3330.0, "duration_seconds": 360.0},
-                {"chunk_id": 11, "start_seconds": 3300.0, "end_seconds": 3361.6, "duration_seconds": 61.6},
-            ],
-            overlap_seconds=30.0,
-            cues=[
-                SubtitleCue(index=1, start_ms=3300000, end_ms=3330000, text="Late section."),
-                SubtitleCue(index=2, start_ms=3330000, end_ms=3361600, text="Final section."),
-            ],
+            config=SceneMergeConfig(
+                chunk_metadata=[
+                    {"chunk_id": 10, "start_seconds": 2970.0, "end_seconds": 3330.0, "duration_seconds": 360.0},
+                    {"chunk_id": 11, "start_seconds": 3300.0, "end_seconds": 3361.6, "duration_seconds": 61.6},
+                ],
+                overlap_seconds=30.0,
+                cues=[
+                    SubtitleCue(index=1, start_ms=3300000, end_ms=3330000, text="Late section."),
+                    SubtitleCue(index=2, start_ms=3330000, end_ms=3361600, text="Final section."),
+                ],
+            ),
         )
         self.assertEqual(scenes[-1]["end"], 3361.6)
         self.assertEqual(report["status"], "valid")

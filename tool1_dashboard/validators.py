@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from .srt_chunker.models import SubtitleCue
@@ -11,6 +12,18 @@ SCENE_SOFT_MAX_DURATION_SECONDS = 18.0
 SCENE_TARGET_DURATION_SECONDS = 14.0
 SCENE_MIN_DURATION_SECONDS = 4.0
 SCENE_CUE_COVERAGE_TOLERANCE_SECONDS = 3.0
+
+
+@dataclass
+class SceneMergeConfig:
+    chunk_metadata: list[dict[str, Any]] | None = None
+    overlap_seconds: float = 0.0
+    cues: list[SubtitleCue] | None = None
+    max_duration: float = SCENE_SOFT_MAX_DURATION_SECONDS
+    target_duration: float = SCENE_TARGET_DURATION_SECONDS
+    min_duration: float = SCENE_MIN_DURATION_SECONDS
+
+
 MANDATORY_PROMPT_RULES = (
     "no text",
     "no subtitles",
@@ -609,13 +622,9 @@ def _build_scene_from_cues(
 
 def _split_scene_by_cues(
     scene: dict[str, Any],
-    cues: list[SubtitleCue],
-    *,
-    max_duration: float,
-    target_duration: float,
-    min_duration: float,
+    config: SceneMergeConfig,
 ) -> list[dict[str, Any]]:
-    overlapping_cues = _scene_cues(scene, cues)
+    overlapping_cues = _scene_cues(scene, config.cues or [])
     if len(overlapping_cues) < 2:
         return [scene]
 
@@ -626,7 +635,7 @@ def _split_scene_by_cues(
         limit = cursor
         while limit + 1 < len(overlapping_cues):
             candidate_end = overlapping_cues[limit + 1].end_ms / 1000.0
-            if candidate_end - start_time > max_duration:
+            if candidate_end - start_time > config.max_duration:
                 break
             limit += 1
 
@@ -635,9 +644,9 @@ def _split_scene_by_cues(
         for candidate in range(cursor, limit + 1):
             candidate_end = overlapping_cues[candidate].end_ms / 1000.0
             duration = candidate_end - start_time
-            if duration < min_duration and candidate < limit:
+            if duration < config.min_duration and candidate < limit:
                 continue
-            score = abs(target_duration - duration)
+            score = abs(config.target_duration - duration)
             if not _ends_with_split_punctuation(overlapping_cues[candidate].text):
                 score += 0.75
             if best_score is None or score < best_score:
@@ -655,27 +664,20 @@ def _split_scene_by_cues(
 
 def _split_long_scenes(
     scenes: list[dict[str, Any]],
-    cues: list[SubtitleCue] | None,
-    *,
-    max_duration: float,
-    target_duration: float,
-    min_duration: float,
+    config: SceneMergeConfig,
 ) -> tuple[list[dict[str, Any]], int]:
-    if not cues:
+    if not config.cues:
         return scenes, 0
 
     split_scenes: list[dict[str, Any]] = []
     inserted = 0
     for scene in scenes:
-        if float(scene["duration"]) <= max_duration:
+        if float(scene["duration"]) <= config.max_duration:
             split_scenes.append(scene)
             continue
         fragments = _split_scene_by_cues(
             scene,
-            cues,
-            max_duration=max_duration,
-            target_duration=target_duration,
-            min_duration=min_duration,
+            config,
         )
         split_scenes.extend(fragments)
         inserted += max(0, len(fragments) - 1)
@@ -684,8 +686,7 @@ def _split_long_scenes(
 
 def _resolve_scene_overlaps(
     scenes: list[dict[str, Any]],
-    *,
-    min_duration: float,
+    config: SceneMergeConfig,
 ) -> tuple[list[dict[str, Any]], int]:
     if not scenes:
         return [], 0
@@ -701,7 +702,7 @@ def _resolve_scene_overlaps(
         if overlap > 0.25:
             if float(previous["end"]) <= float(current["end"]):
                 new_start = round(float(previous["end"]), 3)
-                if float(current["end"]) - new_start >= min_duration:
+                if float(current["end"]) - new_start >= config.min_duration:
                     current["start"] = new_start
                     current["duration"] = round(float(current["end"]) - float(current["start"]), 3)
                     adjusted += 1
@@ -710,7 +711,7 @@ def _resolve_scene_overlaps(
                     continue
             else:
                 new_end = round(float(current["start"]), 3)
-                if new_end - float(previous["start"]) >= min_duration:
+                if new_end - float(previous["start"]) >= config.min_duration:
                     previous["end"] = new_end
                     previous["duration"] = round(float(previous["end"]) - float(previous["start"]), 3)
                     adjusted += 1
@@ -725,18 +726,15 @@ def _resolve_scene_overlaps(
 
 def merge_scene_chunks(
     scene_groups: list[list[dict[str, Any]]],
-    *,
-    chunk_metadata: list[dict[str, Any]] | None = None,
-    overlap_seconds: float = 0.0,
-    cues: list[SubtitleCue] | None = None,
-    max_duration: float = SCENE_SOFT_MAX_DURATION_SECONDS,
-    target_duration: float = SCENE_TARGET_DURATION_SECONDS,
-    min_duration: float = SCENE_MIN_DURATION_SECONDS,
+    config: SceneMergeConfig | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if config is None:
+        config = SceneMergeConfig()
+
     rebased_groups = 0
-    if chunk_metadata and len(chunk_metadata) == len(scene_groups):
+    if config.chunk_metadata and len(config.chunk_metadata) == len(scene_groups):
         normalized_groups: list[list[dict[str, Any]]] = []
-        for group, chunk_window in zip(scene_groups, chunk_metadata):
+        for group, chunk_window in zip(scene_groups, config.chunk_metadata):
             rebased_group, was_rebased = _maybe_rebase_chunk_local_scenes(
                 group,
                 chunk_window=chunk_window,
@@ -748,19 +746,16 @@ def merge_scene_chunks(
 
     selected, ownership_dropped = _select_owned_scenes(
         scene_groups,
-        chunk_metadata,
-        overlap_seconds=overlap_seconds,
+        config.chunk_metadata,
+        overlap_seconds=config.overlap_seconds,
     )
     selected.sort(key=lambda item: (float(item["start"]), float(item["end"]), _clean_text(item["text"]).lower()))
     merged, deduped = _dedupe_scenes(selected)
     merged, split_insertions = _split_long_scenes(
         merged,
-        cues,
-        max_duration=max_duration,
-        target_duration=target_duration,
-        min_duration=min_duration,
+        config,
     )
-    merged, overlap_adjustments = _resolve_scene_overlaps(merged, min_duration=min_duration)
+    merged, overlap_adjustments = _resolve_scene_overlaps(merged, config)
 
     finalized: list[dict[str, Any]] = []
     for index, scene in enumerate(merged, start=1):
@@ -776,7 +771,7 @@ def merge_scene_chunks(
                 **({"notes": scene["notes"]} if scene.get("notes") else {}),
             }
         )
-    report = validate_timeline(finalized, cues=cues)
+    report = validate_timeline(finalized, cues=config.cues)
     report["deduped_duplicates"] = deduped
     report["ownership_dropped"] = ownership_dropped
     report["split_insertions"] = split_insertions
