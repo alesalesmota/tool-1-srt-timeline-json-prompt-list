@@ -31,6 +31,204 @@ class WorkerHeartbeat:
     started_at: float
     last_error: str | None = None
 
+SCHEMA_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS templates (
+        stage TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        path TEXT NOT NULL,
+        body TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (stage, provider)
+    )
+    """,
+    # ── Niche Projects ──
+    """
+    CREATE TABLE IF NOT EXISTS niche_projects (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        master_language TEXT NOT NULL DEFAULT 'en',
+        configured_languages TEXT NOT NULL DEFAULT '[]',
+        language_voice_profiles TEXT NOT NULL DEFAULT '{}',
+        language_translation_profiles TEXT NOT NULL DEFAULT '{}',
+        board_status TEXT NOT NULL DEFAULT 'Draft',
+        workspace_dir TEXT NOT NULL,
+        scene_planning_provider TEXT NOT NULL DEFAULT 'claude',
+        visual_bible_provider TEXT NOT NULL DEFAULT 'claude',
+        video_prompt_provider TEXT NOT NULL DEFAULT 'codex',
+        image_prompt_provider TEXT NOT NULL DEFAULT 'codex',
+        scene_planning_model TEXT NOT NULL DEFAULT 'haiku',
+        visual_bible_model TEXT NOT NULL DEFAULT 'haiku',
+        video_prompt_model TEXT NOT NULL DEFAULT 'gpt-5.4',
+        image_prompt_model TEXT NOT NULL DEFAULT 'gpt-5.4',
+        leading_video_scene_count INTEGER NOT NULL DEFAULT 20,
+        warning_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    # ── Episodes (TTS-first unified pipeline) ──
+    """
+    CREATE TABLE IF NOT EXISTS episodes (
+        id TEXT PRIMARY KEY,
+        niche_project_id TEXT NOT NULL REFERENCES niche_projects(id),
+        title TEXT NOT NULL,
+        script_text TEXT NOT NULL,
+        board_status TEXT NOT NULL DEFAULT 'Draft',
+        pipeline_status TEXT NOT NULL DEFAULT 'idle',
+        current_stage TEXT NOT NULL DEFAULT 'draft',
+        queued_from_stage TEXT NOT NULL DEFAULT 'consistency_guide',
+        pause_requested INTEGER NOT NULL DEFAULT 0,
+        master_language TEXT NOT NULL DEFAULT 'en',
+        configured_languages TEXT NOT NULL DEFAULT '[]',
+        consistency_guide_path TEXT,
+        planning_manifest_path TEXT,
+        timeline_draft_path TEXT,
+        timeline_validation_path TEXT,
+        visual_bible_validation_path TEXT,
+        prompt_list_draft_path TEXT,
+        prompt_blueprint_path TEXT,
+        prompt_validation_path TEXT,
+        export_timeline_path TEXT,
+        export_prompt_list_path TEXT,
+        export_video_prompt_list_path TEXT,
+        export_image_prompt_list_path TEXT,
+        master_scenes_path TEXT,
+        review_ready INTEGER NOT NULL DEFAULT 0,
+        warning_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        workspace_dir TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS episode_language_status (
+        id TEXT PRIMARY KEY,
+        episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+        language_code TEXT NOT NULL,
+        translation_status TEXT NOT NULL DEFAULT 'pending',
+        tts_status TEXT NOT NULL DEFAULT 'pending',
+        srt_status TEXT NOT NULL DEFAULT 'pending',
+        timeline_status TEXT NOT NULL DEFAULT 'pending',
+        script_path TEXT,
+        spoken_script_path TEXT,
+        tts_audio_path TEXT,
+        srt_path TEXT,
+        timeline_path TEXT,
+        tts_job_id TEXT,
+        error_message TEXT,
+        updated_at TEXT NOT NULL,
+        UNIQUE(episode_id, language_code)
+    )
+    """,
+    # ── Stage runs (shared audit trail) ──
+    """
+    CREATE TABLE IF NOT EXISTS stage_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        episode_id TEXT,
+        stage TEXT NOT NULL,
+        provider TEXT,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        exit_code INTEGER,
+        template_hash TEXT,
+        workdir TEXT,
+        command_json TEXT,
+        stdout_path TEXT,
+        stderr_path TEXT,
+        parsed_output_path TEXT,
+        validation_path TEXT,
+        error_text TEXT
+    )
+    """,
+    # ── Voice profiles ──
+    """
+    CREATE TABLE IF NOT EXISTS voice_profiles (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        language_code TEXT NOT NULL DEFAULT '',
+        audio_file TEXT NOT NULL,
+        audio_path TEXT NOT NULL,
+        latents_path TEXT,
+        has_latents INTEGER NOT NULL DEFAULT 0,
+        tts_config_json TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    # ── Translation profiles ──
+    """
+    CREATE TABLE IF NOT EXISTS translation_profiles (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        api_key_ref TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    # ── TTS jobs ──
+    """
+    CREATE TABLE IF NOT EXISTS tts_jobs (
+        job_id TEXT PRIMARY KEY,
+        build_id TEXT,
+        job_type TEXT NOT NULL DEFAULT 'generate',
+        profile_id TEXT,
+        status TEXT NOT NULL DEFAULT 'queued',
+        progress TEXT,
+        result_path TEXT,
+        filename TEXT,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        meta_json TEXT,
+        queue_priority INTEGER NOT NULL DEFAULT 10,
+        worker_id TEXT,
+        control_action TEXT,
+        error_message TEXT,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL,
+        finished_at REAL
+    )
+    """,
+    # ── Worker heartbeats ──
+    """
+    CREATE TABLE IF NOT EXISTS worker_heartbeats (
+        worker_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        current_job_id TEXT,
+        pid INTEGER,
+        started_at REAL NOT NULL,
+        heartbeat_at REAL NOT NULL,
+        last_error TEXT
+    )
+    """,
+    # ── Indexes ──
+    """
+    CREATE INDEX IF NOT EXISTS idx_episodes_niche
+    ON episodes(niche_project_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_els_episode
+    ON episode_language_status(episode_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_tts_jobs_queue
+    ON tts_jobs(status, queue_priority, created_at)
+    """,
+]
+
 class Tool1Database:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or DATABASE_PATH
@@ -45,242 +243,48 @@ class Tool1Database:
             self.set_setting(key, value)
 
     def _create_tables(self) -> None:
-        statements = [
-            """
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS templates (
-                stage TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                path TEXT NOT NULL,
-                body TEXT NOT NULL,
-                hash TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (stage, provider)
-            )
-            """,
-            # ── Niche Projects ──
-            """
-            CREATE TABLE IF NOT EXISTS niche_projects (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                master_language TEXT NOT NULL DEFAULT 'en',
-                configured_languages TEXT NOT NULL DEFAULT '[]',
-                language_voice_profiles TEXT NOT NULL DEFAULT '{}',
-                language_translation_profiles TEXT NOT NULL DEFAULT '{}',
-                board_status TEXT NOT NULL DEFAULT 'Draft',
-                workspace_dir TEXT NOT NULL,
-                scene_planning_provider TEXT NOT NULL DEFAULT 'claude',
-                visual_bible_provider TEXT NOT NULL DEFAULT 'claude',
-                video_prompt_provider TEXT NOT NULL DEFAULT 'codex',
-                image_prompt_provider TEXT NOT NULL DEFAULT 'codex',
-                scene_planning_model TEXT NOT NULL DEFAULT 'haiku',
-                visual_bible_model TEXT NOT NULL DEFAULT 'haiku',
-                video_prompt_model TEXT NOT NULL DEFAULT 'gpt-5.4',
-                image_prompt_model TEXT NOT NULL DEFAULT 'gpt-5.4',
-                leading_video_scene_count INTEGER NOT NULL DEFAULT 20,
-                warning_count INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """,
-            # ── Episodes (TTS-first unified pipeline) ──
-            """
-            CREATE TABLE IF NOT EXISTS episodes (
-                id TEXT PRIMARY KEY,
-                niche_project_id TEXT NOT NULL REFERENCES niche_projects(id),
-                title TEXT NOT NULL,
-                script_text TEXT NOT NULL,
-                board_status TEXT NOT NULL DEFAULT 'Draft',
-                pipeline_status TEXT NOT NULL DEFAULT 'idle',
-                current_stage TEXT NOT NULL DEFAULT 'draft',
-                queued_from_stage TEXT NOT NULL DEFAULT 'consistency_guide',
-                pause_requested INTEGER NOT NULL DEFAULT 0,
-                master_language TEXT NOT NULL DEFAULT 'en',
-                configured_languages TEXT NOT NULL DEFAULT '[]',
-                consistency_guide_path TEXT,
-                planning_manifest_path TEXT,
-                timeline_draft_path TEXT,
-                timeline_validation_path TEXT,
-                visual_bible_validation_path TEXT,
-                prompt_list_draft_path TEXT,
-                prompt_blueprint_path TEXT,
-                prompt_validation_path TEXT,
-                export_timeline_path TEXT,
-                export_prompt_list_path TEXT,
-                export_video_prompt_list_path TEXT,
-                export_image_prompt_list_path TEXT,
-                master_scenes_path TEXT,
-                review_ready INTEGER NOT NULL DEFAULT 0,
-                warning_count INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT,
-                workspace_dir TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS episode_language_status (
-                id TEXT PRIMARY KEY,
-                episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
-                language_code TEXT NOT NULL,
-                translation_status TEXT NOT NULL DEFAULT 'pending',
-                tts_status TEXT NOT NULL DEFAULT 'pending',
-                srt_status TEXT NOT NULL DEFAULT 'pending',
-                timeline_status TEXT NOT NULL DEFAULT 'pending',
-                script_path TEXT,
-                spoken_script_path TEXT,
-                tts_audio_path TEXT,
-                srt_path TEXT,
-                timeline_path TEXT,
-                tts_job_id TEXT,
-                error_message TEXT,
-                updated_at TEXT NOT NULL,
-                UNIQUE(episode_id, language_code)
-            )
-            """,
-            # ── Stage runs (shared audit trail) ──
-            """
-            CREATE TABLE IF NOT EXISTS stage_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                episode_id TEXT,
-                stage TEXT NOT NULL,
-                provider TEXT,
-                status TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                finished_at TEXT,
-                exit_code INTEGER,
-                template_hash TEXT,
-                workdir TEXT,
-                command_json TEXT,
-                stdout_path TEXT,
-                stderr_path TEXT,
-                parsed_output_path TEXT,
-                validation_path TEXT,
-                error_text TEXT
-            )
-            """,
-            # ── Voice profiles ──
-            """
-            CREATE TABLE IF NOT EXISTS voice_profiles (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                language_code TEXT NOT NULL DEFAULT '',
-                audio_file TEXT NOT NULL,
-                audio_path TEXT NOT NULL,
-                latents_path TEXT,
-                has_latents INTEGER NOT NULL DEFAULT 0,
-                tts_config_json TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """,
-            # ── Translation profiles ──
-            """
-            CREATE TABLE IF NOT EXISTS translation_profiles (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                api_key_ref TEXT NOT NULL DEFAULT '',
-                model TEXT NOT NULL,
-                is_default INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """,
-            # ── TTS jobs ──
-            """
-            CREATE TABLE IF NOT EXISTS tts_jobs (
-                job_id TEXT PRIMARY KEY,
-                build_id TEXT,
-                job_type TEXT NOT NULL DEFAULT 'generate',
-                profile_id TEXT,
-                status TEXT NOT NULL DEFAULT 'queued',
-                progress TEXT,
-                result_path TEXT,
-                filename TEXT,
-                payload_json TEXT NOT NULL DEFAULT '{}',
-                meta_json TEXT,
-                queue_priority INTEGER NOT NULL DEFAULT 10,
-                worker_id TEXT,
-                control_action TEXT,
-                error_message TEXT,
-                created_at REAL NOT NULL,
-                updated_at REAL NOT NULL,
-                finished_at REAL
-            )
-            """,
-            # ── Worker heartbeats ──
-            """
-            CREATE TABLE IF NOT EXISTS worker_heartbeats (
-                worker_id TEXT PRIMARY KEY,
-                status TEXT NOT NULL,
-                current_job_id TEXT,
-                pid INTEGER,
-                started_at REAL NOT NULL,
-                heartbeat_at REAL NOT NULL,
-                last_error TEXT
-            )
-            """,
-            # ── Indexes ──
-            """
-            CREATE INDEX IF NOT EXISTS idx_episodes_niche
-            ON episodes(niche_project_id)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_els_episode
-            ON episode_language_status(episode_id)
-            """,
-            """
-            CREATE INDEX IF NOT EXISTS idx_tts_jobs_queue
-            ON tts_jobs(status, queue_priority, created_at)
-            """,
-        ]
         with self._connect() as connection:
-            for statement in statements:
+            for statement in SCHEMA_STATEMENTS:
                 connection.execute(statement)
-            # Ensure episode_id column exists on stage_runs (migration from legacy schema)
-            self._ensure_columns(
-                connection,
-                "stage_runs",
-                {"episode_id": "TEXT"},
-            )
-            self._ensure_columns(
-                connection,
-                "voice_profiles",
-                {"tts_config_json": "TEXT NOT NULL DEFAULT ''"},
-            )
-            self._ensure_columns(
-                connection,
-                "episodes",
-                {"pause_requested": "INTEGER NOT NULL DEFAULT 0"},
-            )
-            self._ensure_columns(
-                connection,
-                "niche_projects",
-                {
-                    "source_channel_name": "TEXT NOT NULL DEFAULT ''",
-                    "language_channel_names": "TEXT NOT NULL DEFAULT '{}'",
-                    "channel_replace_prompt": "INTEGER NOT NULL DEFAULT 1",
-                    "channel_replace_post": "INTEGER NOT NULL DEFAULT 0",
-                },
-            )
-            self._ensure_columns(
-                connection,
-                "episode_language_status",
-                {"spoken_script_path": "TEXT"},
-            )
-            # Create index after ensuring column exists
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_stage_runs_episode ON stage_runs(episode_id)"
-            )
+            self._run_migrations(connection)
             connection.commit()
+
+    def _run_migrations(self, connection: sqlite3.Connection) -> None:
+        # Ensure episode_id column exists on stage_runs (migration from legacy schema)
+        self._ensure_columns(
+            connection,
+            "stage_runs",
+            {"episode_id": "TEXT"},
+        )
+        self._ensure_columns(
+            connection,
+            "voice_profiles",
+            {"tts_config_json": "TEXT NOT NULL DEFAULT ''"},
+        )
+        self._ensure_columns(
+            connection,
+            "episodes",
+            {"pause_requested": "INTEGER NOT NULL DEFAULT 0"},
+        )
+        self._ensure_columns(
+            connection,
+            "niche_projects",
+            {
+                "source_channel_name": "TEXT NOT NULL DEFAULT ''",
+                "language_channel_names": "TEXT NOT NULL DEFAULT '{}'",
+                "channel_replace_prompt": "INTEGER NOT NULL DEFAULT 1",
+                "channel_replace_post": "INTEGER NOT NULL DEFAULT 0",
+            },
+        )
+        self._ensure_columns(
+            connection,
+            "episode_language_status",
+            {"spoken_script_path": "TEXT"},
+        )
+        # Create index after ensuring column exists
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_stage_runs_episode ON stage_runs(episode_id)"
+        )
 
     # ── helpers ──────────────────────────────────────────────────────
 
