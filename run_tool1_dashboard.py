@@ -85,50 +85,13 @@ def _launch_browser(url: str) -> None:
     threading.Timer(0.8, lambda: webbrowser.open(url)).start()
 
 
-def _launch_desktop(url: str, shutdown_callback) -> bool:
-    try:
-        import webview
-    except Exception as exc:  # pragma: no cover - import depends on host env
-        append_launcher_log(f"Desktop shell unavailable, falling back to browser: {exc}")
-        return False
-
-    stop_once = threading.Event()
-    try:  # pragma: no cover - native UI only
-        window = webview.create_window(
-            "Creator Studio",
-            url,
-            width=1480,
-            height=960,
-            min_size=(1180, 760),
-        )
-
-        def request_shutdown() -> None:
-            if stop_once.is_set():
-                return
-            stop_once.set()
-            threading.Thread(target=shutdown_callback, daemon=True).start()
-
-        window.events.closed += request_shutdown
-        webview.start()
-        request_shutdown()
-        return True
-    except Exception as exc:
-        append_launcher_log(f"Desktop shell failed, falling back to browser: {exc}")
-        return False
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Launch the Creator Studio dashboard.")
-    parser.add_argument(
-        "--browser",
-        action="store_true",
-        help="Open the dashboard in a browser tab instead of the desktop shell.",
-    )
     return parser.parse_args()
 
 
 def main() -> int:
-    args = parse_args()
+    parse_args()
     with SingleInstanceLock() as instance_lock:
         if not instance_lock.acquire():
             return _handle_existing_instance()
@@ -153,8 +116,7 @@ def main() -> int:
             host=DEFAULT_HOST,
             port=port,
             url=server.url,
-            mode="desktop" if not args.browser else "browser",
-            window_controls_shutdown=not args.browser,
+            mode="browser",
         )
         try:
             server.start()
@@ -163,20 +125,9 @@ def main() -> int:
                 host=DEFAULT_HOST,
                 port=port,
                 url=server.url,
-                mode="desktop" if not args.browser else "browser",
-                window_controls_shutdown=not args.browser,
-            )
-            if not args.browser and _launch_desktop(server.url, shutdown_runtime):
-                return 0
-
-            set_runtime_info(
-                pid=os.getpid(),
-                host=DEFAULT_HOST,
-                port=port,
-                url=server.url,
                 mode="browser",
-                window_controls_shutdown=False,
             )
+
             _launch_browser(server.url)
             server.wait()
             return 0

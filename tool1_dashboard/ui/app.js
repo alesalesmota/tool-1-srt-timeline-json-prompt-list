@@ -1467,7 +1467,6 @@ function describeWorkerHealth(wh = {}) {
 
 function appRuntimeModeLabel(appRuntime = {}) {
   const mode = String(appRuntime?.mode || "server").toLowerCase();
-  if (mode === "desktop") return "Desktop app";
   if (mode === "browser") return "Browser tab";
   return titleCase(mode);
 }

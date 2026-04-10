@@ -41,7 +41,6 @@ def default_runtime_info() -> dict[str, Any]:
         "port": None,
         "url": None,
         "mode": "server",
-        "window_controls_shutdown": False,
         "started_at": runtime_iso_now(),
     }
 
