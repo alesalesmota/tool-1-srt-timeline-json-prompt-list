@@ -23,6 +23,18 @@ class CliExecutionError(RuntimeError):
 
 
 @dataclass
+class StructuredRunArgs:
+    provider: str
+    model: str | None
+    system_prompt: str
+    user_prompt: str
+    schema: dict[str, Any]
+    workdir: Path
+    artifact_dir: Path
+    api_key: str | None = None
+
+
+@dataclass
 class StreamingArgs:
     command: list[str]
     stdin_text: str
@@ -103,33 +115,22 @@ class CliRunner:
             "auth": auth_payload,
         }
 
-    def run_structured(
-        self,
-        *,
-        provider: str,
-        model: str | None,
-        api_key: str | None = None,
-        system_prompt: str,
-        user_prompt: str,
-        schema: dict[str, Any],
-        workdir: Path,
-        artifact_dir: Path,
-    ) -> dict[str, Any]:
-        ensure_dir(artifact_dir)
-        prompt_path = write_text(artifact_dir / "prompt.txt", user_prompt)
-        schema_path = write_json(artifact_dir / "schema.json", schema)
-        stdout_path = artifact_dir / "stdout.txt"
-        stderr_path = artifact_dir / "stderr.txt"
-        parsed_path = artifact_dir / "parsed.json"
+    def run_structured(self, args: StructuredRunArgs) -> dict[str, Any]:
+        ensure_dir(args.artifact_dir)
+        prompt_path = write_text(args.artifact_dir / "prompt.txt", args.user_prompt)
+        schema_path = write_json(args.artifact_dir / "schema.json", args.schema)
+        stdout_path = args.artifact_dir / "stdout.txt"
+        stderr_path = args.artifact_dir / "stderr.txt"
+        parsed_path = args.artifact_dir / "parsed.json"
         command_payload: dict[str, Any]
 
-        if provider in ("openai", "codex"):
-            default_model = "gpt-5.4-mini" if provider == "openai" else "gpt-5.4"
-            request_path = artifact_dir / "request.json"
+        if args.provider in ("openai", "codex"):
+            default_model = "gpt-5.4-mini" if args.provider == "openai" else "gpt-5.4"
+            request_path = args.artifact_dir / "request.json"
             request_payload = {
-                "model": model or default_model,
-                "instructions": system_prompt,
-                "input": user_prompt,
+                "model": args.model or default_model,
+                "instructions": args.system_prompt,
+                "input": args.user_prompt,
                 "store": False,
                 "max_output_tokens": 16384,
                 "text": {
@@ -137,13 +138,13 @@ class CliRunner:
                         "type": "json_schema",
                         "name": "structured_output",
                         "strict": True,
-                        "schema": schema,
+                        "schema": args.schema,
                     }
                 },
             }
             write_json(request_path, request_payload)
             response_data = self._run_openai_structured(
-                api_key=str(api_key or "").strip(),
+                api_key=str(args.api_key or "").strip(),
                 request_payload=request_payload,
                 stdout_path=stdout_path,
                 stderr_path=stderr_path,
@@ -152,37 +153,37 @@ class CliRunner:
             raw_text = self._extract_openai_output_text(response_data)
             parsed = self._parse_structured_response(raw_text or json.dumps(response_data))
             command_payload = {
-                "provider": provider,
+                "provider": args.provider,
                 "endpoint": "https://api.openai.com/v1/responses",
-                "workdir": str(workdir),
+                "workdir": str(args.workdir),
                 "prompt_path": str(prompt_path),
                 "schema_path": str(schema_path),
                 "request_path": str(request_path),
-                "model": model or default_model,
+                "model": args.model or default_model,
                 "transport": "https",
             }
-        elif provider == "claude":
+        elif args.provider == "claude":
             command = [
                 self.claude_bin,
                 "-p",
                 "--model",
-                model or "haiku",
+                args.model or "haiku",
                 "--system-prompt",
-                system_prompt,
+                args.system_prompt,
                 "--output-format",
                 "json",
                 "--json-schema",
-                json.dumps(schema, ensure_ascii=False),
+                json.dumps(args.schema, ensure_ascii=False),
             ]
-            args = StreamingArgs(
+            streaming_args = StreamingArgs(
                 command=command,
-                stdin_text=user_prompt,
+                stdin_text=args.user_prompt,
                 stdout_path=stdout_path,
                 stderr_path=stderr_path,
-                cwd=workdir,
+                cwd=args.workdir,
                 timeout_seconds=self._structured_timeout_seconds,
             )
-            returncode, stdout_text, stderr_text = self._run_streaming(args)
+            returncode, stdout_text, stderr_text = self._run_streaming(streaming_args)
             if returncode != 0:
                 raise CliExecutionError(
                     self._build_cli_error_message("claude", stdout_text, stderr_text),
@@ -191,12 +192,12 @@ class CliRunner:
                 )
             parsed = self._parse_structured_response(stdout_text)
             command_payload = {
-                "provider": provider,
+                "provider": args.provider,
                 "command": [
                     self.claude_bin,
                     "-p",
                     "--model",
-                    model or "haiku",
+                    args.model or "haiku",
                     "<stdin>",
                     "--system-prompt",
                     "<inline>",
@@ -205,14 +206,14 @@ class CliRunner:
                     "--json-schema",
                     "<inline>",
                 ],
-                "workdir": str(workdir),
+                "workdir": str(args.workdir),
                 "prompt_path": str(prompt_path),
                 "schema_path": str(schema_path),
                 "prompt_transport": "stdin",
-                "model": model or "haiku",
+                "model": args.model or "haiku",
             }
         else:
-            raise ValueError(f"Unsupported provider '{provider}'.")
+            raise ValueError(f"Unsupported provider '{args.provider}'.")
 
         write_json(parsed_path, parsed)
         return {

@@ -42,7 +42,7 @@ from .config import (
 )
 from .database import Tool1Database
 from .launch_runtime import get_runtime_info, runtime_url_from_info
-from .providers import CliRunner
+from .providers import CliRunner, StructuredRunArgs
 from .runtime import (
     clamp_preview,
     ensure_dir,
@@ -3408,14 +3408,16 @@ class Tool1Service:
         validation_path: str | None = None
         try:
             result = self.cli_runner.run_structured(
-                provider=provider,
-                model=config["visual_bible_model"],
-                api_key=self._stage_provider_api_key(provider),
-                system_prompt=template["body"],
-                user_prompt=user_prompt,
-                schema=schema,
-                workdir=workspace,
-                artifact_dir=artifact_dir,
+                StructuredRunArgs(
+                    provider=provider,
+                    model=config["visual_bible_model"],
+                    api_key=self._stage_provider_api_key(provider),
+                    system_prompt=template["body"],
+                    user_prompt=user_prompt,
+                    schema=schema,
+                    workdir=workspace,
+                    artifact_dir=artifact_dir,
+                )
             )
             parsed_output_path = str(write_json(artifact_dir / "parsed.json", result["parsed"]))
             normalized, report = normalize_visual_bible(result["parsed"])
@@ -3964,14 +3966,16 @@ class Tool1Service:
             validation_path: str | None = None
             try:
                 result = self.cli_runner.run_structured(
-                    provider=provider,
-                    model=config["scene_planning_model"],
-                    api_key=self._stage_provider_api_key(provider),
-                    system_prompt=template["body"],
-                    user_prompt=user_prompt,
-                    schema=schema,
-                    workdir=workspace,
-                    artifact_dir=chunk_dir,
+                    StructuredRunArgs(
+                        provider=provider,
+                        model=config["scene_planning_model"],
+                        api_key=self._stage_provider_api_key(provider),
+                        system_prompt=template["body"],
+                        user_prompt=user_prompt,
+                        schema=schema,
+                        workdir=workspace,
+                        artifact_dir=chunk_dir,
+                    )
                 )
                 parsed_output_path = str(write_json(chunk_dir / "parsed.json", result["parsed"]))
                 scene_group, group_warnings = normalize_scene_payload(
@@ -4110,14 +4114,16 @@ class Tool1Service:
             parsed_output_path: str | None = None
             try:
                 result = self.cli_runner.run_structured(
-                    provider=provider,
-                    model=model,
-                    api_key=self._stage_provider_api_key(provider),
-                    system_prompt=template["body"],
-                    user_prompt=user_prompt,
-                    schema=schema,
-                    workdir=workspace,
-                    artifact_dir=batch_dir,
+                    StructuredRunArgs(
+                        provider=provider,
+                        model=model,
+                        api_key=self._stage_provider_api_key(provider),
+                        system_prompt=template["body"],
+                        user_prompt=user_prompt,
+                        schema=schema,
+                        workdir=workspace,
+                        artifact_dir=batch_dir,
+                    )
                 )
                 parsed_output_path = str(write_json(batch_dir / "parsed.json", result["parsed"]))
                 received = result["parsed"].get("prompts", [])
