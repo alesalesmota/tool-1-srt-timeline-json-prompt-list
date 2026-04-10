@@ -12,7 +12,7 @@ from .config import (
     VIDEO_PROMPT_STAGE,
     VISUAL_BIBLE_STAGE,
 )
-from .database import Tool1Database
+from .database import Tool1Database, TemplateRecord
 from .runtime import ensure_dir, hash_text, write_text
 
 DEFAULT_TEMPLATES: dict[tuple[str, str], str] = {
@@ -242,7 +242,14 @@ class TemplateStore:
     def _sync_record(self, stage: str, provider: str, body: str) -> dict[str, Any]:
         path = self._template_path(stage, provider)
         template_hash = hash_text(body)
-        self.db.upsert_template(stage, provider, str(path), body, template_hash)
+        record = TemplateRecord(
+            stage=stage,
+            provider=provider,
+            path=str(path),
+            body=body,
+            template_hash=template_hash,
+        )
+        self.db.upsert_template(record)
         return {
             "stage": stage,
             "provider": provider,

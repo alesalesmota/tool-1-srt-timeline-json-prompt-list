@@ -31,6 +31,14 @@ class WorkerHeartbeat:
     started_at: float
     last_error: str | None = None
 
+@dataclass
+class TemplateRecord:
+    stage: str
+    provider: str
+    path: str
+    body: str
+    template_hash: str
+
 class Tool1Database:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or DATABASE_PATH
@@ -379,7 +387,7 @@ class Tool1Database:
 
     # ── templates ───────────────────────────────────────────────────
 
-    def upsert_template(self, stage: str, provider: str, path: str, body: str, template_hash: str) -> None:
+    def upsert_template(self, record: TemplateRecord) -> None:
         self._execute(
             """
             INSERT INTO templates(stage, provider, path, body, hash, updated_at)
@@ -390,7 +398,7 @@ class Tool1Database:
                 hash = excluded.hash,
                 updated_at = excluded.updated_at
             """,
-            (stage, provider, path, body, template_hash, utc_now()),
+            (record.stage, record.provider, record.path, record.body, record.template_hash, utc_now()),
         )
 
     def list_templates(self) -> list[dict[str, Any]]:
