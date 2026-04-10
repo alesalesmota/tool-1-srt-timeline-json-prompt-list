@@ -10,6 +10,67 @@ from typing import Any, Iterable
 from .config import DATABASE_PATH, DEFAULT_SETTINGS
 from .runtime import ensure_dir, utc_now
 
+ALLOWED_COLUMNS = {
+    "settings": {"key", "value", "updated_at"},
+    "templates": {"stage", "provider", "path", "body", "hash", "updated_at"},
+    "niche_projects": {
+        "id", "title", "master_language", "configured_languages",
+        "language_voice_profiles", "language_translation_profiles",
+        "board_status", "workspace_dir", "scene_planning_provider",
+        "visual_bible_provider", "video_prompt_provider",
+        "image_prompt_provider", "scene_planning_model",
+        "visual_bible_model", "video_prompt_model", "image_prompt_model",
+        "leading_video_scene_count", "warning_count", "last_error",
+        "created_at", "updated_at", "source_channel_name",
+        "language_channel_names", "channel_replace_prompt",
+        "channel_replace_post",
+    },
+    "episodes": {
+        "id", "niche_project_id", "title", "script_text", "board_status",
+        "pipeline_status", "current_stage", "queued_from_stage",
+        "pause_requested", "master_language", "configured_languages",
+        "consistency_guide_path", "planning_manifest_path",
+        "timeline_draft_path", "timeline_validation_path",
+        "visual_bible_validation_path", "prompt_list_draft_path",
+        "prompt_blueprint_path", "prompt_validation_path",
+        "export_timeline_path", "export_prompt_list_path",
+        "export_video_prompt_list_path", "export_image_prompt_list_path",
+        "master_scenes_path", "review_ready", "warning_count",
+        "last_error", "workspace_dir", "created_at", "updated_at",
+    },
+    "episode_language_status": {
+        "id", "episode_id", "language_code", "translation_status",
+        "tts_status", "srt_status", "timeline_status", "script_path",
+        "spoken_script_path", "tts_audio_path", "srt_path",
+        "timeline_path", "tts_job_id", "error_message", "updated_at",
+    },
+    "stage_runs": {
+        "id", "episode_id", "stage", "provider", "status", "started_at",
+        "finished_at", "exit_code", "template_hash", "workdir",
+        "command_json", "stdout_path", "stderr_path", "parsed_output_path",
+        "validation_path", "error_text",
+    },
+    "voice_profiles": {
+        "id", "name", "language_code", "audio_file", "audio_path",
+        "latents_path", "has_latents", "tts_config_json", "created_at",
+        "updated_at",
+    },
+    "translation_profiles": {
+        "id", "name", "provider", "api_key_ref", "model", "is_default",
+        "created_at", "updated_at",
+    },
+    "tts_jobs": {
+        "job_id", "build_id", "job_type", "profile_id", "status",
+        "progress", "result_path", "filename", "payload_json",
+        "meta_json", "queue_priority", "worker_id", "control_action",
+        "error_message", "created_at", "updated_at", "finished_at",
+    },
+    "worker_heartbeats": {
+        "worker_id", "status", "current_job_id", "pid", "started_at",
+        "heartbeat_at", "last_error",
+    },
+}
+
 
 class Tool1Database:
     def __init__(self, path: Path | None = None) -> None:
@@ -309,20 +370,28 @@ class Tool1Database:
             return int(cursor.lastrowid or 0)
 
     def _insert(self, table: str, payload: dict[str, Any]) -> None:
-        columns = ", ".join(payload.keys())
-        placeholders = ", ".join(["?"] * len(payload))
+        allowed = ALLOWED_COLUMNS.get(table)
+        safe_payload = {k: v for k, v in payload.items() if allowed is None or k in allowed}
+        if not safe_payload:
+            return
+        columns = ", ".join(safe_payload.keys())
+        placeholders = ", ".join(["?"] * len(safe_payload))
         self._execute(
             f"INSERT INTO {table}({columns}) VALUES ({placeholders})",
-            tuple(payload.values()),
+            tuple(safe_payload.values()),
         )
 
     def _update(self, table: str, pk_column: str, pk_value: Any, **fields: Any) -> None:
         if not fields:
             return
-        if "updated_at" not in fields:
-            fields["updated_at"] = utc_now()
-        assignments = ", ".join(f"{key} = ?" for key in fields)
-        params = list(fields.values()) + [pk_value]
+        allowed = ALLOWED_COLUMNS.get(table)
+        safe_fields = {k: v for k, v in fields.items() if allowed is None or k in allowed}
+        if not safe_fields:
+            return
+        if "updated_at" not in safe_fields and (allowed is None or "updated_at" in allowed):
+            safe_fields["updated_at"] = utc_now()
+        assignments = ", ".join(f"{key} = ?" for key in safe_fields)
+        params = list(safe_fields.values()) + [pk_value]
         self._execute(f"UPDATE {table} SET {assignments} WHERE {pk_column} = ?", params)
 
     # ── settings ────────────────────────────────────────────────────
@@ -442,8 +511,11 @@ class Tool1Database:
             fields["stdout_path"] = stdout_path
         if stderr_path is not None:
             fields["stderr_path"] = stderr_path
-        assignments = ", ".join(f"{key} = ?" for key in fields)
-        params = list(fields.values()) + [run_id]
+
+        allowed = ALLOWED_COLUMNS["stage_runs"]
+        safe_fields = {k: v for k, v in fields.items() if k in allowed}
+        assignments = ", ".join(f"{key} = ?" for key in safe_fields)
+        params = list(safe_fields.values()) + [run_id]
         self._execute(f"UPDATE stage_runs SET {assignments} WHERE id = ?", params)
 
     def update_stage_run_command(self, run_id: int, command_payload: Any) -> None:
@@ -580,9 +652,11 @@ class Tool1Database:
         )
 
     def update_episode_language_status(self, episode_id: str, language_code: str, **fields: Any) -> None:
-        fields["updated_at"] = utc_now()
-        set_clause = ", ".join(f"{k} = ?" for k in fields)
-        values = list(fields.values()) + [episode_id, language_code]
+        allowed = ALLOWED_COLUMNS["episode_language_status"]
+        safe_fields = {k: v for k, v in fields.items() if k in allowed}
+        safe_fields["updated_at"] = utc_now()
+        set_clause = ", ".join(f"{k} = ?" for k in safe_fields)
+        values = list(safe_fields.values()) + [episode_id, language_code]
         with self._lock, self._connect() as connection:
             connection.execute(
                 f"UPDATE episode_language_status SET {set_clause} WHERE episode_id = ? AND language_code = ?",
