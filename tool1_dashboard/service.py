@@ -11,6 +11,7 @@ import shutil
 import threading
 import uuid
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
 from .alignment_tool.extract_script import extract_script_text
@@ -114,6 +115,16 @@ STAGE_PROVIDER_OPENAI_API_KEY_SETTING = "stage_provider_openai_api_key"
 STAGE_PROVIDER_OPENAI_MODELS_SETTING = "stage_provider_openai_models_json"
 STAGE_PROVIDER_OPENAI_RECOMMENDED_MODEL_SETTING = "stage_provider_openai_recommended_model"
 STAGE_PROVIDER_OPENAI_SYNCED_AT_SETTING = "stage_provider_openai_models_synced_at"
+
+
+@dataclass
+class QueueReadinessContext:
+    project: dict[str, Any] | None
+    episode: dict[str, Any] | None = None
+    provider_health: dict[str, Any] | None = None
+    voice_profiles: dict[str, dict[str, Any]] | None = None
+    translation_profiles: dict[str, dict[str, Any]] | None = None
+    worker_health: dict[str, Any] | None = None
 
 
 class QueueBlockedError(ValueError):
@@ -777,14 +788,14 @@ class Tool1Service:
 
     def _build_queue_readiness(
         self,
-        *,
-        project: dict[str, Any] | None,
-        episode: dict[str, Any] | None = None,
-        provider_health: dict[str, Any] | None = None,
-        voice_profiles: dict[str, dict[str, Any]] | None = None,
-        translation_profiles: dict[str, dict[str, Any]] | None = None,
-        worker_health: dict[str, Any] | None = None,
+        context: QueueReadinessContext,
     ) -> dict[str, Any]:
+        project = context.project
+        episode = context.episode
+        provider_health = context.provider_health
+        voice_profiles = context.voice_profiles
+        translation_profiles = context.translation_profiles
+        worker_health = context.worker_health
         blockers: list[dict[str, Any]] = []
         warnings: list[dict[str, Any]] = []
         hydrated_project = self._hydrate_project_record(project)
@@ -1039,12 +1050,14 @@ class Tool1Service:
         payload = self._hydrate_episode_record(episode) or {}
         worker_health = worker_health or {}
         payload["queue_readiness"] = self._build_queue_readiness(
-            project=project,
-            episode=payload,
-            provider_health=provider_health,
-            voice_profiles=voice_profiles,
-            translation_profiles=translation_profiles,
-            worker_health=worker_health,
+            QueueReadinessContext(
+                project=project,
+                episode=payload,
+                provider_health=provider_health,
+                voice_profiles=voice_profiles,
+                translation_profiles=translation_profiles,
+                worker_health=worker_health,
+            )
         )
         payload["active_tts_job"] = active_tts_job
         payload["tts_worker_device"] = worker_health.get("device")
@@ -2240,11 +2253,13 @@ class Tool1Service:
         voice_profile_list = self.list_voice_profiles()
         translation_profile_list = self.list_translation_profiles_public()
         project["queue_readiness"] = self._build_queue_readiness(
-            project=project,
-            provider_health=provider_health,
-            voice_profiles=voice_profiles,
-            translation_profiles=translation_profiles,
-            worker_health=worker_health,
+            QueueReadinessContext(
+                project=project,
+                provider_health=provider_health,
+                voice_profiles=voice_profiles,
+                translation_profiles=translation_profiles,
+                worker_health=worker_health,
+            )
         )
 
         return {
@@ -2457,8 +2472,10 @@ class Tool1Service:
             raise ValueError(f"Invalid start stage: {stage}")
         project = self._hydrate_project_record(self.db.get_niche_project(episode["niche_project_id"]))
         queue_readiness = self._build_queue_readiness(
-            project=project,
-            episode=episode,
+            QueueReadinessContext(
+                project=project,
+                episode=episode,
+            )
         )
         filtered_blockers = [
             blocker
