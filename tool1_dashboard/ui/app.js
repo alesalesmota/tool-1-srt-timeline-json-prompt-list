@@ -132,6 +132,7 @@ const state = {
   episodeFiles: {},
   episodeWorkflowActions: {},
   episodeWorkflowStageSelections: {},
+  episodeTranslationReviewOverrides: {},
   translationPreview: null,
   isLoadingRoute: false,
   isRefreshingData: false,
@@ -2698,6 +2699,10 @@ function workflowStageSelectId(episodeId, surface = "detail") {
   return domSafeId("workflow-stage", episodeId, surface);
 }
 
+function translationReviewOverrideSelectId(episodeId, surface = "detail") {
+  return domSafeId("translation-review-override", episodeId, surface);
+}
+
 function selectedWorkflowStage(episode) {
   const episodeId = episode?.id;
   if (episodeId && state.episodeWorkflowStageSelections?.[episodeId]) {
@@ -2706,9 +2711,28 @@ function selectedWorkflowStage(episode) {
   return episodeQueueStartStage(episode);
 }
 
+function selectedTranslationReviewOverride(episode) {
+  const episodeId = episode?.id;
+  if (episodeId && Object.prototype.hasOwnProperty.call(state.episodeTranslationReviewOverrides || {}, episodeId)) {
+    return state.episodeTranslationReviewOverrides[episodeId];
+  }
+  return "";
+}
+
 function workflowStageOptions(selectedStage) {
   return EPISODE_RUNNABLE_STAGE_IDS
     .map((stageId) => `<option value="${esc(stageId)}" ${stageId === selectedStage ? "selected" : ""}>${esc(stageLabel(stageId))}</option>`)
+    .join("");
+}
+
+function translationReviewOverrideOptions(selectedValue) {
+  const options = [
+    { value: "", label: "Use project default" },
+    { value: "pause", label: "Pause after translation" },
+    { value: "continue", label: "Continue to TTS" },
+  ];
+  return options
+    .map((option) => `<option value="${esc(option.value)}" ${option.value === selectedValue ? "selected" : ""}>${esc(option.label)}</option>`)
     .join("");
 }
 
@@ -2735,10 +2759,13 @@ function renderEpisodeWorkflowControlPanel(
   const status = String(episode?.pipeline_status || "idle").toLowerCase();
   const selectedStage = selectedWorkflowStage(episode);
   const selectId = workflowStageSelectId(episode.id, surface);
+  const reviewOverrideId = translationReviewOverrideSelectId(episode.id, surface);
+  const selectedReviewOverride = selectedTranslationReviewOverride(episode);
   const activeWorkflow = isWorkflowActiveStatus(status);
   const tone = episode.pause_requested || activeWorkflow ? "warn" : readiness?.ok === false ? "error" : "success";
   const startDisabled = activeWorkflow || readiness?.ok === false;
   const selectedStepDisabled = activeWorkflow || readiness?.ok === false;
+  const showTranslationHandoff = ["consistency_guide", "translation"].includes(selectedStage) || Boolean(episode?.paused_after_translation_review);
   const pauseButton = activeWorkflow
     ? `<button
         type="button"
@@ -2753,7 +2780,9 @@ function renderEpisodeWorkflowControlPanel(
       : status === "paused_for_tts"
         ? "Narration is still running. A pause request will land before Alignment."
         : "Pause stops at the next safe stage boundary so you can resume or rerun from a specific step.")
-    : "Selected step reruns that step and everything after it. Use it when you want to redo Translation, TTS, Consistency Guide, or a later stage.";
+    : showTranslationHandoff
+      ? "Use the translation handoff control to decide whether the run should pause after translation for a manual check or continue directly into TTS."
+      : "Selected step reruns that step and everything after it. Use it when you want to redo Translation, TTS, Consistency Guide, or a later stage.";
 
   return `
     <section class="project-readiness-panel workflow-control-panel" data-tone="${esc(tone)}">
@@ -2766,12 +2795,21 @@ function renderEpisodeWorkflowControlPanel(
           <span class="field-label">Run from step</span>
           <select id="${esc(selectId)}" data-workflow-stage-select="${esc(episode.id)}">${workflowStageOptions(selectedStage)}</select>
         </label>
+        ${showTranslationHandoff ? `
+          <label class="field workflow-stage-field">
+            <span class="field-label">After translation</span>
+            <select id="${esc(reviewOverrideId)}" data-translation-review-select="${esc(episode.id)}">
+              ${translationReviewOverrideOptions(selectedReviewOverride)}
+            </select>
+          </label>
+        ` : ""}
         <div class="workflow-control-actions">
           <button
             type="button"
             class="button button-primary button-small"
             data-queue-episode="${esc(episode.id)}"
             data-stage="${esc(selectedStage)}"
+            ${showTranslationHandoff ? `data-translation-review-select="${esc(reviewOverrideId)}"` : ""}
             ${startDisabled ? "disabled" : ""}
           >${esc(workflowResumeButtonLabel(episode))}</button>
           <button
@@ -2780,6 +2818,7 @@ function renderEpisodeWorkflowControlPanel(
             data-queue-episode="${esc(episode.id)}"
             data-stage-select="${esc(selectId)}"
             data-reset-outputs="true"
+            ${showTranslationHandoff ? `data-translation-review-select="${esc(reviewOverrideId)}"` : ""}
             ${selectedStepDisabled ? "disabled" : ""}
           >${esc(workflowSelectedStepButtonLabel(episode))}</button>
           ${pauseButton}
@@ -3044,6 +3083,7 @@ function renderLanguageConfigSection(project, voiceProfiles, translationProfiles
   const cns = project.language_channel_names || {};
   const sourceChannel = project.source_channel_name || "";
   const replacePrompt = project.channel_replace_prompt !== false && project.channel_replace_prompt !== 0;
+  const pauseAfterTranslation = project.pause_after_translation_review === true || project.pause_after_translation_review === 1;
   const allLangs = state.targetLanguages || [];
   const usedSet = new Set(langs);
 
@@ -3082,17 +3122,26 @@ function renderLanguageConfigSection(project, voiceProfiles, translationProfiles
         <button type="button" class="button button-primary button-small has-icon" data-save-lang-config="${esc(project.id)}">${iconContent("save", "Save")}</button>
       </div>
       <div class="channel-replace-config" style="margin-bottom:12px;">
-        <label class="field" style="max-width:300px;">
-          <span class="field-label">Source Channel Name</span>
-          <input id="source-channel-name" type="text" value="${esc(sourceChannel)}" placeholder="Original channel name" />
-        </label>
-        <div class="toggle-row" style="display:flex;gap:16px;margin-top:8px;">
+        <div class="workflow-control-grid">
+          <label class="field" style="max-width:320px;">
+            <span class="field-label">Source channel name</span>
+            <input id="source-channel-name" type="text" value="${esc(sourceChannel)}" placeholder="Original channel name" />
+          </label>
+          <label class="field" style="max-width:320px;">
+            <span class="field-label">After translation</span>
+            <select id="pause-after-translation-review">
+              <option value="continue" ${pauseAfterTranslation ? "" : "selected"}>Auto-continue to TTS</option>
+              <option value="pause" ${pauseAfterTranslation ? "selected" : ""}>Pause for manual review</option>
+            </select>
+          </label>
+        </div>
+        <div class="toggle-row" style="display:flex;gap:16px;margin-top:12px;">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
             <input id="channel-replace-prompt" type="checkbox" ${replacePrompt ? "checked" : ""} />
             <span class="field-label" style="margin:0;">Prompt-based channel replacement</span>
           </label>
         </div>
-        <div class="helper" style="margin-top:8px;max-width:60ch;">The translator now handles channel renaming in the prompt. The app validates the result after translation, but it no longer rewrites the script in code.</div>
+        <div class="helper" style="margin-top:8px;max-width:68ch;">The translator now handles channel renaming in the prompt. Deterministic checks block broken outputs, and this setting decides whether clean translations pause for a manual check before TTS starts.</div>
       </div>
       <table class="lang-config-table">
         <thead><tr><th>Language</th><th>Voice Profile</th><th>Translation Profile</th><th>Channel Name</th><th></th></tr></thead>
@@ -3716,7 +3765,7 @@ function renderEpisodeDetailOverlay() {
     const canRetryTts = !["running", "queued", "paused_for_tts"].includes(episode.pipeline_status || "idle") && (ls.tts_status === "failed" || ls.tts_status === "skipped");
     const canRetryAlignment = !["running", "queued", "paused_for_tts"].includes(episode.pipeline_status || "idle") && ls.tts_status === "done" && (ls.srt_status === "failed" || ls.srt_status === "skipped");
     const canRetryTimeline = !["running", "queued", "paused_for_tts"].includes(episode.pipeline_status || "idle") && ls.srt_status === "done" && (ls.timeline_status === "failed" || ls.timeline_status === "skipped");
-    const hasTranslation = ls.translation_status === "done" && ls.language_code !== (episode.master_language || "en");
+    const hasTranslation = ls.language_code !== (episode.master_language || "en") && ls.translation_status !== "pending";
     const ttsProgressLabel = languageTtsJobCopy(ls);
     const ttsProgress = ttsProgressLabel ? ' <span class="helper" style="font-size:0.7rem;">(' + esc(ttsProgressLabel) + ')</span>' : '';
     return '<tr>' +
@@ -3734,7 +3783,7 @@ function renderEpisodeDetailOverlay() {
       '<td>' + langStatusBadge(ls.timeline_status) +
         (canRetryTimeline ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="timeline_mapping">Retry</button>' : '') +
       '</td>' +
-      '<td class="helper" style="font-size:0.75rem;">' + esc(ls.error_message || "") + '</td>' +
+      '<td class="helper" style="font-size:0.75rem;">' + esc(summarizeCardIssue(ls.error_message || "", 90)) + '</td>' +
     '</tr>';
   }).join("");
   const liveRunHtml = renderStageRunActivityPanel(stageRuns);
@@ -3856,7 +3905,7 @@ function renderEpisodeDetail() {
     const canRetryTts = isPipelineIdle && (ls.tts_status === "failed" || ls.tts_status === "skipped");
     const canRetryAlignment = isPipelineIdle && ls.tts_status === "done" && (ls.srt_status === "failed" || ls.srt_status === "skipped");
     const canRetryTimeline = isPipelineIdle && ls.srt_status === "done" && (ls.timeline_status === "failed" || ls.timeline_status === "skipped");
-    const hasTranslation = ls.translation_status === "done" && ls.language_code !== (episode.master_language || "en");
+    const hasTranslation = ls.language_code !== (episode.master_language || "en") && ls.translation_status !== "pending";
     const ttsProgressLabel = languageTtsJobCopy(ls);
     const ttsProgress = ttsProgressLabel ? ' <span class="helper" style="font-size:0.7rem;">(' + esc(ttsProgressLabel) + ')</span>' : '';
 
@@ -3875,7 +3924,7 @@ function renderEpisodeDetail() {
       '<td>' + langStatusBadge(ls.timeline_status) +
         (canRetryTimeline ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="timeline_mapping">Retry</button>' : '') +
       '</td>' +
-      '<td class="helper" style="font-size:0.75rem;">' + esc(ls.error_message || "") + '</td>' +
+      '<td class="helper" style="font-size:0.75rem;">' + esc(summarizeCardIssue(ls.error_message || "", 90)) + '</td>' +
     '</tr>';
   }).join("");
 
@@ -4324,25 +4373,128 @@ async function loadReviewData(episodeId) {
   }
 }
 
+function translationIssueMessage(item) {
+  if (!item) return "";
+  if (typeof item === "string") return item;
+  return item.message || item.issue || item.problem || "";
+}
+
+function renderTranslationIssueList(title, items, tone, emptyCopy = "") {
+  const entries = (items || [])
+    .map((item) => translationIssueMessage(item))
+    .filter(Boolean)
+    .slice(0, 6);
+  if (!entries.length && !emptyCopy) return "";
+  return `
+    <section class="translation-review-card" data-tone="${esc(tone)}">
+      <div class="translation-review-card-head">
+        <strong>${esc(title)}</strong>
+        <span class="badge badge-${esc(tone)}">${esc(entries.length || 0)}</span>
+      </div>
+      ${entries.length
+        ? `<ul class="translation-review-list">${entries.map((entry) => `<li>${esc(entry)}</li>`).join("")}</ul>`
+        : `<div class="helper">${esc(emptyCopy)}</div>`}
+    </section>
+  `;
+}
+
+function translationPreviewState(preview) {
+  const blockers = preview.blocking_issues || [];
+  if (blockers.length) {
+    return {
+      tone: "error",
+      label: "Blocked by deterministic checks",
+      copy: preview.error_summary || "The translation has issues that would break or damage the workflow.",
+    };
+  }
+  if (preview.paused_after_translation) {
+    return {
+      tone: "warn",
+      label: "Paused for manual review",
+      copy: "Translation passed deterministic checks and is waiting for your decision before TTS starts.",
+    };
+  }
+  if (preview.ready_for_tts) {
+    return {
+      tone: "success",
+      label: "Ready for TTS",
+      copy: "No deterministic blockers were found. This language can move into voice generation.",
+    };
+  }
+  return {
+    tone: "neutral",
+    label: "Translation in progress",
+    copy: preview.error_summary || "The translation is not ready yet.",
+  };
+}
+
 function renderTranslationPreviewModal() {
   const preview = state.translationPreview;
-  if (!preview) return '';
+  if (!preview) return "";
+
   const statusBadgeHtml = langStatusBadge(preview.translation_status);
-  const logSummary = (preview.translation_log || []).map((c) =>
-    '<div class="helper" style="font-size:0.75rem;">' +
-      'Chunk ' + c.chunk_index + ': ' + c.words_in + ' → ' + c.words_out + ' words ' +
-      '<span class="badge badge-' + (c.status === "ok" ? "success" : "error") + '" style="font-size:0.65rem;">' + esc(c.status) + '</span>' +
-      (c.error ? ' <span class="helper" style="color:var(--error);">' + esc(c.error) + '</span>' : '') +
+  const blockers = preview.blocking_issues || [];
+  const warnings = preview.warnings || [];
+  const manualAudit = preview.manual_audit || null;
+  const stateCard = translationPreviewState(preview);
+  const auditButtonLabel = manualAudit ? "Re-run advisory audit" : "Run advisory audit";
+  const canContinue = Boolean(preview.paused_after_translation && preview.ready_for_tts && !blockers.length);
+  const logSummary = (preview.translation_log || []).map((chunk) =>
+    '<div class="translation-log-row">' +
+      '<div><strong>Chunk ' + esc(chunk.chunk_index) + '</strong> <span class="helper">' + esc(chunk.words_in) + ' → ' + esc(chunk.words_out) + ' words</span></div>' +
+      '<div>' + '<span class="badge badge-' + (chunk.status === "ok" ? "success" : "error") + '">' + esc(chunk.status) + '</span>' + '</div>' +
+      (chunk.error ? '<div class="helper" style="grid-column:1 / -1;color:var(--error);">' + esc(chunk.error) + '</div>' : '') +
     '</div>'
   ).join("");
+  const manualAuditBlockers = (manualAudit?.blocking_issues || []).map((item) => translationIssueMessage(item)).filter(Boolean);
+  const manualAuditWarnings = (manualAudit?.warnings || []).map((item) => translationIssueMessage(item)).filter(Boolean);
 
   return `
     <div class="modal-backdrop" data-modal-backdrop="true">
-      <div class="modal-panel" style="max-width:900px;width:95vw;">
+      <div class="modal-panel translation-preview-modal">
         <div class="modal-header">
-          <h2>Translation Preview — ${esc(preview.language_code)} ${statusBadgeHtml}</h2>
+          <h2>Translation review — ${esc(preview.language_code)} ${statusBadgeHtml}</h2>
           <button type="button" class="button button-ghost icon-only" data-close-modal="true">${iconContent("close", "Close", { iconOnly: true })}</button>
         </div>
+
+        <section class="translation-preview-hero" data-tone="${esc(stateCard.tone)}">
+          <div>
+            <div class="eyebrow">Translation gate</div>
+            <div class="translation-preview-hero-title">${esc(stateCard.label)}</div>
+            <div class="translation-preview-hero-copy">${esc(stateCard.copy)}</div>
+            ${preview.error_message ? `<div class="notice" data-tone="error" style="margin-top:10px;">${esc(preview.error_message)}</div>` : ""}
+          </div>
+          <div class="translation-preview-actions">
+            ${canContinue
+              ? `<button type="button" class="button button-primary button-small" data-continue-after-translation="${esc(preview.episode_id || "")}" data-stage="tts">Continue to TTS</button>
+                 <button type="button" class="button button-ghost button-small" data-run-translation-audit="${esc(preview.episode_id || "")}" data-audit-lang="${esc(preview.language_code)}">${esc(auditButtonLabel)}</button>`
+              : `<button type="button" class="button button-primary button-small" data-run-translation-audit="${esc(preview.episode_id || "")}" data-audit-lang="${esc(preview.language_code)}">${esc(auditButtonLabel)}</button>`}
+          </div>
+        </section>
+
+        <div class="translation-review-grid">
+          ${renderTranslationIssueList("Blocking issues", blockers, "error", "No deterministic blockers.")}
+          ${renderTranslationIssueList("Warnings", warnings, "warn", "No additional warnings.")}
+        </div>
+
+        <section class="translation-review-card" data-tone="${esc(manualAudit?.passed === false ? "warn" : "neutral")}">
+          <div class="translation-review-card-head">
+            <strong>Manual audit</strong>
+            ${manualAudit ? `<span class="badge badge-${manualAudit.passed === false ? "warn" : "success"}">${esc(manualAudit.passed === false ? "Advisory issues" : "Clear")}</span>` : ""}
+          </div>
+          ${manualAudit
+            ? `
+              <div class="translation-preview-hero-copy">${esc(manualAudit.summary || "Audit completed.")}</div>
+              ${manualAuditBlockers.length ? `<ul class="translation-review-list">${manualAuditBlockers.slice(0, 4).map((entry) => `<li>${esc(entry)}</li>`).join("")}</ul>` : ""}
+              ${manualAuditWarnings.length ? `<div class="helper" style="margin-top:8px;">Warnings: ${esc(manualAuditWarnings.slice(0, 3).join(" | "))}</div>` : ""}
+              <details class="translation-review-details">
+                <summary>Raw audit details</summary>
+                <pre class="translation-preview-text">${esc(JSON.stringify(manualAudit, null, 2))}</pre>
+              </details>
+            `
+            : `<div class="helper">Manual audit is optional. Run it when you want a factual or workflow-risk check without blocking the automatic pipeline.</div>`}
+        </section>
+
         <div class="translation-preview-grid">
           <div class="translation-preview-col">
             <div class="eyebrow">Original</div>
@@ -4353,7 +4505,13 @@ function renderTranslationPreviewModal() {
             <pre class="translation-preview-text">${esc(preview.translated || "(no translation yet)")}</pre>
           </div>
         </div>
-        ${logSummary ? '<div style="margin-top:12px;"><div class="eyebrow">Chunk log</div>' + logSummary + '</div>' : ''}
+
+        ${logSummary ? `
+          <details class="translation-review-details">
+            <summary>Chunk log (${esc((preview.translation_log || []).length)})</summary>
+            <div class="translation-log-list">${logSummary}</div>
+          </details>
+        ` : ""}
       </div>
     </div>
   `;
@@ -4967,7 +5125,7 @@ function closeEpisodeOverlay() {
   resetAutoRefresh();
 }
 
-async function triggerEpisodeWorkflowStart(episodeId, { explicitStage = null, resetOutputs = false } = {}) {
+async function triggerEpisodeWorkflowStart(episodeId, { explicitStage = null, resetOutputs = false, translationReviewOverride = null } = {}) {
   const episode = findEpisodeReference(episodeId);
   const startStage = episodeQueueStartStage(episode, explicitStage);
   const pendingMessage = queueActionPendingMessage(episode || {}, startStage);
@@ -4975,6 +5133,12 @@ async function triggerEpisodeWorkflowStart(episodeId, { explicitStage = null, re
     ...state.episodeWorkflowStageSelections,
     [episodeId]: startStage,
   };
+  if (translationReviewOverride !== null) {
+    state.episodeTranslationReviewOverrides = {
+      ...state.episodeTranslationReviewOverrides,
+      [episodeId]: translationReviewOverride,
+    };
+  }
   resetEpisodeSupplementalState(episodeId);
   setEpisodeWorkflowActionState(episodeId, {
     intent: "start",
@@ -4994,6 +5158,9 @@ async function triggerEpisodeWorkflowStart(episodeId, { explicitStage = null, re
       body: JSON.stringify({
         start_stage: explicitStage || null,
         reset_outputs: Boolean(resetOutputs),
+        translation_review_override: translationReviewOverride === null
+          ? null
+          : translationReviewOverride === "pause",
       }),
     });
     await refreshData();
@@ -5456,7 +5623,7 @@ document.addEventListener("click", async (event) => {
     closeEpisodeOverlay();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-stage-provider-openai-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-pause-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-open-episode-file], [data-download-episode-file], [data-save-review], [data-finalize-export], [data-download-export], [data-project-config-toggle]");
+  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-stage-provider-openai-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-pause-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-run-translation-audit], [data-continue-after-translation], [data-open-episode-file], [data-download-episode-file], [data-save-review], [data-finalize-export], [data-download-export], [data-project-config-toggle]");
   if (!target) return;
   event.preventDefault();
   try {
@@ -5627,9 +5794,13 @@ document.addEventListener("click", async (event) => {
       const selectedStage = target.dataset.stageSelect
         ? document.getElementById(target.dataset.stageSelect)?.value || target.dataset.stage || null
         : target.dataset.stage || null;
+      const translationReviewOverride = target.dataset.translationReviewSelect
+        ? document.getElementById(target.dataset.translationReviewSelect)?.value || ""
+        : null;
       await triggerEpisodeWorkflowStart(target.dataset.queueEpisode, {
         explicitStage: selectedStage,
         resetOutputs: target.dataset.resetOutputs === "true",
+        translationReviewOverride,
       });
       return;
     }
@@ -5672,6 +5843,7 @@ document.addEventListener("click", async (event) => {
       });
       const sourceChannelName = ($("source-channel-name") || {}).value || "";
       const channelReplacePrompt = !!($("channel-replace-prompt") || {}).checked;
+      const pauseAfterTranslationReview = (($("pause-after-translation-review") || {}).value || "continue") === "pause";
       await api('/api/niche-projects/' + encodeURIComponent(projectId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -5682,6 +5854,7 @@ document.addEventListener("click", async (event) => {
           source_channel_name: sourceChannelName,
           channel_replace_prompt: channelReplacePrompt,
           channel_replace_post: false,
+          pause_after_translation_review: pauseAfterTranslationReview,
         }),
       });
       await refreshData();
@@ -5799,8 +5972,35 @@ document.addEventListener("click", async (event) => {
       const episodeId = target.dataset.previewTranslation;
       const langCode = target.dataset.previewLang;
       const preview = await api('/api/episodes/' + encodeURIComponent(episodeId) + '/translation-preview/' + encodeURIComponent(langCode));
-      state.translationPreview = preview;
+      state.translationPreview = { ...preview, episode_id: episodeId };
       state.modal = { kind: "translation-preview" };
+      renderApp();
+      return;
+    }
+    if (target.dataset.runTranslationAudit) {
+      const episodeId = target.dataset.runTranslationAudit;
+      const langCode = target.dataset.auditLang;
+      setNotice("Running translation audit…", "info");
+      const payload = await api('/api/episodes/' + encodeURIComponent(episodeId) + '/translation-audit/' + encodeURIComponent(langCode), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const refreshedPreview = await api('/api/episodes/' + encodeURIComponent(episodeId) + '/translation-preview/' + encodeURIComponent(langCode));
+      state.translationPreview = { ...refreshedPreview, episode_id: episodeId };
+      renderApp();
+      setNotice(payload.manual_audit?.summary || "Translation audit finished.", payload.manual_audit?.passed === false ? "warn" : "success");
+      return;
+    }
+    if (target.dataset.continueAfterTranslation) {
+      const episodeId = target.dataset.continueAfterTranslation;
+      const stage = target.dataset.stage || "tts";
+      await triggerEpisodeWorkflowStart(episodeId, {
+        explicitStage: stage,
+        translationReviewOverride: "continue",
+      });
+      state.modal = { kind: null };
+      state.translationPreview = null;
       renderApp();
       return;
     }
@@ -5895,6 +6095,13 @@ document.addEventListener("change", (event) => {
     state.episodeWorkflowStageSelections = {
       ...state.episodeWorkflowStageSelections,
       [event.target.dataset.workflowStageSelect]: event.target.value,
+    };
+    return;
+  }
+  if (event.target.dataset.translationReviewSelect) {
+    state.episodeTranslationReviewOverrides = {
+      ...state.episodeTranslationReviewOverrides,
+      [event.target.dataset.translationReviewSelect]: event.target.value,
     };
     return;
   }

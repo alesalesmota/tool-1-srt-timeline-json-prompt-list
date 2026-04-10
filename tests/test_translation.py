@@ -293,13 +293,13 @@ class PromptBuildingTests(unittest.TestCase):
             source_channel_name="True Light",
             target_channel_name="Orizzonte",
         )
-        self.assertIn("fluency", prompt)
-        self.assertIn("naturalness", prompt)
-        self.assertIn("faithfulness", prompt)
-        self.assertIn("channel-name compliance", prompt)
-        self.assertIn("Do not cite source-language phrases unless they appear verbatim in the translated script.", prompt)
-        self.assertIn("Every issue must quote or paraphrase the exact translated wording", prompt)
+        self.assertIn("workflow compatibility and factual integrity", prompt)
+        self.assertIn("Ignore minor fluency, elegance, style, or preference issues.", prompt)
+        self.assertIn("wrong channel-name handling", prompt)
+        self.assertIn("blocking_issues", prompt)
+        self.assertIn("warnings", prompt)
         self.assertIn("\"passed\": true", prompt)
+        self.assertNotIn("\"scores\"", prompt)
 
 
 class TranslationAdapterOpenAiTests(unittest.TestCase):
@@ -596,10 +596,9 @@ class TranslationServiceTests(unittest.TestCase):
         self.assertEqual(result.chunk_results[0].status, "error")
         self.assertIn("quality check failed", (result.error_message or "").lower())
 
-    def test_hybrid_judge_accepts_good_output(self):
+    def test_deterministic_gate_accepts_good_output(self):
         adapter = self._make_fake_adapter([
             "Texto fluido y natural.",
-            '{"passed": true, "issues": [], "scores": {"fluency": 5, "naturalness": 5, "faithfulness": 5, "cta_quality": 5, "channel_name_compliance": 5}, "summary": "Looks good."}',
         ])
         svc = TranslationService(adapter=adapter)
         result = self._run_async(svc.translate_script(
@@ -609,38 +608,37 @@ class TranslationServiceTests(unittest.TestCase):
             provider="openai",
             api_key="fake",
             model="gpt-5-nano",
-            reviewer_required=True,
-            reviewer_api_key="judge-key",
         ))
         self.assertEqual(result.status, "done")
-        assert result.review_report is not None
-        self.assertTrue(result.review_report["passed"])
+        self.assertIsNone(result.review_report)
+        assert result.deterministic_review is not None
+        self.assertTrue(result.deterministic_review["passed"])
+        self.assertEqual(result.deterministic_review["blocking_issues"], [])
 
-    def test_judge_triggered_script_repair_runs_once(self):
+    def test_deterministic_gate_repairs_blocking_output_once(self):
         adapter = self._make_fake_adapter([
-            "Le texte est compréhensible.",
-            '{"passed": false, "issues": ["The narration sounds too literal."], "scores": {"fluency": 3, "naturalness": 2, "faithfulness": 4, "cta_quality": 5, "channel_name_compliance": 5}, "summary": "Too literal."}',
-            "Le texte sonne naturellement.",
-            '{"passed": true, "issues": [], "scores": {"fluency": 5, "naturalness": 5, "faithfulness": 4, "cta_quality": 5, "channel_name_compliance": 5}, "summary": "Fixed."}',
+            "Subscribe to True Light.",
+            "Abonne-toi à Lumiére.",
         ])
         svc = TranslationService(adapter=adapter)
         result = self._run_async(svc.translate_script(
-            source_script="The text sounds natural.",
+            source_script="Subscribe to True Light.",
             source_lang="English",
             target_lang="French",
             provider="openai",
             api_key="fake",
             model="gpt-5-nano",
-            reviewer_required=True,
-            reviewer_api_key="judge-key",
+            source_channel_name="True Light",
+            target_channel_name="Lumiére",
         ))
         self.assertEqual(result.status, "done")
-        self.assertEqual(result.translated_script, "Le texte sonne naturellement.")
+        self.assertEqual(result.translated_script, "Abonne-toi à Lumiére.")
+        assert result.deterministic_review is not None
+        self.assertTrue(result.deterministic_review["passed"])
 
-    def test_review_false_positive_channel_name_is_pruned_and_high_scores_pass(self):
+    def test_deterministic_gate_accepts_configured_channel_name(self):
         adapter = self._make_fake_adapter([
             "Abonne-toi à Lumiére. Active la cloche.",
-            '{"passed": false, "issues": [{"criterion": "channel_name_compliance", "problem": "Le script garde \\"True Light\\"."}], "scores": {"fluency": 5, "naturalness": 4, "faithfulness": 5, "cta_quality": 4, "channel_name_compliance": 1}, "summary": "Mostly good."}',
         ])
         svc = TranslationService(adapter=adapter)
         result = self._run_async(svc.translate_script(
@@ -650,56 +648,94 @@ class TranslationServiceTests(unittest.TestCase):
             provider="openai",
             api_key="fake",
             model="gpt-5.4-mini",
-            reviewer_required=True,
-            reviewer_api_key="judge-key",
             source_channel_name="True Light",
             target_channel_name="Lumiére",
         ))
         self.assertEqual(result.status, "done")
-        assert result.review_report is not None
-        self.assertTrue(result.review_report["passed"])
-        self.assertEqual(result.review_report["issues"], [])
-        self.assertEqual(result.review_report["scores"]["channel_name_compliance"], 5)
+        self.assertIsNone(result.review_report)
+        assert result.deterministic_review is not None
+        self.assertTrue(result.deterministic_review["passed"])
+        self.assertEqual(result.deterministic_review["blocking_issues"], [])
 
-    def test_review_minor_suggestions_with_all_scores_four_or_higher_do_not_fail(self):
+    def test_deterministic_gate_surfaces_warnings_without_blocking(self):
         adapter = self._make_fake_adapter([
-            "Texto fluido y natural.",
-            '{"passed": false, "issues": ["Minor phrasing suggestion."], "scores": {"fluency": 4, "naturalness": 4, "faithfulness": 5, "cta_quality": 4, "channel_name_compliance": 5}, "summary": "Good overall."}',
+            "Juan habla aqui.",
         ])
         svc = TranslationService(adapter=adapter)
         result = self._run_async(svc.translate_script(
-            source_script="Natural translated text.",
+            source_script="John 1 2 3 4 5 6 7 8 tells the story in full detail.",
             source_lang="English",
             target_lang="Spanish",
             provider="openai",
             api_key="fake",
             model="gpt-5-nano",
-            reviewer_required=True,
-            reviewer_api_key="judge-key",
         ))
         self.assertEqual(result.status, "done")
-        assert result.review_report is not None
-        self.assertTrue(result.review_report["passed"])
-        self.assertEqual(result.review_report["issues"], ["Minor phrasing suggestion."])
+        assert result.deterministic_review is not None
+        self.assertTrue(result.deterministic_review["passed"])
+        warning_codes = {item["code"] for item in result.deterministic_review["warnings"]}
+        self.assertIn("length_compression", warning_codes)
+        self.assertIn("numeric_refs", warning_codes)
 
-    def test_judge_unavailable_fails_closed(self):
+    def test_deterministic_gate_returns_error_when_repair_still_fails(self):
         adapter = self._make_fake_adapter([
-            "Texto correcto.",
+            "Subscribe to True Light.",
+            "Subscribe to True Light.",
+        ])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="Subscribe to True Light.",
+            source_lang="English",
+            target_lang="French",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+            source_channel_name="True Light",
+            target_channel_name="Lumiére",
+        ))
+        self.assertEqual(result.status, "error")
+        self.assertIn("quality check failed", (result.error_message or "").lower())
+        self.assertIsNone(result.deterministic_review)
+        self.assertEqual(result.chunk_results[0].status, "error")
+        self.assertIn("source channel name", (result.chunk_results[0].error or "").lower())
+
+    def test_manual_audit_returns_sanitized_report(self):
+        adapter = self._make_fake_adapter([
+            '{"passed": false, "blocking_issues": [{"message": "Wrong entity."}], "warnings": ["Check a citation."], "summary": "Needs review."}',
+        ])
+        svc = TranslationService(adapter=adapter)
+        report = self._run_async(svc.audit_script_quality(
+            source_script="Source text.",
+            translated_script="Translated text.",
+            source_lang="English",
+            target_lang="Spanish",
+            reviewer_api_key="judge-key",
+            reviewer_model="gpt-4.1-mini",
+            source_channel_name="",
+            target_channel_name="",
+        ))
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["blocking_issues"], [{"message": "Wrong entity."}])
+        self.assertEqual(report["warnings"], [{"message": "Check a citation."}])
+        self.assertEqual(report["summary"], "Needs review.")
+
+    def test_manual_audit_unavailable_raises(self):
+        adapter = self._make_fake_adapter([
             TranslationError("OpenAI", 500, "Judge unavailable"),
         ])
         svc = TranslationService(adapter=adapter)
-        result = self._run_async(svc.translate_script(
-            source_script="Correct text.",
-            source_lang="English",
-            target_lang="Spanish",
-            provider="openai",
-            api_key="fake",
-            model="gpt-5-nano",
-            reviewer_required=True,
-            reviewer_api_key="judge-key",
-        ))
-        self.assertEqual(result.status, "error")
-        self.assertIn("judge unavailable", (result.error_message or "").lower())
+        with self.assertRaises(TranslationError) as ctx:
+            self._run_async(svc.audit_script_quality(
+                source_script="Source text.",
+                translated_script="Translated text.",
+                source_lang="English",
+                target_lang="Spanish",
+                reviewer_api_key="judge-key",
+                reviewer_model="gpt-4.1-mini",
+                source_channel_name="",
+                target_channel_name="",
+            ))
+        self.assertIn("Judge unavailable", str(ctx.exception))
 
 
 class TranslationValidationTests(unittest.TestCase):
@@ -898,7 +934,9 @@ class TranslationRetryFlowTests(unittest.TestCase):
             self.service._episode_retry_single_translation(episode["id"], "es")
 
         self.assertTrue(mocked_translate.await_args.kwargs["master_scenes"])
-        self.assertTrue(mocked_translate.await_args.kwargs["reviewer_required"])
+        self.assertNotIn("reviewer_required", mocked_translate.await_args.kwargs)
+        report_path = workspace / "translation_report_es.json"
+        self.assertTrue(report_path.exists())
         status = self.service.db.get_episode_language_status(episode["id"], "es")
         self.assertTrue(status["spoken_script_path"])
         self.assertTrue(Path(status["spoken_script_path"]).exists())

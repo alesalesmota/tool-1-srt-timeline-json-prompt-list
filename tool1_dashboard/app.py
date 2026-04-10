@@ -102,6 +102,7 @@ class NicheProjectRequest(BaseModel):
     video_prompt_model: str = "gpt-5.4"
     image_prompt_model: str = "gpt-5.4"
     leading_video_scene_count: int = 20
+    pause_after_translation_review: bool = False
 
 
 class NicheProjectUpdateRequest(BaseModel):
@@ -122,6 +123,7 @@ class NicheProjectUpdateRequest(BaseModel):
     language_channel_names: dict[str, str] | None = None
     channel_replace_prompt: bool | None = None
     channel_replace_post: bool | None = None
+    pause_after_translation_review: bool | None = None
 
 
 class BatchQueueRequest(BaseModel):
@@ -136,6 +138,7 @@ class EpisodeSubmitRequest(BaseModel):
 class EpisodeQueueRequest(BaseModel):
     start_stage: str | None = None
     reset_outputs: bool = False
+    translation_review_override: bool | None = None
 
 
 class EpisodePauseRequest(BaseModel):
@@ -151,6 +154,10 @@ class ReviewDataUpdateRequest(BaseModel):
     consistency_guide: dict | None = None
     timeline_draft: list | None = None
     prompt_list: str | None = None
+
+
+class TranslationAuditRequest(BaseModel):
+    model: str | None = None
 
 
 service = Tool1Service()
@@ -374,6 +381,7 @@ async def create_niche_project(payload: NicheProjectRequest) -> dict[str, Any]:
             video_prompt_model=payload.video_prompt_model,
             image_prompt_model=payload.image_prompt_model,
             leading_video_scene_count=payload.leading_video_scene_count,
+            pause_after_translation_review=payload.pause_after_translation_review,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -451,6 +459,7 @@ async def queue_episode(episode_id: str, payload: EpisodeQueueRequest) -> dict[s
             episode_id,
             payload.start_stage,
             reset_outputs=payload.reset_outputs,
+            translation_review_override=payload.translation_review_override,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -581,6 +590,24 @@ async def translation_preview(episode_id: str, language_code: str) -> dict[str, 
         return service.get_translation_preview(episode_id, language_code)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/episodes/{episode_id}/translation-audit/{language_code}")
+async def translation_audit(
+    episode_id: str,
+    language_code: str,
+    payload: TranslationAuditRequest,
+) -> dict[str, Any]:
+    try:
+        return service.run_translation_audit(
+            episode_id,
+            language_code,
+            model=payload.model,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ── Review & Export routes ─────────────────────────────────────────

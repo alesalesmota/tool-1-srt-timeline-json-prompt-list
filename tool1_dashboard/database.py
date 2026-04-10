@@ -60,6 +60,7 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
         "last_error",
         "leading_video_scene_count",
         "master_language",
+        "pause_after_translation_review",
         "scene_planning_model",
         "scene_planning_provider",
         "source_channel_name",
@@ -88,6 +89,7 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
         "master_scenes_path",
         "niche_project_id",
         "pause_requested",
+        "translation_review_override",
         "pipeline_status",
         "planning_manifest_path",
         "prompt_blueprint_path",
@@ -159,6 +161,7 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
         "model",
         "name",
         "provider",
+        "base_url",
         "updated_at",
     },
     "tts_jobs": {
@@ -244,6 +247,7 @@ class Tool1Database:
                 video_prompt_model TEXT NOT NULL DEFAULT 'gpt-5.4',
                 image_prompt_model TEXT NOT NULL DEFAULT 'gpt-5.4',
                 leading_video_scene_count INTEGER NOT NULL DEFAULT 20,
+                pause_after_translation_review INTEGER NOT NULL DEFAULT 0,
                 warning_count INTEGER NOT NULL DEFAULT 0,
                 last_error TEXT,
                 created_at TEXT NOT NULL,
@@ -262,6 +266,7 @@ class Tool1Database:
                 current_stage TEXT NOT NULL DEFAULT 'draft',
                 queued_from_stage TEXT NOT NULL DEFAULT 'consistency_guide',
                 pause_requested INTEGER NOT NULL DEFAULT 0,
+                translation_review_override TEXT NOT NULL DEFAULT '',
                 master_language TEXT NOT NULL DEFAULT 'en',
                 configured_languages TEXT NOT NULL DEFAULT '[]',
                 consistency_guide_path TEXT,
@@ -348,6 +353,7 @@ class Tool1Database:
                 name TEXT NOT NULL,
                 provider TEXT NOT NULL,
                 api_key_ref TEXT NOT NULL DEFAULT '',
+                base_url TEXT NOT NULL DEFAULT '',
                 model TEXT NOT NULL,
                 is_default INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -419,7 +425,10 @@ class Tool1Database:
             self._ensure_columns(
                 connection,
                 "episodes",
-                {"pause_requested": "INTEGER NOT NULL DEFAULT 0"},
+                {
+                    "pause_requested": "INTEGER NOT NULL DEFAULT 0",
+                    "translation_review_override": "TEXT NOT NULL DEFAULT ''",
+                },
             )
             self._ensure_columns(
                 connection,
@@ -429,12 +438,18 @@ class Tool1Database:
                     "language_channel_names": "TEXT NOT NULL DEFAULT '{}'",
                     "channel_replace_prompt": "INTEGER NOT NULL DEFAULT 1",
                     "channel_replace_post": "INTEGER NOT NULL DEFAULT 0",
+                    "pause_after_translation_review": "INTEGER NOT NULL DEFAULT 0",
                 },
             )
             self._ensure_columns(
                 connection,
                 "episode_language_status",
                 {"spoken_script_path": "TEXT"},
+            )
+            self._ensure_columns(
+                connection,
+                "translation_profiles",
+                {"base_url": "TEXT NOT NULL DEFAULT ''"},
             )
             # Create index after ensuring column exists
             connection.execute(

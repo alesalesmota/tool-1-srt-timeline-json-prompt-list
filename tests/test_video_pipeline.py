@@ -277,6 +277,35 @@ def _build_profile_assignments(
     return voice_profiles, translation_profiles
 
 
+def _seed_translated_script_assets(
+    service: Tool1Service,
+    episode_id: str,
+    language_code: str,
+    *,
+    text: str | None = None,
+) -> str:
+    episode = service.db.get_episode(episode_id)
+    assert episode is not None
+    workspace = Path(episode["workspace_dir"])
+    master_language = str(episode.get("master_language") or "en").strip() or "en"
+    script_text = text or f"Localized script for {language_code}."
+    readable_path = workspace / (
+        "script_original.txt"
+        if language_code == master_language
+        else f"script_{language_code}.txt"
+    )
+    readable_path.write_text(script_text, encoding="utf-8")
+    service.db.update_episode_language_status(
+        episode_id,
+        language_code,
+        translation_status="done",
+        script_path=str(readable_path),
+        spoken_script_path=None,
+        error_message=None,
+    )
+    return str(readable_path)
+
+
 class NicheProjectApiTests(unittest.TestCase):
     """Tests for the niche project + episode API endpoints."""
 
@@ -1322,6 +1351,119 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertEqual(paused_episode["queued_from_stage"], "translation")
                 self.assertEqual(paused_episode["pause_requested"], 0)
 
+    def test_project_pause_after_translation_review_stops_before_tts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                voice_profiles, _ = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    ["en"],
+                    master_language="en",
+                    include_translation_for=[],
+                )
+                project = service.create_niche_project(
+                    name="Pause After Translation",
+                    master_language="en",
+                    configured_languages=["en"],
+                    language_voice_profiles=voice_profiles,
+                    pause_after_translation_review=True,
+                )
+                episode_id = service.submit_episode(
+                    project["project"]["id"],
+                    title="Pause Before TTS",
+                    script_text="Alpha beta gamma delta.",
+                )["episode"]["id"]
+
+                service.queue_episode(episode_id, start_stage="translation")
+                with patch.object(service, "_episode_run_translations", return_value=None), patch.object(service, "_episode_run_tts_all") as tts_mock:
+                    service._process_episode(service.db.get_episode(episode_id))
+
+                paused_episode = service.db.get_episode(episode_id)
+                self.assertEqual(paused_episode["pipeline_status"], "paused")
+                self.assertEqual(paused_episode["current_stage"], "tts")
+                self.assertEqual(paused_episode["queued_from_stage"], "tts")
+                tts_mock.assert_not_called()
+
+    def test_episode_translation_review_override_continue_beats_project_pause_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                voice_profiles, _ = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    ["en"],
+                    master_language="en",
+                    include_translation_for=[],
+                )
+                project = service.create_niche_project(
+                    name="Continue Override",
+                    master_language="en",
+                    configured_languages=["en"],
+                    language_voice_profiles=voice_profiles,
+                    pause_after_translation_review=True,
+                )
+                episode_id = service.submit_episode(
+                    project["project"]["id"],
+                    title="Continue Past Translation",
+                    script_text="Alpha beta gamma delta.",
+                )["episode"]["id"]
+
+                service.queue_episode(episode_id, start_stage="translation", translation_review_override=False)
+
+                def pause_in_tts(eid: str) -> None:
+                    service.db.update_episode(
+                        eid,
+                        board_status="Running",
+                        pipeline_status="paused_for_tts",
+                        current_stage="tts",
+                        updated_at=utc_now(),
+                    )
+
+                with patch.object(service, "_episode_run_translations", return_value=None), patch.object(service, "_episode_run_tts_all", side_effect=pause_in_tts) as tts_mock:
+                    service._process_episode(service.db.get_episode(episode_id))
+
+                resumed_episode = service.db.get_episode(episode_id)
+                self.assertEqual(resumed_episode["pipeline_status"], "paused_for_tts")
+                self.assertEqual(resumed_episode["current_stage"], "tts")
+                tts_mock.assert_called_once_with(episode_id)
+
+    def test_episode_translation_review_override_pause_beats_project_continue_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                voice_profiles, _ = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    ["en"],
+                    master_language="en",
+                    include_translation_for=[],
+                )
+                project = service.create_niche_project(
+                    name="Pause Override",
+                    master_language="en",
+                    configured_languages=["en"],
+                    language_voice_profiles=voice_profiles,
+                    pause_after_translation_review=False,
+                )
+                episode_id = service.submit_episode(
+                    project["project"]["id"],
+                    title="Pause Even When Project Continues",
+                    script_text="Alpha beta gamma delta.",
+                )["episode"]["id"]
+
+                service.queue_episode(episode_id, start_stage="translation", translation_review_override=True)
+                with patch.object(service, "_episode_run_translations", return_value=None), patch.object(service, "_episode_run_tts_all") as tts_mock:
+                    service._process_episode(service.db.get_episode(episode_id))
+
+                paused_episode = service.db.get_episode(episode_id)
+                self.assertEqual(paused_episode["pipeline_status"], "paused")
+                self.assertEqual(paused_episode["current_stage"], "tts")
+                tts_mock.assert_not_called()
+
     def test_paused_tts_episode_can_stop_before_alignment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -1414,6 +1556,8 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                     title="Queue All TTS Episode",
                     script_text="Alpha beta gamma delta.",
                 )["episode"]["id"]
+                for language_code in ("es", "fr"):
+                    _seed_translated_script_assets(service, episode_id, language_code)
 
                 with patch("tool1_dashboard.tts.manager.TTSManager.ensure_worker_ready", return_value=None):
                     service._episode_run_tts_all(episode_id)
@@ -1453,6 +1597,8 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                     title="Resume All TTS",
                     script_text="Alpha beta gamma delta.",
                 )["episode"]["id"]
+                for language_code in ("es", "fr"):
+                    _seed_translated_script_assets(service, episode_id, language_code)
 
                 service.db.update_episode(
                     episode_id,
@@ -1524,6 +1670,7 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                     title="Recover Missing TTS Job",
                     script_text="Alpha beta gamma delta.",
                 )["episode"]["id"]
+                _seed_translated_script_assets(service, episode_id, "es")
 
                 audio_path = temp_path / "narration_en.wav"
                 audio_path.write_text("audio-en", encoding="utf-8")
@@ -1584,6 +1731,7 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                     title="Recover Stale Narration",
                     script_text="Alpha beta gamma delta.",
                 )["episode"]["id"]
+                _seed_translated_script_assets(service, episode_id, "es")
 
                 audio_path = temp_path / "narration_en.wav"
                 audio_path.write_text("audio-en", encoding="utf-8")
@@ -1678,8 +1826,8 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertEqual(detail["stage_runs"][0]["status"], "failed")
                 self.assertIn("timed out after 60 seconds", detail["stage_runs"][0]["error_message"])
 
-    def test_translations_skip_without_profiles(self) -> None:
-        """Translations skip languages that have no translation profile configured."""
+    def test_translations_without_profiles_fail_stop_after_marking_languages_skipped(self) -> None:
+        """Translations fail-stop when required languages have no translation profile configured."""
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
@@ -1694,20 +1842,21 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 episode_result = service.submit_episode(pid, title="Trans Video", script_text="Hello world")
                 episode_id = episode_result["episode"]["id"]
 
-                service._episode_run_translations(episode_id)
+                with self.assertRaises(RuntimeError) as ctx:
+                    service._episode_run_translations(episode_id)
 
                 lang_statuses = service.db.get_episode_language_statuses(episode_id)
                 en = next(ls for ls in lang_statuses if ls["language_code"] == "en")
                 ptbr = next(ls for ls in lang_statuses if ls["language_code"] == "pt-BR")
                 es = next(ls for ls in lang_statuses if ls["language_code"] == "es")
 
-                # Master is done
+                self.assertIn("Translation is blocked for pt-BR, es", str(ctx.exception))
                 self.assertEqual(en["translation_status"], "done")
                 self.assertIsNotNone(en["script_path"])
-
-                # Non-master skipped (no profiles)
                 self.assertEqual(ptbr["translation_status"], "skipped")
                 self.assertEqual(es["translation_status"], "skipped")
+                self.assertEqual(ptbr["error_message"], "No translation profile configured")
+                self.assertEqual(es["error_message"], "No translation profile configured")
 
     def test_translations_with_mock_service(self) -> None:
         """Translations call TranslationService when profiles are configured."""
@@ -2058,9 +2207,11 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                     error_message="Alignment failed: missing Italian MFA model",
                 )
 
-                service._episode_run_timeline_mapping(episode_id)
+                with self.assertRaises(RuntimeError) as ctx:
+                    service._episode_run_timeline_mapping(episode_id)
 
                 it_status = service.db.get_episode_language_status(episode_id, "it")
+                self.assertIn("Timeline mapping is blocked for it", str(ctx.exception))
                 self.assertEqual(it_status["timeline_status"], "skipped")
                 self.assertEqual(it_status["error_message"], "Alignment failed: missing Italian MFA model")
 
