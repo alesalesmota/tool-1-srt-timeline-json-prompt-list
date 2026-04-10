@@ -50,5 +50,5 @@
 
 - [x] `[Codex]` Update final session notes in `PROJECT_REGISTRY.md`
 - [x] `[Codex]` Commit and push documentation unit
-- [ ] `[Codex]` Commit and push backend/runtime unit
-- [ ] `[Codex]` Commit and push frontend/tests unit
+- [x] `[Codex]` Commit and push backend/runtime unit
+- [x] `[Codex]` Commit and push frontend/tests unit
