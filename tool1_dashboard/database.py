@@ -995,7 +995,6 @@ class Tool1Database:
                 row["language_code"],
                 tts_status="queued",
                 tts_audio_path=None,
-                error_message=None,
             )
         return True
 

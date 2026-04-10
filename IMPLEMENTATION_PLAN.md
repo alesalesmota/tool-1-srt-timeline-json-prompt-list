@@ -2,6 +2,16 @@
 
 Status on 2026-04-08: implemented in code and regression tests. A follow-up UI hierarchy pass for the assembly modal/detail flow is also implemented in code. Timeline-overlap hardening is now also implemented in code, and episode `205` has repaired timeline artifacts plus stale non-completed render jobs cleared. Manual live browser/render verification is still pending.
 
+## Supplemental implementation note — 2026-04-09 fail-stop multilingual pipeline
+
+Implemented in code and regression tests on 2026-04-09:
+
+- Translation is now fail-stop for multilingual runs: any required non-master language ending `failed`, `skipped`, or without translated script assets blocks the episode in `translation`.
+- Non-master TTS no longer falls back to the master English script. Missing translated scripts now block TTS submission instead of generating invalid narration.
+- Paused-TTS recovery now audits upstream translation readiness, cancels invalid queued/processing TTS jobs for broken languages, and fails the episode back to `translation` with preserved error feedback.
+- Translation preview now returns `error_message` plus a structured `translation_report_{lang}.json` artifact while keeping `translation_log_{lang}.json` backward-compatible as the chunk-log array.
+- Verified with the full `tests/test_video_pipeline.py` suite plus `node --check tool1_dashboard/ui/app.js`.
+
 ## Context
 
 After exporting an episode and uploading the generated images/videos through the assembly modal, the user has no clear way to move the card forward into the next assembly stages (assembly_validation → video_render → final_review). The episode card still shows the regular **"Resume from step"** dropdown, which is built only from the upstream `EPISODE_RUNNABLE_STAGES` list. Because `asset_upload` is **not** in that list, clicking that button silently sends the card back to `translation` (the closest runnable fallback) and triggers `delete_stage_runs_for(...)`, which **looks** like the user lost all their uploaded assets.

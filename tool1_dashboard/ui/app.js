@@ -4791,6 +4791,10 @@ function renderTranslationPreviewModal() {
   const preview = state.translationPreview;
   if (!preview) return '';
   const statusBadgeHtml = langStatusBadge(preview.translation_status);
+  const errorNotice = preview.error_message
+    ? '<div class="notice" data-tone="error" style="margin-top:12px;">' + esc(preview.error_message) + '</div>'
+    : '';
+  const report = preview.translation_report || {};
   const logSummary = (preview.translation_log || []).map((c) =>
     '<div class="helper" style="font-size:0.75rem;">' +
       'Chunk ' + c.chunk_index + ': ' + c.words_in + ' → ' + c.words_out + ' words ' +
@@ -4798,6 +4802,9 @@ function renderTranslationPreviewModal() {
       (c.error ? ' <span class="helper" style="color:var(--error);">' + esc(c.error) + '</span>' : '') +
     '</div>'
   ).join("");
+  const reportSummary = report.status
+    ? '<div class="helper" style="margin-top:8px;">Report status: ' + esc(titleCase(report.status)) + '</div>'
+    : '';
 
   return `
     <div class="modal-backdrop" data-modal-backdrop="true">
@@ -4816,6 +4823,8 @@ function renderTranslationPreviewModal() {
             <pre class="translation-preview-text">${esc(preview.translated || "(no translation yet)")}</pre>
           </div>
         </div>
+        ${errorNotice}
+        ${reportSummary}
         ${logSummary ? '<div style="margin-top:12px;"><div class="eyebrow">Chunk log</div>' + logSummary + '</div>' : ''}
       </div>
     </div>

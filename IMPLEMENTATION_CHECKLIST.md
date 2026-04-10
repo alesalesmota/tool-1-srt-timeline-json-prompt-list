@@ -4,6 +4,21 @@ Companion to `IMPLEMENTATION_PLAN.md`. Tick each box as the task is completed an
 
 Status on 2026-04-08: implementation complete for Phases 1-7. Episode `205` timeline artifacts are repaired and stale non-completed render jobs were pruned. Manual live browser/render verification is still pending.
 
+## Phase 8 — Fail-stop multilingual translation/TTS safety
+
+- [x] **Task 8.1 [BACKEND]** — Make translation fail-stop for mixed per-language outcomes (`tool1_dashboard/service.py`)
+  - Verify: any required non-master translation ending failed/skipped/missing-assets blocks the episode in `translation`.
+- [x] **Task 8.2 [BACKEND]** — Remove non-master TTS fallback to the master script and block batch submission on invalid translation inputs (`tool1_dashboard/service.py`)
+  - Verify: missing translated scripts raise before any TTS job is submitted; non-master payload text never falls back to the master English script.
+- [x] **Task 8.3 [BACKEND]** — Preserve translation error feedback during downstream TTS churn and paused-TTS recovery (`tool1_dashboard/service.py`, `tool1_dashboard/database.py`)
+  - Verify: requeues/running-state transitions no longer clear translation errors; paused episode recovery cancels invalid TTS work and fails back to `translation`.
+- [x] **Task 8.4 [BACKEND]** — Add structured translation preview/report support (`tool1_dashboard/service.py`)
+  - Verify: preview returns `error_message` plus `translation_report`; `translation_log_{lang}.json` stays an array.
+- [x] **Task 8.5 [FRONTEND]** — Surface preserved translation errors in the preview modal (`tool1_dashboard/ui/app.js`)
+  - Verify: failed-language preview shows the error notice above the existing chunk log.
+- [x] **Task 8.6 [BACKEND]** — Regression coverage for fail-stop translation, TTS fallback prevention, error persistence, and paused-TTS repair (`tests/test_video_pipeline.py`)
+  - Verify: focused regressions pass and the full `tests/test_video_pipeline.py -q` file is green.
+
 ## Phase 1 — Backend safety net & helpers
 
 - [x] **Task 1.1 [BACKEND]** — Guard `queue_episode` against assembly stages (`tool1_dashboard/service.py` ~line 3553)

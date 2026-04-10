@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -163,6 +164,21 @@ class QueueBlockedError(ValueError):
             "start_stage": self.start_stage,
             "queue_readiness": self.queue_readiness,
         }
+
+
+class EpisodeStageBlockedError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        action_stage: str,
+        blocked_stage: str,
+        issues: list[dict[str, Any]],
+        message: str,
+    ) -> None:
+        self.action_stage = action_stage
+        self.blocked_stage = blocked_stage
+        self.issues = [dict(issue) for issue in issues]
+        super().__init__(message)
 
 
 class Tool1Service:
@@ -397,6 +413,173 @@ class Tool1Service:
     def _language_list_text(language_codes: list[str]) -> str:
         cleaned = [str(code or "").strip() for code in language_codes if str(code or "").strip()]
         return ", ".join(cleaned) if cleaned else "the configured languages"
+
+    @staticmethod
+    def _stage_display_name(stage: str) -> str:
+        normalized = str(stage or "").strip().lower()
+        if normalized == "tts":
+            return "TTS"
+        return normalized.replace("_", " ").title() or "Stage"
+
+    @staticmethod
+    def _truncate_error_message(value: Any, limit: int = 500) -> str:
+        text = str(value or "").strip()
+        if len(text) > limit:
+            return text[:limit] + "…"
+        return text
+
+    def _fail_episode(
+        self,
+        episode_id: str,
+        *,
+        stage: str,
+        message: str,
+        board_status: str = "Needs Attention",
+        pipeline_status: str = "failed",
+    ) -> None:
+        self.db.update_episode(
+            episode_id,
+            board_status=board_status,
+            pipeline_status=pipeline_status,
+            current_stage=stage,
+            last_error=self._truncate_error_message(message),
+            pause_requested=0,
+            updated_at=utc_now(),
+        )
+
+    def _collect_language_stage_issues(
+        self,
+        episode_id: str,
+        *,
+        blocked_stage: str,
+    ) -> list[dict[str, Any]]:
+        episode = self._hydrate_episode_record(self.db.get_episode(episode_id))
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+        master_language = str(episode.get("master_language") or "en").strip() or "en"
+        configured_languages = list(episode.get("configured_languages") or [master_language])
+        status_map = {
+            status["language_code"]: status
+            for status in self.db.get_episode_language_statuses(episode_id)
+        }
+
+        issues: list[dict[str, Any]] = []
+        for language_code in configured_languages:
+            language_status = status_map.get(language_code)
+            if language_status is None:
+                issues.append({
+                    "language_code": language_code,
+                    "reason": "missing language status",
+                    "error_message": "",
+                })
+                continue
+
+            error_message = str(language_status.get("error_message") or "").strip()
+            if blocked_stage == "translation":
+                translation_status = str(language_status.get("translation_status") or "pending").strip().lower()
+                has_script_asset = bool(
+                    self._path_has_non_empty_text(language_status.get("spoken_script_path"))
+                    or self._path_has_non_empty_text(language_status.get("script_path"))
+                )
+                if language_code == master_language:
+                    has_script_asset = has_script_asset or bool(str(episode.get("script_text") or "").strip())
+                if translation_status != "done":
+                    issues.append({
+                        "language_code": language_code,
+                        "reason": f"translation status is '{translation_status or 'pending'}'",
+                        "error_message": error_message,
+                    })
+                elif not has_script_asset:
+                    issues.append({
+                        "language_code": language_code,
+                        "reason": "missing translated script assets",
+                        "error_message": error_message,
+                    })
+            elif blocked_stage == "tts":
+                tts_status = str(language_status.get("tts_status") or "pending").strip().lower()
+                if tts_status != "done":
+                    issues.append({
+                        "language_code": language_code,
+                        "reason": f"tts status is '{tts_status or 'pending'}'",
+                        "error_message": error_message,
+                    })
+                elif not self._path_exists(language_status.get("tts_audio_path")):
+                    issues.append({
+                        "language_code": language_code,
+                        "reason": "missing narration audio",
+                        "error_message": error_message,
+                    })
+            elif blocked_stage == "alignment":
+                srt_status = str(language_status.get("srt_status") or "pending").strip().lower()
+                if srt_status != "done":
+                    issues.append({
+                        "language_code": language_code,
+                        "reason": f"alignment status is '{srt_status or 'pending'}'",
+                        "error_message": error_message,
+                    })
+                elif not self._path_exists(language_status.get("srt_path")):
+                    issues.append({
+                        "language_code": language_code,
+                        "reason": "missing aligned SRT",
+                        "error_message": error_message,
+                    })
+            elif blocked_stage == "timeline_mapping":
+                timeline_status = str(language_status.get("timeline_status") or "pending").strip().lower()
+                if timeline_status != "done":
+                    issues.append({
+                        "language_code": language_code,
+                        "reason": f"timeline status is '{timeline_status or 'pending'}'",
+                        "error_message": error_message,
+                    })
+                elif not self._path_exists(language_status.get("timeline_path")):
+                    issues.append({
+                        "language_code": language_code,
+                        "reason": "missing localized timeline",
+                        "error_message": error_message,
+                    })
+        return issues
+
+    def _build_stage_blocked_message(
+        self,
+        *,
+        action_stage: str,
+        blocked_stage: str,
+        issues: list[dict[str, Any]],
+    ) -> str:
+        action_label = self._stage_display_name(action_stage)
+        blocked_label = self._stage_display_name(blocked_stage)
+        languages = self._language_list_text([issue.get("language_code", "") for issue in issues])
+        if action_stage == blocked_stage:
+            message = f"{blocked_label} failed or is incomplete for {languages}."
+        else:
+            message = f"{action_label} blocked because {blocked_label.lower()} failed or is incomplete for {languages}."
+        if issues:
+            first = issues[0]
+            detail = str(first.get("error_message") or first.get("reason") or "").strip()
+            if detail:
+                message += f" First issue: {first.get('language_code')} — {detail}."
+        return self._truncate_error_message(message)
+
+    def _assert_stage_inputs_ready(
+        self,
+        episode_id: str,
+        *,
+        action_stage: str,
+        blocked_stage: str,
+    ) -> None:
+        issues = self._collect_language_stage_issues(episode_id, blocked_stage=blocked_stage)
+        if not issues:
+            return
+        raise EpisodeStageBlockedError(
+            action_stage=action_stage,
+            blocked_stage=blocked_stage,
+            issues=issues,
+            message=self._build_stage_blocked_message(
+                action_stage=action_stage,
+                blocked_stage=blocked_stage,
+                issues=issues,
+            ),
+        )
 
     def _default_episode_start_stage(self, episode: dict[str, Any]) -> str:
         current_stage = str(episode.get("current_stage") or "").strip()
@@ -1762,6 +1945,51 @@ class Tool1Service:
             issue_text = "; ".join(issues)
             raise ValueError(f"Translation quality validation failed for {language_code}: {issue_text}.{suffix}")
         return translated_script
+
+    @staticmethod
+    def _translation_chunk_log(result: Any | None) -> list[dict[str, Any]]:
+        if result is None:
+            return []
+        return [
+            {
+                "chunk_index": cr.chunk_index,
+                "scene_ids": cr.scene_ids,
+                "words_in": cr.words_in,
+                "words_out": cr.words_out,
+                "status": cr.status,
+                "error": cr.error,
+            }
+            for cr in getattr(result, "chunk_results", []) or []
+        ]
+
+    def _write_translation_report_artifacts(
+        self,
+        *,
+        workspace: Path,
+        language_code: str,
+        status: str,
+        result: Any | None = None,
+        error_message: str = "",
+        translated_script: str = "",
+    ) -> None:
+        chunk_log = self._translation_chunk_log(result)
+        write_json(workspace / f"translation_log_{language_code}.json", chunk_log)
+        review_report_raw = getattr(result, "review_report", None) if result is not None else None
+        review_report = review_report_raw if isinstance(review_report_raw, dict) else None
+        if review_report:
+            write_json(workspace / f"translation_review_{language_code}.json", review_report)
+        report = {
+            "language_code": language_code,
+            "status": str(status or "").strip().lower() or "unknown",
+            "result_status": str(getattr(result, "status", "") or "").strip() or None,
+            "error_message": str(error_message or "").strip() or None,
+            "translated_script": str(
+                translated_script or getattr(result, "translated_script", "") or ""
+            ).strip() or None,
+            "chunk_log": chunk_log,
+            "review_report": review_report,
+        }
+        write_json(workspace / f"translation_report_{language_code}.json", report)
 
     @staticmethod
     def _language_readable_script_filename(language_code: str, master_language: str) -> str:
@@ -3850,6 +4078,12 @@ class Tool1Service:
                 translation_status="skipped",
                 error_message="No translation profile configured",
             )
+            self._write_translation_report_artifacts(
+                workspace=workspace,
+                language_code=lang,
+                status="skipped",
+                error_message="No translation profile configured",
+            )
             return
 
         profile = self.db.get_translation_profile(profile_id)
@@ -3859,9 +4093,16 @@ class Tool1Service:
                 translation_status="skipped",
                 error_message=f"Translation profile '{profile_id}' not found",
             )
+            self._write_translation_report_artifacts(
+                workspace=workspace,
+                language_code=lang,
+                status="skipped",
+                error_message=f"Translation profile '{profile_id}' not found",
+            )
             return
 
         self.db.update_episode_language_status(episode_id, lang, translation_status="running")
+        result: Any | None = None
         try:
             master_scenes = None
             if episode.get("timeline_draft_path") and Path(episode["timeline_draft_path"]).exists():
@@ -3884,17 +4125,6 @@ class Tool1Service:
                 reviewer_api_key=reviewer_api_key,
                 reviewer_model="gpt-5.4-mini",
             ))
-            write_json(workspace / f"translation_log_{lang}.json", [
-                {
-                    "chunk_index": cr.chunk_index,
-                    "scene_ids": cr.scene_ids,
-                    "words_in": cr.words_in,
-                    "words_out": cr.words_out,
-                    "status": cr.status,
-                    "error": cr.error,
-                }
-                for cr in result.chunk_results
-            ])
             translated_script = self._validated_translation_script(
                 result,
                 language_code=lang,
@@ -3908,10 +4138,13 @@ class Tool1Service:
                 master_language=str(episode.get("master_language") or "en").strip() or "en",
                 readable_script=translated_script,
             )
-            review_report_raw = getattr(result, "review_report", None)
-            review_report = review_report_raw if isinstance(review_report_raw, dict) else None
-            if review_report:
-                write_json(workspace / f"translation_review_{lang}.json", review_report)
+            self._write_translation_report_artifacts(
+                workspace=workspace,
+                language_code=lang,
+                status="done",
+                result=result,
+                translated_script=translated_script,
+            )
             self.db.update_episode_language_status(
                 episode_id, lang,
                 translation_status="done",
@@ -3920,12 +4153,20 @@ class Tool1Service:
                 error_message=None,
             )
         except Exception as exc:
+            error_message = self._truncate_error_message(exc)
+            self._write_translation_report_artifacts(
+                workspace=workspace,
+                language_code=lang,
+                status="failed",
+                result=result,
+                error_message=error_message,
+            )
             self.db.update_episode_language_status(
                 episode_id, lang,
                 translation_status="failed",
                 script_path=None,
                 spoken_script_path=None,
-                error_message=str(exc)[:500],
+                error_message=error_message,
             )
 
     def _episode_retry_single_tts(self, episode_id: str, lang: str) -> None:
@@ -3949,39 +4190,41 @@ class Tool1Service:
             )
             return
 
-        lang_status = self.db.get_episode_language_status(episode_id, lang)
-        script_path = self._preferred_audio_script_path(
-            episode=episode,
-            language_code=lang,
-            language_status=lang_status,
-        )
-        if script_path and script_path.exists():
-            script_text = read_text(script_path)
-        else:
-            script_text = str(episode.get("script_text") or "")
+        try:
+            lang_status = self.db.get_episode_language_status(episode_id, lang)
+            script_text = self._episode_tts_script_text(episode, lang, lang_status)
 
-        tts_mgr = self.tts_manager
-        tts_mgr.ensure_worker_ready(intent="pipeline")
-        payload = self._build_generate_tts_payload(
-            profile=profile,
-            language=lang,
-            script_text=script_text,
-        )
-        job_id = tts_mgr.submit_tts_job(
-            job_type="generate",
-            profile_id=profile_id,
-            payload=payload,
-            build_id=episode_id,
-            filename=f"narration_{lang}.wav",
-        )
-        self.db.update_episode_language_status(
-            episode_id,
-            lang,
-            tts_status="queued",
-            tts_job_id=job_id,
-            tts_audio_path=None,
-            error_message=None,
-        )
+            tts_mgr = self.tts_manager
+            tts_mgr.ensure_worker_ready(intent="pipeline")
+            payload = self._build_generate_tts_payload(
+                profile=profile,
+                language=lang,
+                script_text=script_text,
+            )
+            job_id = tts_mgr.submit_tts_job(
+                job_type="generate",
+                profile_id=profile_id,
+                payload=payload,
+                build_id=episode_id,
+                filename=f"narration_{lang}.wav",
+            )
+            self.db.update_episode_language_status(
+                episode_id,
+                lang,
+                tts_status="queued",
+                tts_job_id=job_id,
+                tts_audio_path=None,
+                error_message=None,
+            )
+        except Exception as exc:
+            self.db.update_episode_language_status(
+                episode_id,
+                lang,
+                tts_status="failed",
+                tts_audio_path=None,
+                error_message=self._truncate_error_message(exc),
+            )
+            raise
 
     def _episode_retry_single_alignment(self, episode_id: str, lang: str) -> None:
         """Retry subtitle alignment for a single language."""
@@ -4221,10 +4464,13 @@ class Tool1Service:
         if script_path and Path(script_path).exists():
             translated = read_text(Path(script_path))
 
-        # Load translation log if available
         workspace = self._episode_workspace(episode)
         log_path = workspace / f"translation_log_{language_code}.json"
         translation_log = read_json(log_path, default=[]) if log_path.exists() else []
+        report_path = workspace / f"translation_report_{language_code}.json"
+        translation_report = read_json(report_path, default={}) if report_path.exists() else {}
+        if not translated:
+            translated = str(translation_report.get("translated_script") or "").strip()
 
         return {
             "language_code": language_code,
@@ -4232,6 +4478,8 @@ class Tool1Service:
             "translated": translated,
             "translation_log": translation_log,
             "translation_status": lang_status.get("translation_status", "pending"),
+            "error_message": lang_status.get("error_message"),
+            "translation_report": translation_report,
         }
 
     def get_worker_health(self) -> dict[str, Any]:
@@ -4502,6 +4750,7 @@ class Tool1Service:
         """Process an episode through the unified TTS-first pipeline. All steps sequential."""
         episode_id = episode["id"]
         start_stage = self._default_episode_start_stage(episode)
+        current_stage = start_stage
         self.db.update_episode(
             episode_id,
             board_status="Running",
@@ -4514,6 +4763,7 @@ class Tool1Service:
 
         try:
             for stage in stages[start_idx:]:
+                current_stage = stage
                 self.db.update_episode(episode_id, current_stage=stage, updated_at=utc_now())
 
                 if stage == "consistency_guide":
@@ -4555,16 +4805,11 @@ class Tool1Service:
                 updated_at=utc_now(),
             )
         except Exception as exc:
-            error_text = str(exc)
-            if len(error_text) > 500:
-                error_text = error_text[:500] + "…"
-            self.db.update_episode(
+            blocked_stage = exc.blocked_stage if isinstance(exc, EpisodeStageBlockedError) else current_stage
+            self._fail_episode(
                 episode_id,
-                board_status="Needs Attention",
-                pipeline_status="failed",
-                last_error=error_text,
-                pause_requested=0,
-                updated_at=utc_now(),
+                stage=blocked_stage,
+                message=str(exc),
             )
 
     # ── Episode pipeline helpers ────────────────────────────────────────
@@ -4713,6 +4958,12 @@ class Tool1Service:
                     translation_status="skipped",
                     error_message="No translation profile configured",
                 )
+                self._write_translation_report_artifacts(
+                    workspace=workspace,
+                    language_code=lang,
+                    status="skipped",
+                    error_message="No translation profile configured",
+                )
                 return
 
             profile = self.db.get_translation_profile(profile_id)
@@ -4722,9 +4973,16 @@ class Tool1Service:
                     translation_status="skipped",
                     error_message=f"Translation profile '{profile_id}' not found",
                 )
+                self._write_translation_report_artifacts(
+                    workspace=workspace,
+                    language_code=lang,
+                    status="skipped",
+                    error_message=f"Translation profile '{profile_id}' not found",
+                )
                 return
 
             self.db.update_episode_language_status(episode_id, lang, translation_status="running")
+            result: Any | None = None
             try:
                 target_channel = language_channel_names.get(lang, "")
                 translation_svc = TranslationService()
@@ -4744,18 +5002,6 @@ class Tool1Service:
                     reviewer_api_key=reviewer_api_key,
                     reviewer_model="gpt-5.4-mini",
                 )
-                chunk_log = [
-                    {
-                        "chunk_index": cr.chunk_index,
-                        "scene_ids": cr.scene_ids,
-                        "words_in": cr.words_in,
-                        "words_out": cr.words_out,
-                        "status": cr.status,
-                        "error": cr.error,
-                    }
-                    for cr in result.chunk_results
-                ]
-                write_json(workspace / f"translation_log_{lang}.json", chunk_log)
                 translated_script = self._validated_translation_script(
                     result,
                     language_code=lang,
@@ -4769,10 +5015,13 @@ class Tool1Service:
                     master_language=master_lang,
                     readable_script=translated_script,
                 )
-                review_report_raw = getattr(result, "review_report", None)
-                review_report = review_report_raw if isinstance(review_report_raw, dict) else None
-                if review_report:
-                    write_json(workspace / f"translation_review_{lang}.json", review_report)
+                self._write_translation_report_artifacts(
+                    workspace=workspace,
+                    language_code=lang,
+                    status="done",
+                    result=result,
+                    translated_script=translated_script,
+                )
 
                 self.db.update_episode_language_status(
                     episode_id, lang,
@@ -4782,12 +5031,20 @@ class Tool1Service:
                     error_message=None,
                 )
             except Exception as exc:
+                error_message = self._truncate_error_message(exc)
+                self._write_translation_report_artifacts(
+                    workspace=workspace,
+                    language_code=lang,
+                    status="failed",
+                    result=result,
+                    error_message=error_message,
+                )
                 self.db.update_episode_language_status(
                     episode_id, lang,
                     translation_status="failed",
                     script_path=None,
                     spoken_script_path=None,
-                    error_message=str(exc)[:500],
+                    error_message=error_message,
                 )
                 raise
 
@@ -4805,15 +5062,11 @@ class Tool1Service:
 
         if non_master_langs:
             asyncio.run(_run_all_language_translations())
-            language_statuses = self.db.get_episode_language_statuses(episode_id)
-            failed_count = sum(
-                1
-                for status in language_statuses
-                if status.get("language_code") in non_master_langs
-                and status.get("translation_status") == "failed"
+            self._assert_stage_inputs_ready(
+                episode_id,
+                action_stage="translation",
+                blocked_stage="translation",
             )
-            if failed_count == len(non_master_langs):
-                raise RuntimeError("All translations failed.")
 
     def _episode_tts_script_text(
         self,
@@ -4831,8 +5084,7 @@ class Tool1Service:
         master_language = str(episode.get("master_language") or "en").strip() or "en"
         if language_code == master_language:
             return str(episode.get("script_text") or "").strip()
-        translated_text = self._read_path_text((language_status or {}).get("script_path")).strip()
-        return translated_text or str(episode.get("script_text") or "").strip()
+        raise ValueError(f"No translated script available for {language_code}.")
 
     def _queue_episode_tts_jobs(
         self,
@@ -4843,6 +5095,11 @@ class Tool1Service:
         episode = self._hydrate_episode_record(self.db.get_episode(episode_id))
         if episode is None:
             raise FileNotFoundError("Episode not found.")
+        self._assert_stage_inputs_ready(
+            episode_id,
+            action_stage="tts",
+            blocked_stage="translation",
+        )
         project = self._hydrate_project_record(self.db.get_niche_project(episode["niche_project_id"])) or {}
         voice_profiles = self._parse_json_dict(project.get("language_voice_profiles"))
         langs = list(episode.get("configured_languages") or [])
@@ -4855,6 +5112,47 @@ class Tool1Service:
         any_failed = False
         unrecoverable: list[str] = []
         tts_mgr = None
+        preflight_tts_issues: list[dict[str, Any]] = []
+
+        for lang in langs:
+            lang_status = statuses.get(lang)
+            if lang_status is None:
+                preflight_tts_issues.append({
+                    "language_code": lang,
+                    "reason": "missing language status",
+                    "error_message": "",
+                })
+                continue
+            status = str(lang_status.get("tts_status") or "pending").strip().lower()
+            if status in {"done", "skipped"}:
+                continue
+            if status == "failed" and not allow_resubmit_failed:
+                continue
+            profile_id = str(voice_profiles.get(lang) or "").strip()
+            if not profile_id:
+                preflight_tts_issues.append({
+                    "language_code": lang,
+                    "reason": "no voice profile configured",
+                    "error_message": str(lang_status.get("error_message") or "").strip(),
+                })
+                continue
+            if self.db.get_voice_profile(profile_id) is None:
+                preflight_tts_issues.append({
+                    "language_code": lang,
+                    "reason": f"voice profile '{profile_id}' not found",
+                    "error_message": str(lang_status.get("error_message") or "").strip(),
+                })
+        if preflight_tts_issues:
+            raise EpisodeStageBlockedError(
+                action_stage="tts",
+                blocked_stage="tts",
+                issues=preflight_tts_issues,
+                message=self._build_stage_blocked_message(
+                    action_stage="tts",
+                    blocked_stage="tts",
+                    issues=preflight_tts_issues,
+                ),
+            )
 
         for lang in langs:
             lang_status = statuses.get(lang)
@@ -4881,7 +5179,6 @@ class Tool1Service:
                         lang,
                         tts_status="done",
                         tts_audio_path=result_path,
-                        error_message=None,
                     )
                     continue
                 job = None
@@ -4894,7 +5191,6 @@ class Tool1Service:
                         episode_id,
                         lang,
                         tts_status=stage_status,
-                        error_message=None,
                     )
                 active_jobs += 1
                 continue
@@ -4958,7 +5254,6 @@ class Tool1Service:
                 tts_status="queued",
                 tts_job_id=new_job_id,
                 tts_audio_path=None,
-                error_message=None,
             )
             active_jobs += 1
             submitted_jobs += 1
@@ -4985,7 +5280,6 @@ class Tool1Service:
                 episode_id,
                 str(lang_status.get("language_code") or ""),
                 tts_status="running",
-                error_message=None,
             )
 
     @staticmethod
@@ -5041,6 +5335,11 @@ class Tool1Service:
 
     def _episode_run_alignments(self, episode_id: str) -> None:
         """Run alignment for each language, one at a time."""
+        self._assert_stage_inputs_ready(
+            episode_id,
+            action_stage="alignment",
+            blocked_stage="tts",
+        )
         episode = self.db.get_episode(episode_id)
         langs = json.loads(episode.get("configured_languages") or "[]")
         workspace = self._episode_workspace(episode)
@@ -5098,8 +5397,11 @@ class Tool1Service:
                     error_message=str(exc)[:500],
                 )
 
-        if failed_count == attempted and attempted > 0:
-            raise RuntimeError("All alignments failed.")
+        self._assert_stage_inputs_ready(
+            episode_id,
+            action_stage="alignment",
+            blocked_stage="alignment",
+        )
 
     def _episode_run_chunking(self, episode_id: str) -> None:
         """Run chunking on master language SRT."""
@@ -5516,6 +5818,11 @@ class Tool1Service:
 
     def _episode_run_timeline_mapping(self, episode_id: str) -> None:
         """Map master scene structure to each language's duration proportionally."""
+        self._assert_stage_inputs_ready(
+            episode_id,
+            action_stage="timeline_mapping",
+            blocked_stage="alignment",
+        )
         episode, _, _, _, _, _ = self._load_timeline_mapping_context(episode_id)
         langs = json.loads(episode.get("configured_languages") or "[]")
         context = self._load_timeline_mapping_context(episode_id)
@@ -5533,64 +5840,131 @@ class Tool1Service:
             if result == "failed":
                 failed_count += 1
 
-        if failed_count == attempted and attempted > 0:
-            raise RuntimeError("All timeline mappings failed.")
+        self._assert_stage_inputs_ready(
+            episode_id,
+            action_stage="timeline_mapping",
+            blocked_stage="timeline_mapping",
+        )
+
+    def _cancel_tts_jobs_for_languages(
+        self,
+        episode_id: str,
+        language_codes: list[str],
+        *,
+        reason: str,
+    ) -> None:
+        status_map = {
+            status["language_code"]: status
+            for status in self.db.get_episode_language_statuses(episode_id)
+        }
+        reason_text = self._truncate_error_message(reason, limit=250)
+        for language_code in language_codes:
+            lang_status = status_map.get(language_code) or {}
+            job_id = str(lang_status.get("tts_job_id") or "").strip()
+            if job_id:
+                job = self.db.get_tts_job(job_id)
+                job_status = str((job or {}).get("status") or "").strip().lower()
+                if job_status == "processing":
+                    self.tts_manager.set_job_control(job_id, "stop")
+                elif job_status in {"queued", "completed", "failed", "error"}:
+                    self.db.update_tts_job(
+                        job_id,
+                        status="canceled",
+                        progress=reason_text,
+                        control_action=None,
+                        error_message=reason_text,
+                        finished_at=time.time(),
+                        updated_at=time.time(),
+                    )
+            self.db.update_episode_language_status(
+                episode_id,
+                language_code,
+                tts_status="failed",
+                tts_audio_path=None,
+            )
 
     def _check_paused_tts_episodes(self) -> None:
         """Check if any paused episodes have completed TTS and can resume."""
         paused = self.db.list_paused_tts_episodes()
-        worker_recovery_error = self._recover_paused_tts_queue(paused)
+        recoverable_paused: list[dict[str, Any]] = []
         for episode in paused:
+            episode_id = episode["id"]
+            translation_issues = self._collect_language_stage_issues(
+                episode_id,
+                blocked_stage="translation",
+            )
+            if translation_issues:
+                blocked_languages = [issue.get("language_code", "") for issue in translation_issues]
+                self._cancel_tts_jobs_for_languages(
+                    episode_id,
+                    blocked_languages,
+                    reason="Canceled because translation failed before TTS could complete.",
+                )
+                self._fail_episode(
+                    episode_id,
+                    stage="translation",
+                    message=self._build_stage_blocked_message(
+                        action_stage="tts",
+                        blocked_stage="translation",
+                        issues=translation_issues,
+                    ),
+                )
+                continue
+            recoverable_paused.append(episode)
+
+        worker_recovery_error = self._recover_paused_tts_queue(recoverable_paused)
+        for episode in recoverable_paused:
             episode_id = episode["id"]
             try:
                 tts_queue = self._queue_episode_tts_jobs(episode_id, allow_resubmit_failed=False)
-            except Exception as exc:
-                self.db.update_episode(
+            except EpisodeStageBlockedError as exc:
+                self._fail_episode(
                     episode_id,
-                    board_status="Needs Attention",
-                    pipeline_status="failed",
-                    current_stage="tts",
-                    last_error=f"TTS recovery failed: {str(exc)[:450]}",
-                    pause_requested=0,
-                    updated_at=utc_now(),
+                    stage=exc.blocked_stage,
+                    message=str(exc),
+                )
+                continue
+            except Exception as exc:
+                self._fail_episode(
+                    episode_id,
+                    stage="tts",
+                    message=f"TTS recovery failed: {str(exc)[:450]}",
                 )
                 continue
             lang_statuses = self.db.get_episode_language_statuses(episode_id)
-            any_tts_failed = bool(tts_queue["any_failed"])
             unresolved_languages: list[str] = []
+            terminal_tts_issues = self._collect_language_stage_issues(
+                episode_id,
+                blocked_stage="tts",
+            )
 
             for ls in lang_statuses:
                 status = str(ls.get("tts_status") or "pending").strip().lower()
-                if status == "failed":
-                    any_tts_failed = True
-                elif status not in {"done", "skipped"}:
+                if status in {"queued", "running", "pending"}:
                     unresolved_languages.append(str(ls.get("language_code") or ""))
 
-            if any_tts_failed:
-                self.db.update_episode(
+            if terminal_tts_issues and not unresolved_languages:
+                self._fail_episode(
                     episode_id,
-                    board_status="Needs Attention",
-                    pipeline_status="failed",
-                    last_error="One or more TTS jobs failed.",
-                    pause_requested=0,
-                    updated_at=utc_now(),
+                    stage="tts",
+                    message=self._build_stage_blocked_message(
+                        action_stage="tts",
+                        blocked_stage="tts",
+                        issues=terminal_tts_issues,
+                    ),
                 )
                 continue
 
             if unresolved_languages:
                 if tts_queue["active_jobs"] > 0:
                     if worker_recovery_error:
-                        self.db.update_episode(
+                        self._fail_episode(
                             episode_id,
-                            board_status="Needs Attention",
-                            pipeline_status="failed",
-                            current_stage="tts",
-                            last_error=(
+                            stage="tts",
+                            message=(
                                 "TTS worker could not resume queued jobs: "
                                 + worker_recovery_error
                             )[:500],
-                            pause_requested=0,
-                            updated_at=utc_now(),
                         )
                         continue
                     self._mark_episode_tts_active_languages_running(episode_id)
@@ -5604,17 +5978,13 @@ class Tool1Service:
                             updated_at=utc_now(),
                         )
                     continue
-                self.db.update_episode(
+                self._fail_episode(
                     episode_id,
-                    board_status="Needs Attention",
-                    pipeline_status="failed",
-                    current_stage="tts",
-                    last_error=self._paused_tts_failure_message(
+                    stage="tts",
+                    message=self._paused_tts_failure_message(
                         unrecoverable=tts_queue["unrecoverable"],
                         unresolved_languages=unresolved_languages,
                     ),
-                    pause_requested=0,
-                    updated_at=utc_now(),
                 )
                 continue
 
