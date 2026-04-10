@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 7 | **To Do**: 0 | **Doing**: 0 | **Done**: 7
+**Total**: 8 | **To Do**: 0 | **Doing**: 0 | **Done**: 8
 
 ## Tasks
 
@@ -11,8 +11,9 @@
 5. [x] Background Container – "i got this new error, could you find the root cause of it..." `section.kanban-column.project-kanban-column:nth-child(13) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
 6. [x] Background Container – "the missmatch issue happened again" `section.kanban-column.project-kanban-column:nth-child(13) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
 7. [x] Background Container – "we got an error on the tts step can you verify and fix" `section.kanban-column.project-kanban-column:nth-child(13) > div.kanban-card-list:nth-child(2) > div.episode-card.surface`
+8. [x] Container #view – "this hole section need a redesign, there many visual prob..." `#view`
 
 ---
 
-_Generated: 02/04/2026, 21:47:31_
+_Generated: 10/04/2026, 01:45:43_
 _Source: moat-tasks-detail.json_
