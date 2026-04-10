@@ -3852,7 +3852,7 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertIn("voice_tts_limits", payload["settings"])
                 self.assertEqual(payload["settings"]["voice_tts_default_preset"], "natural_stable")
 
-    def test_get_app_runtime_reports_window_owned_desktop_mode(self) -> None:
+    def test_get_app_runtime_reports_browser_mode(self) -> None:
         from tool1_dashboard.launch_runtime import clear_runtime_info, set_runtime_info
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3864,8 +3864,7 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                     host="127.0.0.1",
                     port=8020,
                     url="http://127.0.0.1:8020",
-                    mode="desktop",
-                    window_controls_shutdown=True,
+                    mode="browser",
                     started_at="2026-04-03T14:00:00+00:00",
                 )
                 try:
@@ -3873,9 +3872,8 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 finally:
                     clear_runtime_info()
                 self.assertEqual(payload["pid"], 4242)
-                self.assertEqual(payload["mode"], "desktop")
-                self.assertTrue(payload["window_controls_shutdown"])
-                self.assertIn("Closing the Creator Studio window stops", payload["close_copy"])
+                self.assertEqual(payload["mode"], "browser")
+                self.assertIn("This session is running as a browser-served page", payload["close_copy"])
 
     def test_episode_tts_submission_chunks_text_and_snapshots_profile_tuning(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

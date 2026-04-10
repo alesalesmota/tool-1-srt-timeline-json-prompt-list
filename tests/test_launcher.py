@@ -43,7 +43,6 @@ class LaunchRuntimeTests(unittest.TestCase):
         info = default_runtime_info()
         self.assertIsInstance(info, dict)
         self.assertEqual(info["mode"], "server")
-        self.assertFalse(info["window_controls_shutdown"])
         self.assertIsNone(info["port"])
         self.assertIsNone(info["url"])
         self.assertIn("pid", info)
@@ -56,14 +55,13 @@ class LaunchRuntimeTests(unittest.TestCase):
             host="127.0.0.1",
             port=8020,
             url="http://127.0.0.1:8020",
-            mode="desktop",
-            window_controls_shutdown=True,
+            mode="browser",
             started_at="2026-04-03T14:00:00+00:00",
         )
 
         self.assertEqual(payload["pid"], 999)
         disk_payload = get_runtime_info(read_from_disk=True)
-        self.assertEqual(disk_payload["mode"], "desktop")
+        self.assertEqual(disk_payload["mode"], "browser")
         self.assertEqual(runtime_url_from_info(disk_payload), "http://127.0.0.1:8020")
 
     def test_request_runtime_shutdown_invokes_callback(self) -> None:

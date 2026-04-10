@@ -4763,11 +4763,7 @@ class Tool1Service:
             port = int(runtime.get("port") or 0)
         except (TypeError, ValueError):
             port = 0
-        close_copy = (
-            "Closing the Creator Studio window stops the dashboard and the voice engine."
-            if runtime.get("window_controls_shutdown")
-            else "This session is running as a browser-served page, so closing the tab does not stop the backend."
-        )
+        close_copy = "This session is running as a browser-served page, so closing the tab does not stop the backend."
         return {
             "pid": pid,
             "host": str(runtime.get("host") or "").strip() or "127.0.0.1",
@@ -4776,7 +4772,6 @@ class Tool1Service:
             "mode": mode,
             "started_at": str(runtime.get("started_at") or ""),
             "single_instance": True,
-            "window_controls_shutdown": bool(runtime.get("window_controls_shutdown")),
             "close_copy": close_copy,
         }
 
