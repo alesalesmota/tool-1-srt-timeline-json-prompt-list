@@ -4,15 +4,12 @@ import json
 import sqlite3
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
-from dataclasses import dataclass
 
 from .config import DATABASE_PATH, DEFAULT_SETTINGS
 from .runtime import ensure_dir, utc_now
-
-
-
 
 @dataclass
 class StageRunResult:
@@ -24,6 +21,15 @@ class StageRunResult:
     command_payload: Any | None = None
     stdout_path: str | None = None
     stderr_path: str | None = None
+
+@dataclass
+class WorkerHeartbeat:
+    worker_id: str
+    status: str
+    current_job_id: str | None
+    pid: int
+    started_at: float
+    last_error: str | None = None
 
 class Tool1Database:
     def __init__(self, path: Path | None = None) -> None:
@@ -508,16 +514,18 @@ class Tool1Database:
 
     def delete_niche_project(self, project_id: str) -> None:
         with self._lock, self._connect() as connection:
-            episode_ids = [
-                row["id"]
-                for row in connection.execute(
-                    "SELECT id FROM episodes WHERE niche_project_id = ?", (project_id,)
-                ).fetchall()
-            ]
-            for eid in episode_ids:
-                connection.execute("DELETE FROM episode_language_status WHERE episode_id = ?", (eid,))
-                connection.execute("DELETE FROM stage_runs WHERE episode_id = ?", (eid,))
-                connection.execute("DELETE FROM tts_jobs WHERE build_id = ?", (eid,))
+            connection.execute(
+                "DELETE FROM episode_language_status WHERE episode_id IN (SELECT id FROM episodes WHERE niche_project_id = ?)",
+                (project_id,)
+            )
+            connection.execute(
+                "DELETE FROM stage_runs WHERE episode_id IN (SELECT id FROM episodes WHERE niche_project_id = ?)",
+                (project_id,)
+            )
+            connection.execute(
+                "DELETE FROM tts_jobs WHERE build_id IN (SELECT id FROM episodes WHERE niche_project_id = ?)",
+                (project_id,)
+            )
             connection.execute("DELETE FROM episodes WHERE niche_project_id = ?", (project_id,))
             connection.execute("DELETE FROM niche_projects WHERE id = ?", (project_id,))
             connection.commit()
@@ -676,16 +684,7 @@ class Tool1Database:
 
     # ── worker heartbeats ────────────────────────────────────────────
 
-    def record_worker_heartbeat(
-        self,
-        *,
-        worker_id: str,
-        status: str,
-        current_job_id: str | None,
-        pid: int,
-        started_at: float,
-        last_error: str | None = None,
-    ) -> None:
+    def record_worker_heartbeat(self, heartbeat: WorkerHeartbeat) -> None:
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
@@ -701,7 +700,15 @@ class Tool1Database:
                     heartbeat_at = excluded.heartbeat_at,
                     last_error = excluded.last_error
                 """,
-                (worker_id, status, current_job_id, pid, started_at, time.time(), last_error),
+                (
+                    heartbeat.worker_id,
+                    heartbeat.status,
+                    heartbeat.current_job_id,
+                    heartbeat.pid,
+                    heartbeat.started_at,
+                    time.time(),
+                    heartbeat.last_error,
+                ),
             )
 
     def get_latest_worker_heartbeat(self) -> dict[str, Any] | None:

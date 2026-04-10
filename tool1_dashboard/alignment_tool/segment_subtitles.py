@@ -314,11 +314,8 @@ def _optimize_gap_distribution(
 def _gap_priority(
     *,
     char_count: int,
-    word_count: int,
-    line_count: int,
     raw_duration: float,
     config: SegmentationConfig,
-    pack,
 ) -> float:
     target_duration = _target_duration(char_count, config.max_reading_cps)
     return round(max(0.0, target_duration - max(raw_duration, 0.01)), 6)
@@ -587,11 +584,8 @@ def _materialize_segments(
     first_duration = max(ends[0] - starts[0], 0.01)
     first_need = _gap_priority(
         char_count=int(drafts[0]["char_count"]),
-        word_count=int(drafts[0]["word_count"]),
-        line_count=int(drafts[0]["line_count"]),
         raw_duration=first_duration,
         config=config,
-        pack=pack,
     )
     starts[0] = max(0.0, starts[0] - min(starts[0], 0.75, first_need))
 
@@ -601,19 +595,13 @@ def _materialize_segments(
         right_duration = max(float(drafts[index + 1]["raw_end"]) - float(drafts[index + 1]["raw_start"]), 0.01)
         left_need = _gap_priority(
             char_count=int(drafts[index]["char_count"]),
-            word_count=int(drafts[index]["word_count"]),
-            line_count=int(drafts[index]["line_count"]),
             raw_duration=left_duration,
             config=config,
-            pack=pack,
         )
         right_need = _gap_priority(
             char_count=int(drafts[index + 1]["char_count"]),
-            word_count=int(drafts[index + 1]["word_count"]),
-            line_count=int(drafts[index + 1]["line_count"]),
             raw_duration=right_duration,
             config=config,
-            pack=pack,
         )
         left_share, right_share = _allocate_gap(gap, left_need, right_need)
         ends[index] = float(drafts[index]["raw_end"]) + left_share

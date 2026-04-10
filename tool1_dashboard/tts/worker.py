@@ -26,7 +26,7 @@ import torch
 import torchaudio
 from TTS.api import TTS as CoquiTTS
 
-from tool1_dashboard.database import Tool1Database
+from tool1_dashboard.database import Tool1Database, WorkerHeartbeat
 from tool1_dashboard.tts.constants import (
     AUDIO_SAMPLE_RATE,
     CHUNK_RETRY_ATTEMPTS,
@@ -82,8 +82,8 @@ class WorkerDB:
         fields.setdefault("updated_at", time.time())
         self._db.update_tts_job(job_id, **fields)
 
-    def record_heartbeat(self, **kwargs: Any) -> None:
-        self._db.record_worker_heartbeat(**kwargs)
+    def record_heartbeat(self, heartbeat: WorkerHeartbeat) -> None:
+        self._db.record_worker_heartbeat(heartbeat)
 
     def requeue_stale(self, stale_seconds: int) -> None:
         self._db.requeue_stale_tts_jobs(stale_seconds)
@@ -162,12 +162,14 @@ def heartbeat_loop(db: WorkerDB) -> None:
         state = _get_heartbeat_state()
         try:
             db.record_heartbeat(
-                worker_id=WORKER_ID,
-                status=state["status"],
-                current_job_id=state["current_job_id"],
-                pid=os.getpid(),
-                started_at=STARTED_AT,
-                last_error=state["last_error"],
+                WorkerHeartbeat(
+                    worker_id=WORKER_ID,
+                    status=state["status"],
+                    current_job_id=state["current_job_id"],
+                    pid=os.getpid(),
+                    started_at=STARTED_AT,
+                    last_error=state["last_error"],
+                )
             )
         except Exception as err:
             print(f"[Worker] Heartbeat write failed: {err}")
@@ -654,11 +656,13 @@ def run() -> None:
         _set_heartbeat_state("stopped")
         try:
             db.record_heartbeat(
-                worker_id=WORKER_ID,
-                status="stopped",
-                current_job_id=None,
-                pid=os.getpid(),
-                started_at=STARTED_AT,
+                WorkerHeartbeat(
+                    worker_id=WORKER_ID,
+                    status="stopped",
+                    current_job_id=None,
+                    pid=os.getpid(),
+                    started_at=STARTED_AT,
+                )
             )
         except Exception:
             pass
