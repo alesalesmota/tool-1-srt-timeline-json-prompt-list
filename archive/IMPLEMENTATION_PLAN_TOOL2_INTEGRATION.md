@@ -1,5 +1,8 @@
 # Creator Studio: Tool 2 Video Assembly Integration Plan
 
+> [!NOTE]
+> This plan describes the video assembly integration that has been absorbed into Tool 1. "Tool 2" references below are historical — the video assembly workflow now lives inside this project as integrated pipeline stages.
+
 > **Date:** 2026-04-05 (revised)
 > **Status:** In progress — Phases 0-5 completed on 2026-04-05; remaining work is frontend workflow wiring, polish, and final integration testing
 > **Scope:** Merge Tool 2 (Video Assembly) into Tool 1 (Creator Studio Dashboard)

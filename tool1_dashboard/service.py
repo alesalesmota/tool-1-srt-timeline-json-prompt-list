@@ -4889,7 +4889,7 @@ class Tool1Service:
         return {"updated": updated}
 
     def finalize_export(self, episode_id: str) -> dict[str, Any]:
-        """Package all episode outputs into a zip for Tool 2 handoff."""
+        """Package all episode outputs into an export zip."""
         import zipfile
 
         episode = self.db.get_episode(episode_id)

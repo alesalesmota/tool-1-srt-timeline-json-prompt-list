@@ -19,11 +19,11 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 
 **Consistency guide is per-episode** (not shared at niche project level).
 
-## Two-Tool Architecture
+## Unified Architecture
 
-- **Tool 1** (this project) — Planning & pre-generation: translation → TTS → alignment → scene planning → timeline → prompts
-- **Tool 2** (separate) — Final video assembly: takes Tool 1 outputs + shared assets → produces final localized videos
-- **Integration status (2026-04-05)** — `IMPLEMENTATION_PLAN_TOOL2_INTEGRATION.md` is active. Backend Phases 0-5 plus the Codex-owned Phase 10 safety tasks are complete: Tool 2 core render modules were ported into `tool1_dashboard/video_assembly/`, Tool 1 startup health now reports FFmpeg availability, the SQLite layer now has dedicated Tool 2 tables for render jobs/shared scene assets/render logs, shared asset upload + validation APIs are live, sequential single-language or `all` renders run inside Tool 1, successful renders auto-clean `temp/scenes/`, and the assembly backend now exposes explicit render-job deletion plus per-episode temp cleanup endpoints.
+Tool 1 is the complete Creator Studio pipeline — from script planning through final video assembly. The video assembly workflow (originally a separate Tool 2) has been fully absorbed into this project. The pipeline now covers: translation → TTS → alignment → scene planning → timeline → prompts → asset upload → assembly validation → video render → final review.
+
+**Integration status (2026-04-05):** Backend Phases 0-5 plus the Phase 10 safety tasks are complete: video assembly core render modules were ported into `tool1_dashboard/video_assembly/`, startup health now reports FFmpeg availability, the SQLite layer has dedicated tables for render jobs/shared scene assets/render logs, shared asset upload + validation APIs are live, sequential single-language or `all` renders run inside Tool 1, successful renders auto-clean `temp/scenes/`, and the assembly backend now exposes explicit render-job deletion plus per-episode temp cleanup endpoints.
 
 ## Current State (as of 2026-04-10)
 
@@ -140,7 +140,7 @@ Tool 1 is the **multilingual planning and pre-generation engine** of the Creator
 
 ### What's Being Worked On
 
-**Status as of 2026-04-05:** The original 10-phase Tool 1 rebuild is complete, and Tool 2 integration is in progress under `IMPLEMENTATION_PLAN_TOOL2_INTEGRATION.md`. Backend Phases 0-5 are done, and the frontend now has the conditional assembly loader for the post-export stages; remaining work is polish/safety (`10.x`) plus final integration testing (`11.x`).
+**Status as of 2026-04-10:** The original 10-phase planning rebuild is complete, and the video assembly integration is in progress. Backend Phases 0-5 are done, and the frontend now has the conditional assembly loader for the post-export stages; remaining work is polish/safety (`10.x`) plus final integration testing (`11.x`).
 
 Production subtitle metrics (episode 205 benchmark):
 - DE: 4 warnings / 746 segments, max 23.4 CPS — excellent
