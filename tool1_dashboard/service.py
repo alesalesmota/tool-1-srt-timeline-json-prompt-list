@@ -1268,11 +1268,20 @@ class Tool1Service:
             aliases = sorted(cls._character_aliases(card), key=len, reverse=True)
             display_name = re.sub(r"\s*\(.*?\)", "", " ".join(str(card.get("label") or character_id).split())).strip()
             canonical_key = character_id.lower().replace("_", " ")
+            unique_aliases = cls._ordered_unique([display_name, *aliases, character_id.replace("_", " ")])
             payload = {
                 "key": canonical_key,
                 "display_name": display_name or character_id.replace("_", " "),
                 "descriptor": cls._inline_character_descriptor(card),
-                "aliases": cls._ordered_unique([display_name, *aliases, character_id.replace("_", " ")]),
+                "aliases": unique_aliases,
+                "alias_patterns": [
+                    re.compile(rf"\b{re.escape(alias)}\b", re.IGNORECASE)
+                    for alias in unique_aliases
+                ],
+                "alias_possessive_patterns": [
+                    re.compile(rf"\b{re.escape(alias)}(?:'s)?\b", re.IGNORECASE)
+                    for alias in unique_aliases
+                ],
             }
             lookup_keys = {
                 character_id.lower(),
@@ -1318,8 +1327,7 @@ class Tool1Service:
         matches: list[str] = []
         unique_payloads = {payload["key"]: payload for payload in character_lookup.values()}
         for payload in unique_payloads.values():
-            for alias in payload["aliases"]:
-                pattern = re.compile(rf"\b{re.escape(alias)}(?:'s)?\b", re.IGNORECASE)
+            for pattern in payload.get("alias_possessive_patterns", []):
                 if pattern.search(sanitized):
                     matches.append(payload["key"])
                     break
@@ -1358,8 +1366,7 @@ class Tool1Service:
                 continue
             if descriptor.lower() in expanded.lower():
                 continue
-            for alias in payload["aliases"]:
-                pattern = re.compile(rf"\b{re.escape(alias)}\b", re.IGNORECASE)
+            for pattern in payload.get("alias_patterns", []):
                 if pattern.search(expanded):
                     expanded = pattern.sub(lambda match: f"{match.group(0)} ({descriptor})", expanded, count=1)
                     replaced_any = True
