@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 from tool1_dashboard.alignment_tool.config import resolve_language_profile, resolve_mfa_resources
-from tool1_dashboard.database import Tool1Database
+from tool1_dashboard.database import Tool1Database, StageRunParams
 from tool1_dashboard.providers import CliRunner, StructuredRunArgs
 from tool1_dashboard.runtime import utc_now
 from tool1_dashboard.service import QueueBlockedError, Tool1Service
@@ -1649,14 +1649,16 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 )
                 episode_id = episode_result["episode"]["id"]
                 run_id = service.db.start_stage_run(
-                    episode_id=episode_id,
-                    stage="consistency_guide",
-                    provider="codex",
-                    template_hash=None,
-                    workdir=str(temp_path),
-                    command_payload={"provider": "codex", "model": "gpt-5.4-mini"},
-                    stdout_path=None,
-                    stderr_path=None,
+                    StageRunParams(
+                        episode_id=episode_id,
+                        stage="consistency_guide",
+                        provider="codex",
+                        template_hash=None,
+                        workdir=str(temp_path),
+                        command_payload={"provider": "codex", "model": "gpt-5.4-mini"},
+                        stdout_path=None,
+                        stderr_path=None,
+                    )
                 )
                 stale_started_at = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
                 service.db._execute("UPDATE stage_runs SET started_at = ? WHERE id = ?", (stale_started_at, run_id))
