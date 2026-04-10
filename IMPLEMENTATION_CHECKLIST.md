@@ -19,6 +19,27 @@ Status on 2026-04-08: implementation complete for Phases 1-7. Episode `205` time
 - [x] **Task 8.6 [BACKEND]** — Regression coverage for fail-stop translation, TTS fallback prevention, error persistence, and paused-TTS repair (`tests/test_video_pipeline.py`)
   - Verify: focused regressions pass and the full `tests/test_video_pipeline.py -q` file is green.
 
+## Phase 9 — Translation recovery UX + LM Studio translation profiles
+
+- [x] **Task 9.1 [BACKEND]** — Add OpenAI-compatible translation profile persistence with `base_url` (`tool1_dashboard/database.py`, `tool1_dashboard/service.py`, `tool1_dashboard/app.py`, `tool1_dashboard/translation_profiles.py`)
+  - Verify: profile CRUD persists `base_url`; hosted OpenAI still defaults to the official API base URL.
+- [x] **Task 9.2 [BACKEND]** — Route model discovery and translation calls through provider-aware OpenAI-compatible endpoints (`tool1_dashboard/service.py`, `tool1_dashboard/translation/adapter.py`)
+  - Verify: hosted OpenAI discovery still works; local provider discovery handles server-down errors cleanly and preserves manual model entry.
+- [x] **Task 9.3 [BACKEND]** — Add reviewer defaults and provider/model plumbing (`tool1_dashboard/config.py`, `tool1_dashboard/service.py`, `tool1_dashboard/app.py`, `tool1_dashboard/translation/service.py`)
+  - Verify: settings expose `translation_reviewer_provider` + `translation_reviewer_model`; default is `openai` + `gpt-4.1-mini`.
+- [x] **Task 9.4 [BACKEND]** — Inject sensitive-term guidance and normalized quality categories (`tool1_dashboard/translation/prompts.py`, `tool1_dashboard/translation/quality.py`, `tool1_dashboard/translation/service.py`)
+  - Verify: prompts include `SENSITIVE TERMS / DO NOT RENAME`; reports expose `error_summary`, `error_categories`, `review_scores`, and `review_passed`.
+- [x] **Task 9.5 [FRONTEND-DESIGN]** — Rework translation preview into summary-first progressive disclosure (`tool1_dashboard/ui/app.js`, `tool1_dashboard/ui/app.css`)
+  - Verify: preview modal shows short summary, issue bullets, score badges, collapsed raw reviewer findings, and chunk log below.
+- [x] **Task 9.6 [FRONTEND-DESIGN]** — Replace the OpenAI-only translation profile editor with hosted OpenAI + LM Studio/OpenAI-compatible setup (`tool1_dashboard/ui/app.js`, `tool1_dashboard/ui/app.css`)
+  - Verify: LM Studio tab shows base URL + optional key + manual model field; hosted OpenAI still requires live model discovery before save.
+- [x] **Task 9.7 [FRONTEND]** — Show simplified translation failure summaries in episode language rows (`tool1_dashboard/service.py`, `tool1_dashboard/ui/app.js`)
+  - Verify: episode overlay error column prefers `error_summary` instead of raw technical text.
+- [x] **Task 9.8 [BACKEND]** — Focused regression coverage for provider-aware discovery, report enrichment, and prompt/quality changes (`tests/test_translation.py`, `tests/test_video_pipeline.py`)
+  - Verify: `python -m pytest tests/test_translation.py tests/test_video_pipeline.py -q` passes.
+- [ ] **Task 9.9 [MANUAL]** — Live LM Studio smoke
+  - Verify: with LM Studio server running locally, create an OpenAI-compatible profile, discover models from `/v1/models`, save it, and confirm the UI handles both connected and server-down states clearly.
+
 ## Phase 1 — Backend safety net & helpers
 
 - [x] **Task 1.1 [BACKEND]** — Guard `queue_episode` against assembly stages (`tool1_dashboard/service.py` ~line 3553)

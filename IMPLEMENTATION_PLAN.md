@@ -12,6 +12,19 @@ Implemented in code and regression tests on 2026-04-09:
 - Translation preview now returns `error_message` plus a structured `translation_report_{lang}.json` artifact while keeping `translation_log_{lang}.json` backward-compatible as the chunk-log array.
 - Verified with the full `tests/test_video_pipeline.py` suite plus `node --check tool1_dashboard/ui/app.js`.
 
+## Supplemental implementation note — 2026-04-09 translation recovery UX + LM Studio profiles
+
+Implemented in code and targeted regression tests on 2026-04-09:
+
+- Translation profiles now support both hosted `openai` and `openai_compatible` providers, persist `base_url`, and route model discovery plus translation calls through provider-aware OpenAI-compatible endpoints instead of hardcoded OpenAI URLs.
+- LM Studio is now a first-class preset in the Translation Profiles UI with default base URL `http://127.0.0.1:1234/v1`, default model `gemma-4-e2b-uncensored-hauhaucs-aggressive`, optional API key, server-down messaging, and manual model entry when live discovery is unavailable.
+- Translation prompts, chunk repair, script repair, and review prompts now inject a `SENSITIVE TERMS / DO NOT RENAME` block built from protected terms, configured channel names, and extracted multi-word proper names from the source script.
+- Deterministic translation QA now emits normalized `error_categories` / `error_summary`, catches duplicate translated paragraphs more reliably, and the review normalization maps failures into stable categories such as `wrong_name`, `leftover_source_language`, `literal_phrasing`, `faithfulness`, `cta_quality`, and `channel_name`.
+- Translation preview/report payloads now expose `error_summary`, `error_categories`, `review_scores`, and `review_passed`; episode-detail language rows use the short summary instead of only the raw shared error string.
+- Settings now include explicit reviewer defaults (`translation_reviewer_provider`, `translation_reviewer_model`) with default `openai` + `gpt-4.1-mini`; translation can use LM Studio locally while final multilingual review stays fail-closed on OpenAI.
+- UI execution used the `frontend-design` constraint, and the first error-feedback slice was reviewed before carrying the same summary-first / progressive-disclosure pattern into the profile editor and episode overlay surfaces.
+- Verified with `python -m pytest tests/test_translation.py tests/test_video_pipeline.py -q` and `node --check tool1_dashboard/ui/app.js`.
+
 ## Context
 
 After exporting an episode and uploading the generated images/videos through the assembly modal, the user has no clear way to move the card forward into the next assembly stages (assembly_validation → video_render → final_review). The episode card still shows the regular **"Resume from step"** dropdown, which is built only from the upstream `EPISODE_RUNNABLE_STAGES` list. Because `asset_upload` is **not** in that list, clicking that button silently sends the card back to `translation` (the closest runnable fallback) and triggers `delete_stage_runs_for(...)`, which **looks** like the user lost all their uploaded assets.

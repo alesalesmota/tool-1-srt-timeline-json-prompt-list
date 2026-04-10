@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from .language_rules import display_language_name, prompt_guidance_lines, resolve_language_rulepack
 
@@ -26,6 +27,7 @@ DEFAULT_TRANSLATION_PROMPT = (
     "9. Do NOT output both the original text and the translation; never duplicate source paragraphs\n"
     "10. If the text contains calls to action like subscribe, share, or tell someone, translate those calls to action fully into {target_lang}\n"
     "{language_guidance}"
+    "{sensitive_terms_block}"
     "{channel_name_instruction}"
     "{chunk_note}"
     "{context_section}\n"
@@ -46,7 +48,9 @@ DEFAULT_TRANSLATION_REPAIR_PROMPT = (
     "4. Fully translate all CTA lines and action phrases into {target_lang}\n"
     "5. Preserve names, brands, and technical terms unless a channel replacement instruction says otherwise\n"
     "6. If a rejected line sounded literal or awkward, rewrite it idiomatically instead of reusing the same wording\n"
+    "7. Fix only the flagged wording and keep all other structure intact unless the issue requires a minimal local rewrite\n"
     "{language_guidance}"
+    "{sensitive_terms_block}"
     "{channel_name_instruction}"
     "{context_section}\n"
     "\n"
@@ -72,7 +76,10 @@ DEFAULT_TRANSLATION_SCRIPT_REPAIR_PROMPT = (
     "4. Fix awkward literal phrasing so the narration sounds native in {target_lang}\n"
     "5. Fully translate CTA lines and action phrases into natural {target_lang}\n"
     "6. Replace any flagged literal CTA line with an idiomatic local phrase instead of reusing the rejected wording\n"
+    "7. Preserve paragraph layout and repair only the lines needed to resolve the review findings\n"
+    "8. Do not rename protected people, places, entities, or channel names unless an explicit localized replacement is provided\n"
     "{language_guidance}"
+    "{sensitive_terms_block}"
     "{channel_name_instruction}"
     "\n"
     "[WHY THE SCRIPT WAS REJECTED]:\n"
@@ -100,6 +107,7 @@ DEFAULT_TRANSLATION_REVIEW_PROMPT = (
     "Do not cite source-language phrases unless they appear verbatim in the translated script.\n"
     "Every issue must quote or paraphrase the exact translated wording that is problematic.\n"
     "{language_guidance}"
+    "{sensitive_terms_block}"
     "{channel_name_instruction}"
     "\n"
     "Return ONLY strict JSON with this shape:\n"
@@ -123,6 +131,55 @@ def _guidance_block(target_lang: str, target_channel_name: str = "") -> str:
     return "LANGUAGE-SPECIFIC GUIDANCE:\n" + "\n".join(f"- {line}" for line in lines) + "\n"
 
 
+def extract_sensitive_terms(
+    source_text: str,
+    *,
+    source_channel_name: str = "",
+    target_channel_name: str = "",
+    target_lang: str = "",
+) -> list[str]:
+    pack = resolve_language_rulepack(target_lang)
+    candidates: list[str] = []
+    for value in (
+        source_channel_name,
+        target_channel_name,
+        *list(pack.protected_terms),
+    ):
+        cleaned = " ".join(str(value or "").split()).strip()
+        if cleaned:
+            candidates.append(cleaned)
+
+    source = str(source_text or "")
+    for match in re.findall(r"\b(?:[A-Z][\w'’.-]+(?:\s+[A-Z][\w'’.-]+)+)\b", source):
+        cleaned = " ".join(match.split()).strip()
+        if cleaned:
+            candidates.append(cleaned)
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(item)
+        if len(ordered) >= 14:
+            break
+    return ordered
+
+
+def _sensitive_terms_block(sensitive_terms: list[str] | None) -> str:
+    cleaned = [" ".join(str(term or "").split()).strip() for term in sensitive_terms or []]
+    filtered = [term for term in cleaned if term]
+    if not filtered:
+        return ""
+    return (
+        "SENSITIVE TERMS / DO NOT RENAME:\n"
+        + "\n".join(f"- {term}" for term in filtered[:14])
+        + "\nPreserve these terms exactly unless an explicit localized channel replacement instruction says otherwise.\n"
+    )
+
+
 def build_translation_prompt(
     chunk: str,
     context: str,
@@ -133,6 +190,7 @@ def build_translation_prompt(
     channel_name: str = "",
     source_channel_name: str = "",
     target_channel_name: str = "",
+    sensitive_terms: list[str] | None = None,
     template: str | None = None,
 ) -> str:
     """Build a translation prompt with context and chunk metadata.
@@ -173,6 +231,7 @@ def build_translation_prompt(
         target_lang=target_label,
         channel_name=channel_name,
         language_guidance=language_guidance,
+        sensitive_terms_block=_sensitive_terms_block(sensitive_terms),
         channel_name_instruction=channel_name_instruction,
         chunk_note=chunk_note,
         context_section=context_section,
@@ -190,6 +249,7 @@ def build_translation_repair_prompt(
     target_lang: str,
     source_channel_name: str = "",
     target_channel_name: str = "",
+    sensitive_terms: list[str] | None = None,
     template: str | None = None,
 ) -> str:
     tpl = template or DEFAULT_TRANSLATION_REPAIR_PROMPT
@@ -218,6 +278,7 @@ def build_translation_repair_prompt(
         source_lang=source_label,
         target_lang=target_label,
         language_guidance=language_guidance,
+        sensitive_terms_block=_sensitive_terms_block(sensitive_terms),
         channel_name_instruction=channel_name_instruction,
         context_section=context_section,
         issues=issue_text,
@@ -235,6 +296,7 @@ def build_translation_script_repair_prompt(
     target_lang: str,
     source_channel_name: str = "",
     target_channel_name: str = "",
+    sensitive_terms: list[str] | None = None,
     template: str | None = None,
 ) -> str:
     tpl = template or DEFAULT_TRANSLATION_SCRIPT_REPAIR_PROMPT
@@ -253,6 +315,7 @@ def build_translation_script_repair_prompt(
         source_lang=source_label,
         target_lang=target_label,
         language_guidance=language_guidance,
+        sensitive_terms_block=_sensitive_terms_block(sensitive_terms),
         channel_name_instruction=channel_name_instruction,
         issues=issue_text,
         text=source_text,
@@ -268,6 +331,7 @@ def build_translation_review_prompt(
     target_lang: str,
     target_channel_name: str = "",
     source_channel_name: str = "",
+    sensitive_terms: list[str] | None = None,
     template: str | None = None,
 ) -> str:
     tpl = template or DEFAULT_TRANSLATION_REVIEW_PROMPT
@@ -288,6 +352,7 @@ def build_translation_review_prompt(
         source_text=source_text,
         translated_text=translated_text,
         language_guidance=language_guidance,
+        sensitive_terms_block=_sensitive_terms_block(sensitive_terms),
         channel_name_instruction=channel_name_instruction,
         protected_terms=json.dumps(list(pack.protected_terms), ensure_ascii=False),
     )

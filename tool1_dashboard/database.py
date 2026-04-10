@@ -218,6 +218,7 @@ class Tool1Database:
                 name TEXT NOT NULL,
                 provider TEXT NOT NULL,
                 api_key_ref TEXT NOT NULL DEFAULT '',
+                base_url TEXT NOT NULL DEFAULT '',
                 model TEXT NOT NULL,
                 is_default INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -305,6 +306,11 @@ class Tool1Database:
                 connection,
                 "episode_language_status",
                 {"spoken_script_path": "TEXT"},
+            )
+            self._ensure_columns(
+                connection,
+                "translation_profiles",
+                {"base_url": "TEXT NOT NULL DEFAULT ''"},
             )
             # Create index after ensuring column exists
             connection.execute(

@@ -19,8 +19,15 @@ from .prompts import (
     build_translation_repair_prompt,
     build_translation_review_prompt,
     build_translation_script_repair_prompt,
+    extract_sensitive_terms,
 )
-from .quality import collect_translation_quality_issues
+from .quality import (
+    ERROR_CATEGORY_LABELS,
+    analyze_translation_quality,
+    categorize_translation_issue_text,
+    collect_translation_quality_issues,
+    summarize_translation_categories,
+)
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +50,8 @@ class TranslationResult:
     chunk_results: list[ChunkResult] = field(default_factory=list)
     status: str = "done"  # "done" | "partial" | "error"
     error_message: str | None = None
+    error_summary: str | None = None
+    error_categories: list[str] = field(default_factory=list)
     review_report: dict[str, Any] | None = None
 
 
@@ -51,6 +60,31 @@ class TranslationService:
 
     def __init__(self, adapter: TranslationAdapter | None = None) -> None:
         self.adapter = adapter or TranslationAdapter()
+
+    async def _call_adapter_translate(
+        self,
+        *,
+        provider: str,
+        api_key: str,
+        model: str,
+        prompt: str,
+        base_url: str = "",
+    ) -> str:
+        kwargs: dict[str, Any] = {
+            "provider": provider,
+            "api_key": api_key,
+            "model": model,
+            "prompt": prompt,
+        }
+        if str(base_url or "").strip():
+            kwargs["base_url"] = base_url
+        try:
+            return await self.adapter.translate_chunk(**kwargs)
+        except TypeError as exc:
+            if "unexpected keyword argument 'base_url'" not in str(exc):
+                raise
+            kwargs.pop("base_url", None)
+            return await self.adapter.translate_chunk(**kwargs)
 
     async def _translate_chunk_with_repair(
         self,
@@ -62,10 +96,12 @@ class TranslationService:
         provider: str,
         api_key: str,
         model: str,
+        provider_base_url: str,
         total_chunks: int,
         channel_name: str,
         source_channel_name: str,
         target_channel_name: str,
+        sensitive_terms: list[str],
     ) -> tuple[str, int]:
         prompt = build_translation_prompt(
             chunk=chunk.text,
@@ -77,19 +113,21 @@ class TranslationService:
             channel_name=channel_name,
             source_channel_name=source_channel_name,
             target_channel_name=target_channel_name,
+            sensitive_terms=sensitive_terms,
         )
 
         translated = str(
-            await self.adapter.translate_chunk(
+            await self._call_adapter_translate(
                 provider=provider,
                 api_key=api_key,
                 model=model,
                 prompt=prompt,
+                base_url=provider_base_url,
             )
             or ""
         ).strip()
         words_out = len(translated.split())
-        issues = collect_translation_quality_issues(
+        analysis = analyze_translation_quality(
             source_text=chunk.text,
             translated_text=translated,
             language_code=target_lang,
@@ -98,6 +136,7 @@ class TranslationService:
             source_channel_name=source_channel_name,
             target_channel_name=target_channel_name,
         )
+        issues = list(analysis["issues"])
         if not issues:
             return translated, words_out
 
@@ -110,18 +149,20 @@ class TranslationService:
             target_lang=target_lang,
             source_channel_name=source_channel_name,
             target_channel_name=target_channel_name,
+            sensitive_terms=sensitive_terms,
         )
         repaired = str(
-            await self.adapter.translate_chunk(
+            await self._call_adapter_translate(
                 provider=provider,
                 api_key=api_key,
                 model=model,
                 prompt=repair_prompt,
+                base_url=provider_base_url,
             )
             or ""
         ).strip()
         repaired_words_out = len(repaired.split())
-        repair_issues = collect_translation_quality_issues(
+        repair_analysis = analyze_translation_quality(
             source_text=chunk.text,
             translated_text=repaired,
             language_code=target_lang,
@@ -130,28 +171,80 @@ class TranslationService:
             source_channel_name=source_channel_name,
             target_channel_name=target_channel_name,
         )
+        repair_issues = list(repair_analysis["issues"])
         if repair_issues:
             issue_text = "; ".join(repair_issues)
-            raise TranslationError(provider.title(), 200, f"Translation quality check failed: {issue_text}")
+            raise self._translation_error(
+                provider.title(),
+                200,
+                f"Translation quality check failed: {issue_text}",
+                issues=repair_issues,
+            )
         return repaired, repaired_words_out
 
-    @staticmethod
+    @classmethod
     def _error_result(
+        cls,
         *,
         target_lang: str,
         translated_parts: list[str],
         chunk_results: list[ChunkResult],
         error_message: str,
+        error_summary: str | None = None,
+        error_categories: list[str] | None = None,
         review_report: dict[str, Any] | None = None,
     ) -> TranslationResult:
+        categories = [str(item or "").strip() for item in error_categories or [] if str(item or "").strip()]
+        if not categories and error_message:
+            categories = [categorize_translation_issue_text(error_message)]
+        summary = str(error_summary or "").strip() or summarize_translation_categories(categories, issues=[error_message])
         return TranslationResult(
             language_code=target_lang,
             translated_script="\n\n".join(translated_parts).strip(),
             chunk_results=chunk_results,
             status="error",
             error_message=error_message,
+            error_summary=summary or None,
+            error_categories=categories,
             review_report=review_report,
         )
+
+    @staticmethod
+    def _feedback_from_issues(issues: list[str]) -> tuple[list[str], str]:
+        categories: list[str] = []
+        for issue in issues:
+            category = categorize_translation_issue_text(issue)
+            if category not in categories:
+                categories.append(category)
+        summary = summarize_translation_categories(categories, issues=issues)
+        return categories, summary
+
+    @classmethod
+    def _translation_error(
+        cls,
+        provider: str,
+        status: int,
+        message: str,
+        *,
+        issues: list[str] | None = None,
+        review_report: dict[str, Any] | None = None,
+    ) -> TranslationError:
+        error = TranslationError(provider, status, message)
+        if review_report:
+            error.review_report = review_report
+            error.error_categories = list(review_report.get("error_categories") or [])
+            error.error_summary = str(
+                review_report.get("error_summary")
+                or review_report.get("summary")
+                or ""
+            ).strip()
+            return error
+        issue_list = [str(item or "").strip() for item in issues or [] if str(item or "").strip()]
+        if issue_list:
+            categories, summary = cls._feedback_from_issues(issue_list)
+            error.error_categories = categories
+            error.error_summary = summary
+        return error
 
     @staticmethod
     def _normalize_review_issue(item: Any) -> str:
@@ -216,6 +309,24 @@ class TranslationService:
             scores
         ):
             sanitized["passed"] = True
+        detailed_issues: list[dict[str, str]] = []
+        categories: list[str] = []
+        for issue in issues:
+            category = categorize_translation_issue_text(issue)
+            if category not in categories:
+                categories.append(category)
+            detailed_issues.append({
+                "text": issue,
+                "category": category,
+                "label": ERROR_CATEGORY_LABELS.get(category, category.replace("_", " ").title()),
+            })
+        if bool(sanitized.get("passed")):
+            sanitized["error_categories"] = []
+            sanitized["error_summary"] = ""
+        else:
+            sanitized["error_categories"] = categories
+            sanitized["error_summary"] = summarize_translation_categories(categories, issues=issues)
+        sanitized["issues_detailed"] = detailed_issues
         return sanitized
 
     @staticmethod
@@ -265,11 +376,16 @@ class TranslationService:
         translated_script: str,
         source_lang: str,
         target_lang: str,
+        reviewer_provider: str,
         reviewer_api_key: str,
         reviewer_model: str,
+        reviewer_base_url: str,
         source_channel_name: str,
         target_channel_name: str,
+        sensitive_terms: list[str],
     ) -> dict[str, Any]:
+        if str(reviewer_provider or "").strip() != "openai":
+            raise TranslationError("Reviewer", 500, "Translation quality review currently supports only OpenAI.")
         if not str(reviewer_api_key or "").strip():
             raise TranslationError("OpenAI", 500, "Translation quality review requires an OpenAI API key.")
         prompt = build_translation_review_prompt(
@@ -279,12 +395,14 @@ class TranslationService:
             target_lang=target_lang,
             source_channel_name=source_channel_name,
             target_channel_name=target_channel_name,
+            sensitive_terms=sensitive_terms,
         )
-        review_text = await self.adapter.translate_chunk(
-            provider="openai",
+        review_text = await self._call_adapter_translate(
+            provider=reviewer_provider,
             api_key=reviewer_api_key,
             model=reviewer_model,
             prompt=prompt,
+            base_url=reviewer_base_url,
         )
         parsed = self._parse_review_payload(review_text)
         return self._sanitize_review_report(
@@ -305,8 +423,10 @@ class TranslationService:
         provider: str,
         api_key: str,
         model: str,
+        provider_base_url: str,
         source_channel_name: str,
         target_channel_name: str,
+        sensitive_terms: list[str],
     ) -> str:
         repair_prompt = build_translation_script_repair_prompt(
             source_text=source_script,
@@ -316,12 +436,14 @@ class TranslationService:
             target_lang=target_lang,
             source_channel_name=source_channel_name,
             target_channel_name=target_channel_name,
+            sensitive_terms=sensitive_terms,
         )
-        repaired = await self.adapter.translate_chunk(
+        repaired = await self._call_adapter_translate(
             provider=provider,
             api_key=api_key,
             model=model,
             prompt=repair_prompt,
+            base_url=provider_base_url,
         )
         return str(repaired or "").strip()
 
@@ -335,16 +457,20 @@ class TranslationService:
         provider: str,
         api_key: str,
         model: str,
+        provider_base_url: str,
         source_channel_name: str,
         target_channel_name: str,
         reviewer_required: bool,
+        reviewer_provider: str,
         reviewer_api_key: str,
         reviewer_model: str,
+        reviewer_base_url: str,
+        sensitive_terms: list[str],
     ) -> tuple[str, dict[str, Any] | None]:
         words_in = len(str(source_script or "").split())
         translated_clean = str(translated_script or "").strip()
         words_out = len(translated_clean.split())
-        script_issues = collect_translation_quality_issues(
+        analysis = analyze_translation_quality(
             source_text=source_script,
             translated_text=translated_clean,
             language_code=target_lang,
@@ -353,6 +479,7 @@ class TranslationService:
             source_channel_name=source_channel_name,
             target_channel_name=target_channel_name,
         )
+        script_issues = list(analysis["issues"])
 
         if not script_issues:
             review_report = None
@@ -362,10 +489,13 @@ class TranslationService:
                     translated_script=translated_clean,
                     source_lang=source_lang,
                     target_lang=target_lang,
+                    reviewer_provider=reviewer_provider,
                     reviewer_api_key=reviewer_api_key,
                     reviewer_model=reviewer_model,
+                    reviewer_base_url=reviewer_base_url,
                     source_channel_name=source_channel_name,
                     target_channel_name=target_channel_name,
+                    sensitive_terms=sensitive_terms,
                 )
                 if review_report["passed"]:
                     return translated_clean, review_report
@@ -382,10 +512,12 @@ class TranslationService:
             provider=provider,
             api_key=api_key,
             model=model,
+            provider_base_url=provider_base_url,
             source_channel_name=source_channel_name,
             target_channel_name=target_channel_name,
+            sensitive_terms=sensitive_terms,
         )
-        repaired_issues = collect_translation_quality_issues(
+        repaired_analysis = analyze_translation_quality(
             source_text=source_script,
             translated_text=repaired_script,
             language_code=target_lang,
@@ -394,11 +526,13 @@ class TranslationService:
             source_channel_name=source_channel_name,
             target_channel_name=target_channel_name,
         )
+        repaired_issues = list(repaired_analysis["issues"])
         if repaired_issues:
-            raise TranslationError(
+            raise self._translation_error(
                 provider.title(),
                 200,
                 "Translation quality validation failed after script repair: " + "; ".join(repaired_issues),
+                issues=repaired_issues,
             )
         if reviewer_required:
             review_report = await self._review_script_quality(
@@ -406,17 +540,21 @@ class TranslationService:
                 translated_script=repaired_script,
                 source_lang=source_lang,
                 target_lang=target_lang,
+                reviewer_provider=reviewer_provider,
                 reviewer_api_key=reviewer_api_key,
                 reviewer_model=reviewer_model,
+                reviewer_base_url=reviewer_base_url,
                 source_channel_name=source_channel_name,
                 target_channel_name=target_channel_name,
+                sensitive_terms=sensitive_terms,
             )
             if not review_report["passed"]:
                 issues = list(review_report["issues"]) or ["LLM quality review rejected the repaired script."]
-                raise TranslationError(
-                    "OpenAI",
+                raise self._translation_error(
+                    reviewer_provider.title(),
                     200,
                     "Translation quality review failed after repair: " + "; ".join(issues),
+                    review_report=review_report,
                 )
             return repaired_script, review_report
         return repaired_script, None
@@ -429,6 +567,7 @@ class TranslationService:
         provider: str,
         api_key: str,
         model: str,
+        provider_base_url: str = "",
         master_scenes: list[dict[str, Any]] | None = None,
         max_words_per_chunk: int = 800,
         context_tail_words: int = 200,
@@ -436,8 +575,10 @@ class TranslationService:
         source_channel_name: str = "",
         target_channel_name: str = "",
         reviewer_required: bool = False,
+        reviewer_provider: str = "openai",
         reviewer_api_key: str = "",
-        reviewer_model: str = "gpt-5.4-mini",
+        reviewer_model: str = "gpt-4.1-mini",
+        reviewer_base_url: str = "",
     ) -> TranslationResult:
         """Translate a full script, chunk by chunk.
 
@@ -466,6 +607,12 @@ class TranslationService:
         context = ""
         chunk_results: list[ChunkResult] = []
         translated_parts: list[str] = []
+        sensitive_terms = extract_sensitive_terms(
+            source_script,
+            source_channel_name=source_channel_name,
+            target_channel_name=target_channel_name,
+            target_lang=target_lang,
+        )
 
         for chunk in chunks:
             try:
@@ -477,10 +624,12 @@ class TranslationService:
                     provider=provider,
                     api_key=api_key,
                     model=model,
+                    provider_base_url=provider_base_url,
                     total_chunks=total_chunks,
                     channel_name=channel_name,
                     source_channel_name=source_channel_name,
                     target_channel_name=target_channel_name,
+                    sensitive_terms=sensitive_terms,
                 )
                 chunk_results.append(ChunkResult(
                     chunk_index=chunk.index,
@@ -521,6 +670,9 @@ class TranslationService:
                     translated_parts=translated_parts,
                     chunk_results=chunk_results,
                     error_message=str(exc),
+                    error_summary=getattr(exc, "error_summary", None),
+                    error_categories=list(getattr(exc, "error_categories", []) or []),
+                    review_report=getattr(exc, "review_report", None),
                 )
 
         translated_script = "\n\n".join(translated_parts).strip()
@@ -533,11 +685,15 @@ class TranslationService:
                 provider=provider,
                 api_key=api_key,
                 model=model,
+                provider_base_url=provider_base_url,
                 source_channel_name=source_channel_name,
                 target_channel_name=target_channel_name,
                 reviewer_required=reviewer_required,
+                reviewer_provider=reviewer_provider,
                 reviewer_api_key=reviewer_api_key,
                 reviewer_model=reviewer_model,
+                reviewer_base_url=reviewer_base_url,
+                sensitive_terms=sensitive_terms,
             )
         except Exception as exc:
             return self._error_result(
@@ -545,6 +701,9 @@ class TranslationService:
                 translated_parts=translated_parts,
                 chunk_results=chunk_results,
                 error_message=str(exc),
+                error_summary=getattr(exc, "error_summary", None),
+                error_categories=list(getattr(exc, "error_categories", []) or []),
+                review_report=getattr(exc, "review_report", None),
             )
 
         return TranslationResult(

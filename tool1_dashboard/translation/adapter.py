@@ -29,11 +29,29 @@ class TranslationAdapter:
         api_key: str,
         model: str,
         prompt: str,
+        *,
+        base_url: str | None = None,
     ) -> str:
         if provider == "gemini":
             return await self._call_gemini(api_key, model, prompt)
         if provider == "openai":
-            return await self._call_openai(api_key, model, prompt)
+            return await self._call_openai(
+                api_key,
+                model,
+                prompt,
+                base_url=base_url or "https://api.openai.com/v1",
+                provider_label="OpenAI",
+                require_api_key=True,
+            )
+        if provider == "openai_compatible":
+            return await self._call_openai(
+                api_key,
+                model,
+                prompt,
+                base_url=base_url or "http://127.0.0.1:1234/v1",
+                provider_label="OpenAI-compatible",
+                require_api_key=False,
+            )
         if provider == "anthropic":
             return await self._call_anthropic(api_key, model, prompt)
         raise ValueError(f"Unknown translation provider: {provider}")
@@ -62,12 +80,25 @@ class TranslationAdapter:
         except (KeyError, IndexError, TypeError):
             return ""
 
-    async def _call_openai(self, api_key: str, model: str, prompt: str) -> str:
-        url = "https://api.openai.com/v1/responses"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+    async def _call_openai(
+        self,
+        api_key: str,
+        model: str,
+        prompt: str,
+        *,
+        base_url: str,
+        provider_label: str,
+        require_api_key: bool,
+    ) -> str:
+        resolved_base_url = str(base_url or "").strip().rstrip("/")
+        if not resolved_base_url:
+            raise TranslationError(provider_label, 500, "Missing OpenAI-compatible base URL.")
+        if require_api_key and not str(api_key or "").strip():
+            raise TranslationError(provider_label, 500, "Missing API key.")
+        url = f"{resolved_base_url}/responses"
+        headers = {"Content-Type": "application/json"}
+        if str(api_key or "").strip():
+            headers["Authorization"] = f"Bearer {api_key}"
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             body = self._build_openai_request_body(
                 model=model,
@@ -90,11 +121,11 @@ class TranslationAdapter:
                     resp = await client.post(url, headers=headers, json=retry_body)
         if resp.status_code != 200:
             msg = self._extract_error(resp, "error", "message")
-            raise TranslationError("OpenAI", resp.status_code, msg)
+            raise TranslationError(provider_label, resp.status_code, msg)
         data = resp.json()
         if str(data.get("status") or "").strip().lower() == "incomplete":
             reason = self._extract_openai_incomplete_reason(data)
-            raise TranslationError("OpenAI", resp.status_code, f"Response incomplete: {reason}")
+            raise TranslationError(provider_label, resp.status_code, f"Response incomplete: {reason}")
 
         text = self._extract_openai_output_text(data)
         if text:
@@ -106,7 +137,7 @@ class TranslationAdapter:
             if isinstance(item, dict) and str(item.get("type") or "").strip()
         )
         detail = f" (output types: {output_types})" if output_types else ""
-        raise TranslationError("OpenAI", resp.status_code, f"Empty response from model{detail}")
+        raise TranslationError(provider_label, resp.status_code, f"Empty response from model{detail}")
 
     async def _call_anthropic(self, api_key: str, model: str, prompt: str) -> str:
         url = "https://api.anthropic.com/v1/messages"

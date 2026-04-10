@@ -4,6 +4,10 @@ from copy import deepcopy
 import re
 from typing import Any
 
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+OPENAI_COMPATIBLE_DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"
+OPENAI_COMPATIBLE_DEFAULT_MODEL = "gemma-4-e2b-uncensored-hauhaucs-aggressive"
+
 TRANSLATION_PROFILE_PROVIDER_CATALOG = (
     {
         "id": "openai",
@@ -13,6 +17,20 @@ TRANSLATION_PROFILE_PROVIDER_CATALOG = (
         "description": "Live API-backed translation profile with model discovery.",
         "runnable": True,
         "editable": True,
+        "api_key_optional": False,
+        "base_url": OPENAI_BASE_URL,
+    },
+    {
+        "id": "openai_compatible",
+        "label": "OpenAI-Compatible",
+        "mode": "api",
+        "placeholder": False,
+        "description": "Use LM Studio or another OpenAI-compatible endpoint with optional auth and manual model entry.",
+        "runnable": True,
+        "editable": True,
+        "api_key_optional": True,
+        "base_url": OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
+        "default_model": OPENAI_COMPATIBLE_DEFAULT_MODEL,
     },
     {
         "id": "claude_cli",
@@ -148,6 +166,8 @@ def translation_profile_provider_spec(provider: str | None) -> dict[str, Any]:
         "description": "Legacy translation profile retained for compatibility.",
         "runnable": normalized in RUNNABLE_TRANSLATION_PROFILE_PROVIDERS,
         "editable": normalized in RUNNABLE_TRANSLATION_PROFILE_PROVIDERS,
+        "api_key_optional": False,
+        "base_url": "",
     }
 
 
@@ -166,12 +186,17 @@ def sanitize_translation_profile(profile: dict[str, Any]) -> dict[str, Any]:
     payload = dict(profile)
     provider_spec = translation_profile_provider_spec(payload.get("provider"))
     api_key = str(payload.pop("api_key_ref", "") or "")
+    payload["base_url"] = normalize_translation_profile_base_url(
+        payload.get("provider"),
+        payload.get("base_url"),
+    )
     payload["provider_label"] = provider_spec["label"]
     payload["provider_mode"] = provider_spec["mode"]
     payload["provider_placeholder"] = bool(provider_spec.get("placeholder"))
     payload["provider_runnable"] = bool(provider_spec.get("runnable"))
     payload["provider_editable"] = bool(provider_spec.get("editable"))
     payload["provider_description"] = provider_spec.get("description", "")
+    payload["provider_api_key_optional"] = bool(provider_spec.get("api_key_optional"))
     payload["has_api_key"] = bool(api_key)
     payload["api_key_masked"] = mask_secret(api_key)
     return payload
@@ -233,5 +258,46 @@ def recommended_openai_model(models: list[dict[str, Any]]) -> str:
     for candidate in OPENAI_MODEL_RECOMMENDATION_ORDER:
         if candidate in available:
             return candidate
+    return str(models[0].get("id") or "").strip() if models else ""
+
+
+def normalize_translation_profile_base_url(
+    provider: str | None,
+    base_url: str | None,
+) -> str:
+    normalized_provider = str(provider or "").strip()
+    raw_value = str(base_url or "").strip().rstrip("/")
+    if normalized_provider == "openai":
+        return OPENAI_BASE_URL
+    if normalized_provider == "openai_compatible":
+        return raw_value or OPENAI_COMPATIBLE_DEFAULT_BASE_URL
+    return raw_value
+
+
+def normalize_openai_compatible_model(model: dict[str, Any]) -> dict[str, Any] | None:
+    model_id = str(model.get("id") or "").strip()
+    if not model_id:
+        return None
+    lowered = model_id.lower()
+    if any(fragment in lowered for fragment in _OPENAI_MODEL_EXCLUDE_FRAGMENTS):
+        return None
+    label = _humanize_model_label(model_id) or model_id
+    return {
+        "id": model_id,
+        "label": label,
+        "capability_label": "Custom / local",
+        "best_for": "User-managed OpenAI-compatible model.",
+        "price_score": 1,
+        "speed_score": 3,
+        "priority": 200,
+        "owned_by": str(model.get("owned_by") or ""),
+        "created": model.get("created"),
+    }
+
+
+def recommended_openai_compatible_model(models: list[dict[str, Any]]) -> str:
+    available = {str(model.get("id") or "").strip() for model in models}
+    if OPENAI_COMPATIBLE_DEFAULT_MODEL in available:
+        return OPENAI_COMPATIBLE_DEFAULT_MODEL
     return str(models[0].get("id") or "").strip() if models else ""
 

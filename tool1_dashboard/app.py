@@ -38,6 +38,8 @@ class SettingsRequest(BaseModel):
     planning_chunk_seconds: int
     planning_overlap_seconds: int
     prompt_batch_size: int
+    translation_reviewer_provider: str = "openai"
+    translation_reviewer_model: str = "gpt-4.1-mini"
     stage_provider_openai_api_key: str | None = None
 
 
@@ -48,7 +50,8 @@ class TemplateRequest(BaseModel):
 class TranslationProfileRequest(BaseModel):
     name: str
     provider: str
-    api_key: str
+    api_key: str = ""
+    base_url: str = ""
     model: str
 
 
@@ -56,10 +59,13 @@ class TranslationProfileUpdateRequest(BaseModel):
     name: str | None = None
     provider: str | None = None
     api_key: str | None = None
+    base_url: str | None = None
     model: str | None = None
 
 
-class OpenAiModelDiscoveryRequest(BaseModel):
+class TranslationModelDiscoveryRequest(BaseModel):
+    provider: str = "openai"
+    base_url: str | None = None
     api_key: str | None = None
     profile_id: str | None = None
 
@@ -944,6 +950,7 @@ async def create_translation_profile(payload: TranslationProfileRequest) -> dict
             name=payload.name,
             provider=payload.provider,
             api_key=payload.api_key,
+            base_url=payload.base_url,
             model=payload.model,
         )
         return service.get_translation_profile_public(profile["id"])
@@ -951,10 +958,27 @@ async def create_translation_profile(payload: TranslationProfileRequest) -> dict
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/api/translation-profiles/openai/discover")
-async def discover_openai_translation_models(payload: OpenAiModelDiscoveryRequest) -> dict[str, Any]:
+@app.post("/api/translation-profiles/discover")
+async def discover_translation_models(payload: TranslationModelDiscoveryRequest) -> dict[str, Any]:
     try:
-        return await service.discover_openai_translation_models(
+        return await service.discover_translation_profile_models(
+            provider=payload.provider,
+            base_url=payload.base_url or "",
+            api_key=payload.api_key or "",
+            profile_id=payload.profile_id,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/translation-profiles/openai/discover")
+async def discover_openai_translation_models(payload: TranslationModelDiscoveryRequest) -> dict[str, Any]:
+    try:
+        return await service.discover_translation_profile_models(
+            provider="openai",
+            base_url=payload.base_url or "",
             api_key=payload.api_key or "",
             profile_id=payload.profile_id,
         )

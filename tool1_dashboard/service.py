@@ -63,15 +63,24 @@ from .templates import TemplateStore
 from .translation.language_rules import build_spoken_script
 from .translation.quality import (
     apply_channel_cta_fallback,
+    categorize_translation_issue_text,
     collect_translation_quality_issues,
+    summarize_translation_categories,
 )
 from .translation_profiles import (
+    OPENAI_BASE_URL,
+    OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
+    OPENAI_COMPATIBLE_DEFAULT_MODEL,
     is_runnable_translation_profile_provider,
     mask_secret,
     normalize_openai_model,
+    normalize_openai_compatible_model,
+    normalize_translation_profile_base_url,
     recommended_openai_model,
+    recommended_openai_compatible_model,
     sanitize_translation_profile,
     sort_openai_models,
+    translation_profile_provider_spec,
 )
 from .video_assembly.asset_resolver import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, _extract_number
 from .video_assembly.dashboard_observer import DashboardRenderObserver
@@ -955,14 +964,29 @@ class Tool1Service:
             return self._stage_provider_openai_api_key() or None
         return None
 
-    async def _discover_openai_models_with_key(self, resolved_api_key: str) -> dict[str, Any]:
-        headers = {
-            "Authorization": f"Bearer {resolved_api_key}",
-            "Content-Type": "application/json",
-        }
+    async def _discover_openai_compatible_models(
+        self,
+        *,
+        provider: str,
+        base_url: str,
+        api_key: str = "",
+    ) -> dict[str, Any]:
+        provider_spec = translation_profile_provider_spec(provider)
+        provider_label = str(provider_spec.get("label") or provider or "Provider").strip()
+        normalized_base_url = normalize_translation_profile_base_url(provider, base_url)
+        headers = {"Content-Type": "application/json"}
+        if str(api_key or "").strip():
+            headers["Authorization"] = f"Bearer {api_key}"
         timeout = httpx.Timeout(20.0, connect=10.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get("https://api.openai.com/v1/models", headers=headers)
+            try:
+                response = await client.get(f"{normalized_base_url}/models", headers=headers)
+            except httpx.RequestError as exc:
+                if provider == "openai_compatible":
+                    raise ValueError(
+                        f"{provider_label} server is unreachable at {normalized_base_url}. Start the local server and try again."
+                    ) from exc
+                raise ValueError(f"{provider_label} model discovery failed: {exc}") from exc
 
         if response.status_code != 200:
             try:
@@ -971,20 +995,24 @@ class Tool1Service:
                 payload = {}
             detail = str(payload.get("error", {}).get("message") or "").strip() or response.text[:240].strip()
             if response.status_code == 401:
-                raise ValueError(f"OpenAI API key rejected. {detail}".strip())
-            raise ValueError(f"OpenAI model discovery failed. {detail}".strip())
+                raise ValueError(f"{provider_label} API key rejected. {detail}".strip())
+            raise ValueError(f"{provider_label} model discovery failed. {detail}".strip())
 
         payload = response.json()
         raw_models = payload.get("data")
         if not isinstance(raw_models, list):
-            raise ValueError("OpenAI model discovery returned an unexpected payload.")
+            raise ValueError(f"{provider_label} model discovery returned an unexpected payload.")
 
         normalized_models: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         for raw_model in raw_models:
             if not isinstance(raw_model, dict):
                 continue
-            normalized = normalize_openai_model(raw_model)
+            normalized = (
+                normalize_openai_model(raw_model)
+                if provider == "openai"
+                else normalize_openai_compatible_model(raw_model)
+            )
             if not normalized:
                 continue
             model_id = str(normalized.get("id") or "").strip()
@@ -994,16 +1022,21 @@ class Tool1Service:
             normalized_models.append(normalized)
 
         normalized_models = sort_openai_models(normalized_models)
-        recommended_model = recommended_openai_model(normalized_models)
+        recommended_model = (
+            recommended_openai_model(normalized_models)
+            if provider == "openai"
+            else recommended_openai_compatible_model(normalized_models)
+        )
         for model in normalized_models:
             model["recommended"] = model.get("id") == recommended_model
 
         if not normalized_models:
-            raise ValueError("No text-capable OpenAI models were available for this API key.")
+            raise ValueError(f"No text-capable models were available from {provider_label}.")
 
         return {
             "models": normalized_models,
             "recommended_model": recommended_model,
+            "base_url": normalized_base_url,
         }
 
     def _build_queue_readiness(
@@ -1962,6 +1995,75 @@ class Tool1Service:
             for cr in getattr(result, "chunk_results", []) or []
         ]
 
+    @staticmethod
+    def _translation_feedback_payload(
+        *,
+        error_message: str = "",
+        error_summary: str = "",
+        error_categories: list[str] | None = None,
+        review_report: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        review = review_report if isinstance(review_report, dict) else None
+        categories = [
+            str(item or "").strip()
+            for item in (error_categories or review.get("error_categories") or [] if review else [])
+            if str(item or "").strip()
+        ]
+        if not categories and error_message:
+            categories = [categorize_translation_issue_text(error_message)]
+        issue_candidates = list(review.get("issues") or []) if review else []
+        if error_message:
+            issue_candidates = [*issue_candidates, error_message]
+        summary = str(error_summary or (review.get("error_summary") if review else "") or "").strip()
+        if not summary:
+            summary = summarize_translation_categories(categories, issues=issue_candidates)
+        review_scores = dict(review.get("scores") or {}) if review else {}
+        review_passed = review.get("passed") if review else None
+        return {
+            "error_summary": summary or None,
+            "error_categories": categories,
+            "review_scores": review_scores,
+            "review_passed": review_passed if isinstance(review_passed, bool) else None,
+        }
+
+    @classmethod
+    def _read_translation_report_payload(
+        cls,
+        *,
+        workspace: Path,
+        language_code: str,
+    ) -> dict[str, Any]:
+        report_path = workspace / f"translation_report_{language_code}.json"
+        if not report_path.exists():
+            return {}
+        report = read_json(report_path, default={})
+        return report if isinstance(report, dict) else {}
+
+    @classmethod
+    def _enrich_language_status_with_translation_feedback(
+        cls,
+        *,
+        workspace: Path,
+        language_status: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = dict(language_status)
+        language_code = str(payload.get("language_code") or "").strip()
+        if not language_code:
+            payload.setdefault("error_summary", "")
+            payload.setdefault("error_categories", [])
+            payload.setdefault("review_scores", {})
+            payload.setdefault("review_passed", None)
+            return payload
+        report = cls._read_translation_report_payload(workspace=workspace, language_code=language_code)
+        feedback = cls._translation_feedback_payload(
+            error_message=str(payload.get("error_message") or report.get("error_message") or "").strip(),
+            error_summary=str(report.get("error_summary") or "").strip(),
+            error_categories=list(report.get("error_categories") or []),
+            review_report=report.get("review_report") if isinstance(report.get("review_report"), dict) else None,
+        )
+        payload.update(feedback)
+        return payload
+
     def _write_translation_report_artifacts(
         self,
         *,
@@ -1989,6 +2091,14 @@ class Tool1Service:
             "chunk_log": chunk_log,
             "review_report": review_report,
         }
+        report.update(
+            self._translation_feedback_payload(
+                error_message=str(report.get("error_message") or ""),
+                error_summary=str(getattr(result, "error_summary", "") or ""),
+                error_categories=list(getattr(result, "error_categories", []) or []),
+                review_report=review_report,
+            )
+        )
         write_json(workspace / f"translation_report_{language_code}.json", report)
 
     @staticmethod
@@ -2091,32 +2201,96 @@ class Tool1Service:
     def get_translation_profile_public(self, profile_id: str) -> dict[str, Any]:
         return sanitize_translation_profile(self.get_translation_profile(profile_id))
 
+    @staticmethod
+    def _normalize_translation_profile_payload(
+        *,
+        provider: str,
+        name: str,
+        api_key: str,
+        model: str,
+        base_url: str = "",
+    ) -> dict[str, str]:
+        normalized_provider = str(provider or "").strip()
+        if not is_runnable_translation_profile_provider(normalized_provider):
+            raise ValueError("Only OpenAI API or OpenAI-compatible translation profiles can be created right now.")
+        provider_spec = translation_profile_provider_spec(normalized_provider)
+        normalized_name = str(name or "").strip()
+        normalized_api_key = str(api_key or "").strip()
+        normalized_model = " ".join(str(model or "").split()).strip()
+        normalized_base_url = normalize_translation_profile_base_url(normalized_provider, base_url)
+        if normalized_provider == "openai" and not normalized_api_key:
+            raise ValueError("OpenAI API key is required.")
+        if normalized_provider == "openai_compatible":
+            if not normalized_base_url:
+                raise ValueError("Base URL is required for OpenAI-compatible profiles.")
+            if not re.match(r"^https?://", normalized_base_url, flags=re.IGNORECASE):
+                raise ValueError("Base URL must start with http:// or https://.")
+        if not normalized_model:
+            raise ValueError("Model is required.")
+        return {
+            "provider": normalized_provider,
+            "name": normalized_name,
+            "api_key_ref": normalized_api_key,
+            "model": normalized_model,
+            "base_url": normalized_base_url,
+            "provider_label": str(provider_spec.get("label") or normalized_provider),
+        }
+
+    async def discover_translation_profile_models(
+        self,
+        *,
+        provider: str,
+        base_url: str = "",
+        api_key: str = "",
+        profile_id: str | None = None,
+    ) -> dict[str, Any]:
+        profile = None
+        resolved_provider = str(provider or "").strip()
+        resolved_base_url = normalize_translation_profile_base_url(resolved_provider, base_url)
+        resolved_api_key = str(api_key or "").strip()
+        if profile_id:
+            profile = self.db.get_translation_profile(profile_id)
+            if profile is None:
+                raise FileNotFoundError("Translation profile not found.")
+            resolved_provider = str(profile.get("provider") or "").strip() or resolved_provider
+            resolved_base_url = normalize_translation_profile_base_url(
+                resolved_provider,
+                profile.get("base_url") or resolved_base_url,
+            )
+            if not resolved_api_key:
+                resolved_api_key = str(profile.get("api_key_ref") or "").strip()
+        if not resolved_provider:
+            raise ValueError("Select a translation provider first.")
+        provider_spec = translation_profile_provider_spec(resolved_provider)
+        if not bool(provider_spec.get("api_key_optional")) and not resolved_api_key:
+            raise ValueError("Paste an OpenAI API key first.")
+        discovery = await self._discover_openai_compatible_models(
+            provider=resolved_provider,
+            base_url=resolved_base_url,
+            api_key=resolved_api_key,
+        )
+
+        return {
+            "models": discovery["models"],
+            "recommended_model": discovery["recommended_model"],
+            "provider": resolved_provider,
+            "base_url": discovery["base_url"],
+            "connection_status": "connected",
+            "from_saved_key": bool(profile_id and not str(api_key or "").strip()),
+            "profile_id": profile_id,
+        }
+
     async def discover_openai_translation_models(
         self,
         *,
         api_key: str = "",
         profile_id: str | None = None,
     ) -> dict[str, Any]:
-        profile = None
-        resolved_api_key = str(api_key or "").strip()
-        if profile_id:
-            profile = self.db.get_translation_profile(profile_id)
-            if profile is None:
-                raise FileNotFoundError("Translation profile not found.")
-            if str(profile.get("provider") or "").strip() != "openai":
-                raise ValueError("Only OpenAI translation profiles support model discovery.")
-            if not resolved_api_key:
-                resolved_api_key = str(profile.get("api_key_ref") or "").strip()
-        if not resolved_api_key:
-            raise ValueError("Paste an OpenAI API key first.")
-        discovery = await self._discover_openai_models_with_key(resolved_api_key)
-
-        return {
-            "models": discovery["models"],
-            "recommended_model": discovery["recommended_model"],
-            "from_saved_key": bool(profile_id and not str(api_key or "").strip()),
-            "profile_id": profile_id,
-        }
+        return await self.discover_translation_profile_models(
+            provider="openai",
+            api_key=api_key,
+            profile_id=profile_id,
+        )
 
     async def discover_openai_stage_provider_models(
         self,
@@ -2126,7 +2300,11 @@ class Tool1Service:
         resolved_api_key = str(api_key or "").strip() or self._stage_provider_openai_api_key()
         if not resolved_api_key:
             raise ValueError("Paste an OpenAI API key first.")
-        discovery = await self._discover_openai_models_with_key(resolved_api_key)
+        discovery = await self._discover_openai_compatible_models(
+            provider="openai",
+            base_url=OPENAI_BASE_URL,
+            api_key=resolved_api_key,
+        )
         self.db.set_setting(STAGE_PROVIDER_OPENAI_MODELS_SETTING, json.dumps(discovery["models"]))
         self.db.set_setting(
             STAGE_PROVIDER_OPENAI_RECOMMENDED_MODEL_SETTING,
@@ -2149,24 +2327,24 @@ class Tool1Service:
         provider: str,
         api_key: str,
         model: str,
+        base_url: str = "",
     ) -> dict[str, Any]:
-        provider = str(provider or "").strip()
-        if not is_runnable_translation_profile_provider(provider):
-            raise ValueError("Only OpenAI API translation profiles can be created right now.")
-        api_key = str(api_key or "").strip()
-        model = " ".join(str(model or "").split()).strip()
-        if not api_key:
-            raise ValueError("OpenAI API key is required.")
-        if not model:
-            raise ValueError("Model is required.")
+        normalized = self._normalize_translation_profile_payload(
+            provider=provider,
+            name=name,
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+        )
         profile_id = str(uuid.uuid4())[:8]
         now = utc_now()
         self.db.create_translation_profile({
             "id": profile_id,
-            "name": name.strip() or f"{provider}-{profile_id}",
-            "provider": provider,
-            "api_key_ref": api_key,
-            "model": model,
+            "name": normalized["name"] or f"{normalized['provider']}-{profile_id}",
+            "provider": normalized["provider"],
+            "api_key_ref": normalized["api_key_ref"],
+            "base_url": normalized["base_url"],
+            "model": normalized["model"],
             "is_default": 0,
             "created_at": now,
             "updated_at": now,
@@ -2181,15 +2359,15 @@ class Tool1Service:
         profile = self.db.get_translation_profile(profile_id)
         if profile is None:
             raise FileNotFoundError("Translation profile not found.")
-        allowed = {"name", "provider", "api_key_ref", "model", "is_default"}
+        allowed = {"name", "provider", "api_key_ref", "base_url", "model", "is_default"}
         filtered = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if filtered:
             effective_provider = str(filtered.get("provider") or profile.get("provider") or "").strip()
             if (
-                any(key in filtered for key in ("provider", "api_key_ref", "model"))
+                any(key in filtered for key in ("provider", "api_key_ref", "base_url", "model"))
                 and not is_runnable_translation_profile_provider(effective_provider)
             ):
-                raise ValueError("Only OpenAI API translation profiles can be edited in the current setup flow.")
+                raise ValueError("Only OpenAI and OpenAI-compatible translation profiles can be edited in the current setup flow.")
             if "name" in filtered:
                 filtered["name"] = str(filtered["name"]).strip() or profile["name"]
             if "provider" in filtered:
@@ -2198,10 +2376,25 @@ class Tool1Service:
                 filtered["api_key_ref"] = str(filtered["api_key_ref"] or "").strip()
                 if not filtered["api_key_ref"]:
                     filtered.pop("api_key_ref")
+            if "base_url" in filtered or effective_provider == "openai":
+                filtered["base_url"] = normalize_translation_profile_base_url(
+                    effective_provider,
+                    filtered.get("base_url", profile.get("base_url", "")),
+                )
+                if effective_provider == "openai_compatible" and not re.match(
+                    r"^https?://",
+                    str(filtered["base_url"] or ""),
+                    flags=re.IGNORECASE,
+                ):
+                    raise ValueError("Base URL must start with http:// or https://.")
             if "model" in filtered:
                 filtered["model"] = " ".join(str(filtered["model"] or "").split()).strip()
-                if effective_provider == "openai" and not filtered["model"]:
+                if not filtered["model"]:
                     raise ValueError("Model is required.")
+            if effective_provider == "openai":
+                resolved_api_key = str(filtered.get("api_key_ref", profile.get("api_key_ref", "")) or "").strip()
+                if not resolved_api_key:
+                    raise ValueError("OpenAI API key is required.")
             self.db.update_translation_profile(profile_id, **filtered)
         return self.db.get_translation_profile(profile_id) or {}
 
@@ -2672,11 +2865,19 @@ class Tool1Service:
         episode = self.db.get_episode(episode_id)
         if episode is None:
             raise FileNotFoundError("Episode not found.")
+        workspace = self._episode_workspace(episode)
         worker_health = self.get_worker_health()
         lang_statuses, active_tts_job = self._decorate_language_statuses_with_tts(
             self.db.get_episode_language_statuses(episode_id),
             worker_health=worker_health,
         )
+        lang_statuses = [
+            self._enrich_language_status_with_translation_feedback(
+                workspace=workspace,
+                language_status=status,
+            )
+            for status in lang_statuses
+        ]
         stage_runs = [
             self._decorate_stage_run_for_client(run)
             for run in self.db.list_stage_runs(episode_id)
@@ -4070,6 +4271,9 @@ class Tool1Service:
         settings = self._global_settings()
         workspace = self._episode_workspace(episode)
         reviewer_api_key = self._stage_provider_openai_api_key()
+        reviewer_provider = str(settings.get("translation_reviewer_provider") or "openai").strip() or "openai"
+        reviewer_model = str(settings.get("translation_reviewer_model") or "gpt-4.1-mini").strip() or "gpt-4.1-mini"
+        reviewer_base_url = normalize_translation_profile_base_url(reviewer_provider, "")
 
         profile_id = translation_profiles.get(lang)
         if not profile_id:
@@ -4116,14 +4320,17 @@ class Tool1Service:
                 provider=profile["provider"],
                 api_key=profile["api_key_ref"],
                 model=profile["model"],
+                provider_base_url=str(profile.get("base_url") or ""),
                 master_scenes=master_scenes,
                 max_words_per_chunk=settings.get("translation_chunk_max_words", 800),
                 context_tail_words=settings.get("translation_context_tail_words", 200),
                 source_channel_name=source_channel_name if enable_prompt else "",
                 target_channel_name=target_channel if enable_prompt else "",
                 reviewer_required=True,
+                reviewer_provider=reviewer_provider,
                 reviewer_api_key=reviewer_api_key,
-                reviewer_model="gpt-5.4-mini",
+                reviewer_model=reviewer_model,
+                reviewer_base_url=reviewer_base_url,
             ))
             translated_script = self._validated_translation_script(
                 result,
@@ -4467,10 +4674,18 @@ class Tool1Service:
         workspace = self._episode_workspace(episode)
         log_path = workspace / f"translation_log_{language_code}.json"
         translation_log = read_json(log_path, default=[]) if log_path.exists() else []
-        report_path = workspace / f"translation_report_{language_code}.json"
-        translation_report = read_json(report_path, default={}) if report_path.exists() else {}
+        translation_report = self._read_translation_report_payload(
+            workspace=workspace,
+            language_code=language_code,
+        )
         if not translated:
             translated = str(translation_report.get("translated_script") or "").strip()
+        feedback = self._translation_feedback_payload(
+            error_message=str(lang_status.get("error_message") or translation_report.get("error_message") or "").strip(),
+            error_summary=str(translation_report.get("error_summary") or "").strip(),
+            error_categories=list(translation_report.get("error_categories") or []),
+            review_report=translation_report.get("review_report") if isinstance(translation_report.get("review_report"), dict) else None,
+        )
 
         return {
             "language_code": language_code,
@@ -4479,6 +4694,10 @@ class Tool1Service:
             "translation_log": translation_log,
             "translation_status": lang_status.get("translation_status", "pending"),
             "error_message": lang_status.get("error_message"),
+            "error_summary": feedback["error_summary"],
+            "error_categories": feedback["error_categories"],
+            "review_scores": feedback["review_scores"],
+            "review_passed": feedback["review_passed"],
             "translation_report": translation_report,
         }
 
@@ -4926,6 +5145,9 @@ class Tool1Service:
         enable_post = bool(int(project.get("channel_replace_post", 1) or 1))
         settings = self._global_settings()
         reviewer_api_key = self._stage_provider_openai_api_key()
+        reviewer_provider = str(settings.get("translation_reviewer_provider") or "openai").strip() or "openai"
+        reviewer_model = str(settings.get("translation_reviewer_model") or "gpt-4.1-mini").strip() or "gpt-4.1-mini"
+        reviewer_base_url = normalize_translation_profile_base_url(reviewer_provider, "")
         source_script = episode["script_text"]
 
         # Set master language script path
@@ -4993,14 +5215,17 @@ class Tool1Service:
                     provider=profile["provider"],
                     api_key=profile["api_key_ref"],
                     model=profile["model"],
+                    provider_base_url=str(profile.get("base_url") or ""),
                     master_scenes=master_scenes,
                     max_words_per_chunk=settings.get("translation_chunk_max_words", 800),
                     context_tail_words=settings.get("translation_context_tail_words", 200),
                     source_channel_name=source_channel_name if enable_prompt else "",
                     target_channel_name=target_channel if enable_prompt else "",
                     reviewer_required=True,
+                    reviewer_provider=reviewer_provider,
                     reviewer_api_key=reviewer_api_key,
-                    reviewer_model="gpt-5.4-mini",
+                    reviewer_model=reviewer_model,
+                    reviewer_base_url=reviewer_base_url,
                 )
                 translated_script = self._validated_translation_script(
                     result,
