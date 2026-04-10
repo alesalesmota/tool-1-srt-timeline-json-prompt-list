@@ -845,6 +845,50 @@ class Tool1Service:
         language_voice_profiles = hydrated_project.get("language_voice_profiles") or {}
         language_translation_profiles = hydrated_project.get("language_translation_profiles") or {}
 
+        self._check_queue_language_config(
+            project_id=project_id,
+            master_language=master_language,
+            configured_languages=configured_languages,
+            blockers=blockers,
+        )
+
+        self._check_queue_profiles(
+            project_id=project_id,
+            master_language=master_language,
+            configured_languages=configured_languages,
+            language_voice_profiles=language_voice_profiles,
+            language_translation_profiles=language_translation_profiles,
+            voice_profiles=voice_profiles,
+            translation_profiles=translation_profiles,
+            blockers=blockers,
+        )
+
+        resolved_config = self._resolved_project_config(hydrated_project)
+        self._check_queue_providers(
+            project_id=project_id,
+            resolved_config=resolved_config,
+            provider_health=provider_health,
+            blockers=blockers,
+        )
+
+        self._check_queue_worker_health(
+            worker_health=worker_health,
+            warnings=warnings,
+        )
+
+        return {
+            "ok": len(blockers) == 0,
+            "blockers": blockers,
+            "warnings": warnings,
+        }
+
+    def _check_queue_language_config(
+        self,
+        project_id: str | None,
+        master_language: str,
+        configured_languages: list[str],
+        blockers: list[dict[str, Any]],
+    ) -> None:
         if not configured_languages:
             blockers.append(self._queue_issue(
                 "missing_configured_languages",
@@ -859,6 +903,17 @@ class Tool1Service:
                 language_code=master_language,
             ))
 
+    def _check_queue_profiles(
+        self,
+        project_id: str | None,
+        master_language: str,
+        configured_languages: list[str],
+        language_voice_profiles: dict[str, str],
+        language_translation_profiles: dict[str, str],
+        voice_profiles: dict[str, dict[str, Any]],
+        translation_profiles: dict[str, dict[str, Any]],
+        blockers: list[dict[str, Any]],
+    ) -> None:
         for language_code in configured_languages:
             profile_id = str(language_voice_profiles.get(language_code) or "").strip()
             profile = voice_profiles.get(profile_id) if profile_id else None
@@ -890,7 +945,13 @@ class Tool1Service:
                     profile_id=profile_id or None,
                 ))
 
-        resolved_config = self._resolved_project_config(hydrated_project)
+    def _check_queue_providers(
+        self,
+        project_id: str | None,
+        resolved_config: dict[str, Any],
+        provider_health: dict[str, Any],
+        blockers: list[dict[str, Any]],
+    ) -> None:
         for stage_key, stage_label, provider_field, model_field in QUEUE_PROVIDER_TARGETS:
             provider = str(resolved_config.get(provider_field) or "").strip()
             model = str(resolved_config.get(model_field) or "").strip()
@@ -935,6 +996,11 @@ class Tool1Service:
                     model=model or None,
                 ))
 
+    def _check_queue_worker_health(
+        self,
+        worker_health: dict[str, Any],
+        warnings: list[dict[str, Any]],
+    ) -> None:
         if worker_health.get("startup_error"):
             warnings.append(self._queue_issue(
                 "tts_worker_unavailable",
@@ -945,12 +1011,6 @@ class Tool1Service:
                 "tts_worker_cpu_only",
                 self._tts_cpu_runtime_warning(),
             ))
-
-        return {
-            "ok": len(blockers) == 0,
-            "blockers": blockers,
-            "warnings": warnings,
-        }
 
     @staticmethod
     def _tts_cpu_runtime_warning() -> str:
