@@ -167,6 +167,9 @@ Remaining French/Italian density is inherent to the text-to-audio ratio for thos
 
 ## User Observations & Insights
 
+- **2026-04-10**: AI translation review is the wrong default gate for automation. If asked to critique translation quality, the reviewer will always find minor issues and keep breaking the workflow, even when the output would not break TTS, scene planning, or later stages.
+- **2026-04-10**: Translation should fail only on pipeline-breaking problems such as quota/auth failures, empty or weird outputs, untranslated source leakage, gibberish, or digits that should have been written as narration words.
+- **2026-04-10**: The translation step must stay visible in the pipeline, but its UI feedback should clearly discriminate what kind of error happened so the user knows whether to switch provider/key/model, adjust prompt/profile, or ask for code changes.
 - **2026-04-04**: Per-language YouTube channel names are intentional product behavior, not translation drift; when a source script mentions the channel name, the translation layer should replace it with the configured localized name (`Biblo Viral` for ES, `Orizzonte` for IT, etc.) while still translating the surrounding CTA text fully into the target language
 - **2026-04-10**: The model should own channel-name replacement through the prompt. The app can validate the result, but hidden post-translation rewrites made the stack feel overcomplicated and less trustworthy than the older cheap OpenAI flow.
 - **2026-04-04**: Old concept/spec files left at the repo root can mislead future AI work; when a document no longer matches the shipped app, archive it or mark it explicitly historical instead of leaving it to look current

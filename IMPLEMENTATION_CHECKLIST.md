@@ -4,6 +4,12 @@
 > [!IMPORTANT]
 > Historical completed checklist. Keep this for audit/history, but use `README.md` and `PROJECT_REGISTRY.md` for the current app behavior.
 
+## Active checklist pointer — 2026-04-10 translation simplification
+
+The active translation-step checklist now lives at:
+
+- `plans/translation-step-simplification/IMPLEMENTATION_CHECKLIST.md`
+
 ## Channel-name Simplification (2026-04-10)
 - [x] Strengthen translation prompts so channel renaming is handled explicitly by the model
 - [x] Remove backend post-translation channel-name/CTA rewrites

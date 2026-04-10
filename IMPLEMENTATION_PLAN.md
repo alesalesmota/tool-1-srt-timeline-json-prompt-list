@@ -4,6 +4,14 @@
 > [!IMPORTANT]
 > Historical migration record. This plan is complete and intentionally preserves the old cleanup context from the transition period. Do not treat the phase narrative below as the current architecture source of truth; use `README.md` and `PROJECT_REGISTRY.md` for the live product shape.
 
+## Active plan pointer — 2026-04-10 translation simplification
+
+The active execution docs for the current translation-step work now live under:
+
+- `plans/translation-step-simplification/IMPLEMENTATION_PLAN.md`
+- `plans/translation-step-simplification/IMPLEMENTATION_CHECKLIST.md`
+- `plans/translation-step-simplification/AGENT_EXECUTION_GUIDE.md`
+
 ## Supplemental implementation note — 2026-04-10 channel-name simplification
 
 Implemented in code and regression-tested on 2026-04-10:
