@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from tool1_dashboard.alignment_tool.config import resolve_language_profile, resolve_mfa_resources
 from tool1_dashboard.database import Tool1Database
-from tool1_dashboard.providers import CliRunner
+from tool1_dashboard.providers import CliRunner, StructuredRunArgs
 from tool1_dashboard.runtime import utc_now
 from tool1_dashboard.service import QueueBlockedError, Tool1Service
 
@@ -31,18 +31,18 @@ class FakeCliRunner:
             "openai": {"available": True, "logged_in": False},
         }
 
-    def run_structured(self, *, provider, model, api_key=None, system_prompt, user_prompt, schema, workdir, artifact_dir):
-        artifact_dir.mkdir(parents=True, exist_ok=True)
+    def run_structured(self, args: StructuredRunArgs):
+        args.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.calls.append({
-            "provider": provider,
-            "model": model,
-            "api_key": api_key,
-            "schema": schema,
-            "workdir": str(workdir),
-            "artifact_dir": str(artifact_dir),
+            "provider": args.provider,
+            "model": args.model,
+            "api_key": args.api_key,
+            "schema": args.schema,
+            "workdir": str(args.workdir),
+            "artifact_dir": str(args.artifact_dir),
         })
         # Determine which stage based on schema shape
-        if "world_style" in schema.get("properties", {}):
+        if "world_style" in args.schema.get("properties", {}):
             # Visual bible / consistency guide
             parsed = {
                 "world_style": {
@@ -66,7 +66,7 @@ class FakeCliRunner:
                 "continuity_rules": ["Keep the same prophet face and robe silhouette."],
                 "environment_rules": ["Preserve a windblown desert atmosphere."],
             }
-        elif "scenes" in schema.get("properties", {}):
+        elif "scenes" in args.schema.get("properties", {}):
             # Scene planning
             parsed = {
                 "scenes": [
@@ -76,10 +76,10 @@ class FakeCliRunner:
             }
         else:
             # Prompt generation
-            batch_payload = json.loads(user_prompt.split("Batch payload:\n", 1)[1])
+            batch_payload = json.loads(args.user_prompt.split("Batch payload:\n", 1)[1])
             prompts = []
             for scene in batch_payload["scenes"]:
-                if "action" in schema.get("properties", {}).get("prompts", {}).get("items", {}).get("properties", {}):
+                if "action" in args.schema.get("properties", {}).get("prompts", {}).get("items", {}).get("properties", {}):
                     prompts.append({
                         "scene_id": scene["scene_id"],
                         "subject": "elderly desert prophet with olive skin",
@@ -107,8 +107,8 @@ class FakeCliRunner:
             parsed = {"prompts": prompts}
 
         # Write stdout/stderr files
-        stdout_path = artifact_dir / "stdout.txt"
-        stderr_path = artifact_dir / "stderr.txt"
+        stdout_path = args.artifact_dir / "stdout.txt"
+        stderr_path = args.artifact_dir / "stderr.txt"
         stdout_path.write_text("fake stdout", encoding="utf-8")
         stderr_path.write_text("", encoding="utf-8")
         return {
@@ -140,32 +140,23 @@ class FailingProviderCliRunner(ProbeStateCliRunner):
         self.fail_provider = fail_provider
         self.fail_message = fail_message
 
-    def run_structured(self, *, provider, model, api_key=None, system_prompt, user_prompt, schema, workdir, artifact_dir):
-        artifact_dir.mkdir(parents=True, exist_ok=True)
+    def run_structured(self, args: StructuredRunArgs):
+        args.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.calls.append({
-            "provider": provider,
-            "model": model,
-            "api_key": api_key,
-            "schema": schema,
-            "workdir": str(workdir),
-            "artifact_dir": str(artifact_dir),
+            "provider": args.provider,
+            "model": args.model,
+            "api_key": args.api_key,
+            "schema": args.schema,
+            "workdir": str(args.workdir),
+            "artifact_dir": str(args.artifact_dir),
         })
-        stdout_path = artifact_dir / "stdout.txt"
-        stderr_path = artifact_dir / "stderr.txt"
+        stdout_path = args.artifact_dir / "stdout.txt"
+        stderr_path = args.artifact_dir / "stderr.txt"
         stdout_path.write_text("failing stdout", encoding="utf-8")
         stderr_path.write_text(self.fail_message, encoding="utf-8")
-        if provider == self.fail_provider:
+        if args.provider == self.fail_provider:
             raise RuntimeError(self.fail_message)
-        return super().run_structured(
-            provider=provider,
-            model=model,
-            api_key=api_key,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            schema=schema,
-            workdir=workdir,
-            artifact_dir=artifact_dir,
-        )
+        return super().run_structured(args)
 
 
 def _make_service(temp_path: Path, cli_runner=None) -> Tool1Service:
