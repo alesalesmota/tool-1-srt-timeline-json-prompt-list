@@ -1285,6 +1285,132 @@ class Tool1Service:
             "finished_at": payload.get("finished_at"),
         }
 
+    @staticmethod
+    def _tts_job_status_rank(job_status: Any) -> int:
+        normalized = str(job_status or "").strip().lower()
+        if normalized == "processing":
+            return 3
+        if normalized == "queued":
+            return 2
+        if normalized in {"completed", "done"}:
+            return 1
+        if normalized in {"failed", "error", "canceled"}:
+            return 0
+        return -1
+
+    def _infer_tts_job_language_code(
+        self,
+        job: dict[str, Any],
+        *,
+        configured_languages: list[str] | None = None,
+        job_language_hints: dict[str, str] | None = None,
+    ) -> str | None:
+        configured = {
+            str(language_code or "").strip()
+            for language_code in (configured_languages or [])
+            if str(language_code or "").strip()
+        }
+        job_id = str((job or {}).get("job_id") or "").strip()
+        hinted_language = str((job_language_hints or {}).get(job_id) or "").strip()
+        if hinted_language and (not configured or hinted_language in configured):
+            return hinted_language
+
+        payload = self._parse_json_dict((job or {}).get("payload_json"))
+        for raw_filename in ((job or {}).get("filename"), payload.get("original_filename")):
+            filename = Path(str(raw_filename or "")).name
+            match = re.match(r"^narration_(.+)\.wav$", filename, flags=re.IGNORECASE)
+            if not match:
+                continue
+            language_code = str(match.group(1) or "").strip()
+            if language_code and (not configured or language_code in configured):
+                return language_code
+        return None
+
+    def _select_preferred_tts_job(
+        self,
+        current: dict[str, Any] | None,
+        candidate: dict[str, Any],
+        *,
+        active_worker_job_id: str = "",
+    ) -> dict[str, Any]:
+        if current is None:
+            return candidate
+
+        def _sort_key(job: dict[str, Any]) -> tuple[int, int, float, float]:
+            job_id = str(job.get("job_id") or "").strip()
+            return (
+                1 if active_worker_job_id and job_id == active_worker_job_id else 0,
+                self._tts_job_status_rank(job.get("status")),
+                float(job.get("updated_at") or 0.0),
+                float(job.get("created_at") or 0.0),
+            )
+
+        return candidate if _sort_key(candidate) > _sort_key(current) else current
+
+    def _best_tts_jobs_by_language(
+        self,
+        episode_id: str,
+        language_statuses: list[dict[str, Any]],
+        *,
+        worker_health: dict[str, Any] | None = None,
+        active_only: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        active_worker_job_id = str((worker_health or {}).get("current_job_id") or "").strip()
+        configured_languages = [
+            str(status.get("language_code") or "").strip()
+            for status in language_statuses
+            if str(status.get("language_code") or "").strip()
+        ]
+        job_language_hints = {
+            str(status.get("tts_job_id") or "").strip(): str(status.get("language_code") or "").strip()
+            for status in language_statuses
+            if str(status.get("tts_job_id") or "").strip() and str(status.get("language_code") or "").strip()
+        }
+        best_jobs: dict[str, dict[str, Any]] = {}
+        for job in self.db.list_tts_jobs_for_build(episode_id):
+            job_status = str(job.get("status") or "").strip().lower()
+            if active_only and job_status not in {"queued", "processing"}:
+                continue
+            language_code = self._infer_tts_job_language_code(
+                job,
+                configured_languages=configured_languages,
+                job_language_hints=job_language_hints,
+            )
+            if not language_code:
+                continue
+            best_jobs[language_code] = self._select_preferred_tts_job(
+                best_jobs.get(language_code),
+                job,
+                active_worker_job_id=active_worker_job_id,
+            )
+        return best_jobs
+
+    def _sync_episode_language_tts_job(
+        self,
+        episode_id: str,
+        language_status: dict[str, Any],
+        job: dict[str, Any] | None,
+    ) -> None:
+        if not job:
+            return
+        job_id = str(job.get("job_id") or "").strip()
+        job_status = str(job.get("status") or "").strip().lower()
+        if not job_id or job_status not in {"queued", "processing"}:
+            return
+        desired_status = "running" if job_status == "processing" else "queued"
+        updates: dict[str, Any] = {}
+        if str(language_status.get("tts_job_id") or "").strip() != job_id:
+            updates["tts_job_id"] = job_id
+            updates["tts_audio_path"] = None
+        if str(language_status.get("tts_status") or "").strip().lower() != desired_status:
+            updates["tts_status"] = desired_status
+        if updates:
+            self.db.update_episode_language_status(
+                episode_id,
+                str(language_status.get("language_code") or ""),
+                **updates,
+            )
+
     def _decorate_language_statuses_with_tts(
         self,
         language_statuses: list[dict[str, Any]],
@@ -1294,16 +1420,36 @@ class Tool1Service:
         active_job: dict[str, Any] | None = None
         active_worker_job_id = str((worker_health or {}).get("current_job_id") or "").strip()
         active_worker_processing = str((worker_health or {}).get("status") or "").strip().lower() == "processing"
+        episode_id = str((language_statuses[0] or {}).get("episode_id") or "").strip() if language_statuses else ""
+        active_jobs_by_language = (
+            self._best_tts_jobs_by_language(
+                episode_id,
+                language_statuses,
+                worker_health=worker_health,
+                active_only=True,
+            )
+            if episode_id
+            else {}
+        )
 
         enriched_statuses: list[dict[str, Any]] = []
         for lang_status in language_statuses:
             payload = dict(lang_status)
-            job_id = str(payload.get("tts_job_id") or "").strip()
-            if not job_id:
-                enriched_statuses.append(payload)
-                continue
+            language_code = str(payload.get("language_code") or "").strip()
+            referenced_job_id = str(payload.get("tts_job_id") or "").strip()
+            effective_job = active_jobs_by_language.get(language_code)
+            if effective_job is None and referenced_job_id:
+                effective_job = self.db.get_tts_job(referenced_job_id)
+            if effective_job is not None:
+                effective_job_id = str(effective_job.get("job_id") or "").strip()
+                if effective_job_id:
+                    payload["tts_job_id"] = effective_job_id
+                effective_stage_status = self._tts_stage_status_for_job_status(effective_job.get("status"))
+                if effective_stage_status != "pending":
+                    payload["tts_status"] = effective_stage_status
 
-            job = self.db.get_tts_job(job_id)
+            job_id = str(payload.get("tts_job_id") or "").strip()
+            job = effective_job if effective_job is not None else (self.db.get_tts_job(job_id) if job_id else None)
             if not job:
                 enriched_statuses.append(payload)
                 continue
@@ -1320,10 +1466,22 @@ class Tool1Service:
             if job_payload.get("status") in {"queued", "processing"}:
                 candidate = {
                     **job_payload,
-                    "language_code": payload.get("language_code"),
+                    "language_code": language_code,
                     "worker_active": active_worker_processing and active_worker_job_id == job_id,
                 }
-                if active_job is None or (candidate["worker_active"] and not active_job.get("worker_active")):
+                current_key = (
+                    1 if active_job and active_job.get("worker_active") else 0,
+                    self._tts_job_status_rank((active_job or {}).get("status")),
+                    float((active_job or {}).get("updated_at") or 0.0),
+                    float((active_job or {}).get("finished_at") or 0.0),
+                )
+                candidate_key = (
+                    1 if candidate["worker_active"] else 0,
+                    self._tts_job_status_rank(candidate.get("status")),
+                    float(candidate.get("updated_at") or 0.0),
+                    float(candidate.get("finished_at") or 0.0),
+                )
+                if active_job is None or candidate_key > current_key:
                     active_job = candidate
 
             enriched_statuses.append(payload)
@@ -5635,6 +5793,13 @@ class Tool1Service:
             status["language_code"]: status
             for status in self.db.get_episode_language_statuses(episode_id)
         }
+        worker_health = self.get_worker_health()
+        active_jobs_by_language = self._best_tts_jobs_by_language(
+            episode_id,
+            list(statuses.values()),
+            worker_health=worker_health,
+            active_only=True,
+        )
         submitted_jobs = 0
         active_jobs = 0
         any_failed = False
@@ -5693,6 +5858,12 @@ class Tool1Service:
                 continue
             if status == "failed" and not allow_resubmit_failed:
                 any_failed = True
+                continue
+
+            active_job = active_jobs_by_language.get(lang)
+            if active_job is not None:
+                self._sync_episode_language_tts_job(episode_id, lang_status, active_job)
+                active_jobs += 1
                 continue
 
             job_id = str(lang_status.get("tts_job_id") or "").strip()
@@ -5794,21 +5965,18 @@ class Tool1Service:
         }
 
     def _mark_episode_tts_active_languages_running(self, episode_id: str) -> None:
-        for lang_status in self.db.get_episode_language_statuses(episode_id):
-            job_id = str(lang_status.get("tts_job_id") or "").strip()
-            if not job_id:
-                continue
-            job = self.db.get_tts_job(job_id)
-            job_status = str((job or {}).get("status") or "").strip().lower()
-            if job_status not in {"queued", "processing"}:
-                continue
-            if str(lang_status.get("tts_status") or "").strip().lower() == "running":
-                continue
-            self.db.update_episode_language_status(
-                episode_id,
-                str(lang_status.get("language_code") or ""),
-                tts_status="running",
-            )
+        language_statuses = self.db.get_episode_language_statuses(episode_id)
+        if not language_statuses:
+            return
+        active_jobs_by_language = self._best_tts_jobs_by_language(
+            episode_id,
+            language_statuses,
+            worker_health=self.get_worker_health(),
+            active_only=True,
+        )
+        for lang_status in language_statuses:
+            active_job = active_jobs_by_language.get(str(lang_status.get("language_code") or "").strip())
+            self._sync_episode_language_tts_job(episode_id, lang_status, active_job)
 
     @staticmethod
     def _paused_tts_failure_message(

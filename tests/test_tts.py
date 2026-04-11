@@ -1191,8 +1191,24 @@ class EpisodeTtsQueueStatusTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def _create_generate_job(self, *, job_id: str, profile_id: str, status: str, progress: str) -> None:
+    def _create_generate_job(
+        self,
+        *,
+        job_id: str,
+        profile_id: str,
+        status: str,
+        progress: str,
+        filename: str | None = None,
+        worker_id: str | None = None,
+        created_at: float | None = None,
+        updated_at: float | None = None,
+    ) -> None:
         now = time.time()
+        created = float(created_at if created_at is not None else now)
+        updated = float(updated_at if updated_at is not None else created)
+        payload = {"texts": ["hello", "world"]}
+        if filename:
+            payload["original_filename"] = filename
         self.service.db.create_tts_job({
             "job_id": job_id,
             "build_id": "ep-1",
@@ -1200,11 +1216,13 @@ class EpisodeTtsQueueStatusTests(unittest.TestCase):
             "profile_id": profile_id,
             "status": status,
             "progress": progress,
-            "payload_json": json.dumps({"texts": ["hello", "world"]}),
+            "payload_json": json.dumps(payload),
             "meta_json": "{}",
             "queue_priority": 10,
-            "created_at": now,
-            "updated_at": now,
+            "filename": filename,
+            "worker_id": worker_id,
+            "created_at": created,
+            "updated_at": updated,
         })
 
     def test_queue_episode_tts_jobs_marks_new_submissions_as_queued(self):
@@ -1265,6 +1283,148 @@ class EpisodeTtsQueueStatusTests(unittest.TestCase):
             self.service.db.get_episode_language_status("ep-1", "es")["tts_status"],
             "queued",
         )
+
+    def test_queue_episode_tts_jobs_prefers_live_processing_job_when_saved_job_id_is_stale(self):
+        self.service.db.update_episode_language_status(
+            "ep-1",
+            "en",
+            tts_status="done",
+        )
+        self._create_generate_job(
+            job_id="job-es-queued",
+            profile_id="voice-es",
+            status="queued",
+            progress="Queued...",
+            filename="narration_es.wav",
+            created_at=20.0,
+            updated_at=20.0,
+        )
+        self._create_generate_job(
+            job_id="job-es-live",
+            profile_id="voice-es",
+            status="processing",
+            progress="Generating chunk 3/8...",
+            filename="narration_es.wav",
+            worker_id="worker-live",
+            created_at=10.0,
+            updated_at=30.0,
+        )
+        self.service.db.update_episode_language_status(
+            "ep-1",
+            "es",
+            tts_status="queued",
+            tts_job_id="job-es-queued",
+        )
+
+        with patch.object(
+            self.service,
+            "get_worker_health",
+            return_value={
+                "status": "processing",
+                "current_job_id": "job-es-live",
+            },
+        ), patch.object(self.service.tts_manager, "submit_tts_job") as submit_mock:
+            result = self.service._queue_episode_tts_jobs("ep-1", allow_resubmit_failed=False)
+
+        submit_mock.assert_not_called()
+        self.assertEqual(result["submitted_jobs"], 0)
+        self.assertEqual(result["active_jobs"], 1)
+        es_status = self.service.db.get_episode_language_status("ep-1", "es")
+        self.assertEqual(es_status["tts_job_id"], "job-es-live")
+        self.assertEqual(es_status["tts_status"], "running")
+
+    def test_mark_episode_tts_active_languages_running_keeps_queued_jobs_queued(self):
+        self._create_generate_job(
+            job_id="job-en",
+            profile_id="voice-en",
+            status="processing",
+            progress="Generating chunk 1/2...",
+            worker_id="worker-live",
+        )
+        self._create_generate_job(
+            job_id="job-es",
+            profile_id="voice-es",
+            status="queued",
+            progress="Queued...",
+        )
+        self.service.db.update_episode_language_status(
+            "ep-1",
+            "en",
+            tts_status="queued",
+            tts_job_id="job-en",
+        )
+        self.service.db.update_episode_language_status(
+            "ep-1",
+            "es",
+            tts_status="running",
+            tts_job_id="job-es",
+        )
+
+        with patch.object(
+            self.service,
+            "get_worker_health",
+            return_value={
+                "status": "processing",
+                "current_job_id": "job-en",
+            },
+        ):
+            self.service._mark_episode_tts_active_languages_running("ep-1")
+
+        self.assertEqual(
+            self.service.db.get_episode_language_status("ep-1", "en")["tts_status"],
+            "running",
+        )
+        self.assertEqual(
+            self.service.db.get_episode_language_status("ep-1", "es")["tts_status"],
+            "queued",
+        )
+
+    def test_get_episode_detail_prefers_worker_active_job_for_live_tts_copy(self):
+        self._create_generate_job(
+            job_id="job-es-queued",
+            profile_id="voice-es",
+            status="queued",
+            progress="Queued...",
+            filename="narration_es.wav",
+            created_at=20.0,
+            updated_at=20.0,
+        )
+        self._create_generate_job(
+            job_id="job-es-live",
+            profile_id="voice-es",
+            status="processing",
+            progress="Generating chunk 3/8...",
+            filename="narration_es.wav",
+            worker_id="worker-live",
+            created_at=10.0,
+            updated_at=30.0,
+        )
+        self.service.db.update_episode_language_status(
+            "ep-1",
+            "es",
+            tts_status="running",
+            tts_job_id="job-es-queued",
+        )
+
+        with patch.object(
+            self.service,
+            "get_worker_health",
+            return_value={
+                "status": "processing",
+                "current_job_id": "job-es-live",
+            },
+        ):
+            detail = self.service.get_episode_detail("ep-1")
+
+        active_job = detail["episode"]["active_tts_job"]
+        self.assertIsNotNone(active_job)
+        self.assertEqual(active_job["job_id"], "job-es-live")
+        self.assertEqual(active_job["language_code"], "es")
+        es_status = next(status for status in detail["language_statuses"] if status["language_code"] == "es")
+        self.assertEqual(es_status["tts_job_id"], "job-es-live")
+        self.assertEqual(es_status["tts_status"], "running")
+        self.assertEqual(es_status["tts_job_status"], "processing")
+        self.assertEqual(es_status["tts_job_progress"], "Generating chunk 3/8...")
 
     def test_retry_single_tts_marks_job_as_queued(self):
         with patch.object(self.service.tts_manager, "ensure_worker_ready") as ensure_mock, patch.object(
