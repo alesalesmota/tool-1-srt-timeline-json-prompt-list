@@ -615,6 +615,45 @@ class TranslationServiceTests(unittest.TestCase):
         assert result.diagnostics is not None
         self.assertEqual(result.diagnostics["blockers"][0]["category"], "digits_present")
 
+    def test_channel_name_fallback_rewrites_source_name_before_validation(self):
+        adapter = self._make_fake_adapter([
+            "Suscríbete a True Light si necesitas una comunidad.",
+        ])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="Subscribe to True Light if you need a community.",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+            source_channel_name="True Light",
+            target_channel_name="Biblo Viral",
+            enforced_source_channel_name="True Light",
+            enforced_target_channel_name="Biblo Viral",
+        ))
+        self.assertEqual(result.status, "done")
+        self.assertIn("Biblo Viral", result.translated_script)
+        self.assertNotIn("True Light", result.translated_script)
+
+    def test_channel_name_leak_is_not_enforced_when_postprocess_is_disabled(self):
+        adapter = self._make_fake_adapter([
+            "Suscríbete a True Light si necesitas una comunidad.",
+        ])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="Subscribe to True Light if you need a community.",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+            source_channel_name="True Light",
+            target_channel_name="Biblo Viral",
+        ))
+        self.assertEqual(result.status, "done")
+        self.assertIn("True Light", result.translated_script)
+
     def test_gibberish_output_fails_deterministic_validation(self):
         adapter = self._make_fake_adapter([
             "xqtrplmn xqtrplmn xqtrplmn",

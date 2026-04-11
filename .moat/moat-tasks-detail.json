@@ -146,18 +146,18 @@
     "timestamp": 1775599239779
   },
   {
-    "id": "b45a2794-06a7-4170-b490-af607884e457",
-    "title": "Container #episode-assembly-section",
-    "comment": "neither bulk upload, and scene upload is working,  i choose the file and nothing uploads",
-    "selector": "#episode-assembly-section",
+    "id": "acd6ed7d-d8b3-4204-8ef6-2bdaae8aa979",
+    "title": "Colored Container",
+    "comment": "a new translation issue appeared, i believe its related to the system prompt and variable channel name to set the system instruction of the translator to change the names of the channel in the translation accordingly",
+    "selector": "div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(7)",
     "boundingRect": {
       "x": 395,
-      "y": 306,
+      "y": 343,
       "w": 1115,
-      "h": 32442
+      "h": 351
     },
-    "screenshotPath": "./screenshots/moat-1775606765094-1jgkink5z.png",
-    "status": "to do",
-    "timestamp": 1775606765471
+    "screenshotPath": "./screenshots/moat-1775866370131-bsx58zj1m.png",
+    "status": "done",
+    "timestamp": 1775866370264
   }
 ]

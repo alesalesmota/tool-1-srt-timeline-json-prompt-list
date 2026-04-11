@@ -173,6 +173,20 @@ def apply_channel_cta_fallback(
     return pattern.sub(replacement, translated_script)
 
 
+def apply_channel_name_fallback(
+    translated_script: str,
+    *,
+    source_channel_name: str,
+    target_channel_name: str,
+) -> str:
+    if not translated_script or not source_channel_name or not target_channel_name:
+        return translated_script
+    if normalize_compare_text(source_channel_name) == normalize_compare_text(target_channel_name):
+        return translated_script
+    pattern = re.compile(re.escape(source_channel_name), re.IGNORECASE)
+    return pattern.sub(target_channel_name, translated_script)
+
+
 def categorize_translation_issue_text(issue: Any) -> str:
     text = normalize_compare_text(str(issue or ""))
     if not text:

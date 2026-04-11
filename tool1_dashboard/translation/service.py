@@ -23,6 +23,8 @@ from .prompts import (
 )
 from .quality import (
     ERROR_CATEGORY_LABELS,
+    apply_channel_cta_fallback,
+    apply_channel_name_fallback,
     categorize_translation_issue_text,
     collect_translation_quality_findings,
     summarize_translation_categories,
@@ -303,6 +305,25 @@ class TranslationService:
         return error
 
     @staticmethod
+    def _apply_channel_fallbacks(
+        translated_text: str,
+        *,
+        language_code: str,
+        source_channel_name: str,
+        target_channel_name: str,
+    ) -> str:
+        normalized = apply_channel_name_fallback(
+            translated_text,
+            source_channel_name=source_channel_name,
+            target_channel_name=target_channel_name,
+        )
+        return apply_channel_cta_fallback(
+            normalized,
+            language_code=language_code,
+            target_channel_name=target_channel_name,
+        )
+
+    @staticmethod
     def _normalize_review_issue(item: Any) -> str:
         if isinstance(item, dict):
             criterion = str(item.get("criterion") or "").strip()
@@ -577,6 +598,8 @@ class TranslationService:
         target_lang: str,
         source_channel_name: str,
         target_channel_name: str,
+        review_source_channel_name: str,
+        review_target_channel_name: str,
         reviewer_required: bool,
         reviewer_provider: str,
         reviewer_api_key: str,
@@ -613,8 +636,8 @@ class TranslationService:
                     reviewer_api_key=reviewer_api_key,
                     reviewer_model=reviewer_model,
                     reviewer_base_url=reviewer_base_url,
-                    source_channel_name=source_channel_name,
-                    target_channel_name=target_channel_name,
+                    source_channel_name=review_source_channel_name,
+                    target_channel_name=review_target_channel_name,
                     sensitive_terms=sensitive_terms,
                 )
             except TranslationError as exc:
@@ -680,6 +703,8 @@ class TranslationService:
         channel_name: str = "",
         source_channel_name: str = "",
         target_channel_name: str = "",
+        enforced_source_channel_name: str = "",
+        enforced_target_channel_name: str = "",
         reviewer_required: bool = False,
         reviewer_provider: str = "openai",
         reviewer_api_key: str = "",
@@ -715,10 +740,12 @@ class TranslationService:
         context = ""
         chunk_results: list[ChunkResult] = []
         translated_parts: list[str] = []
+        effective_source_channel_name = str(source_channel_name or enforced_source_channel_name or "").strip()
+        effective_target_channel_name = str(target_channel_name or enforced_target_channel_name or "").strip()
         sensitive_terms = extract_sensitive_terms(
             source_script,
-            source_channel_name=source_channel_name,
-            target_channel_name=target_channel_name,
+            source_channel_name=effective_source_channel_name,
+            target_channel_name=effective_target_channel_name,
             target_lang=target_lang,
         )
 
@@ -739,12 +766,18 @@ class TranslationService:
                     target_channel_name=target_channel_name,
                     sensitive_terms=sensitive_terms,
                 )
+                translated = self._apply_channel_fallbacks(
+                    translated,
+                    language_code=target_lang,
+                    source_channel_name=enforced_source_channel_name,
+                    target_channel_name=enforced_target_channel_name,
+                )
                 self._raise_if_invalid_chunk(
                     chunk=chunk,
                     translated_text=translated,
                     target_lang=target_lang,
-                    source_channel_name=source_channel_name,
-                    target_channel_name=target_channel_name,
+                    source_channel_name=enforced_source_channel_name,
+                    target_channel_name=enforced_target_channel_name,
                 )
                 chunk_results.append(
                     ChunkResult(
@@ -882,14 +915,22 @@ class TranslationService:
                 )
 
         translated_script = "\n\n".join(translated_parts).strip()
+        translated_script = self._apply_channel_fallbacks(
+            translated_script,
+            language_code=target_lang,
+            source_channel_name=enforced_source_channel_name,
+            target_channel_name=enforced_target_channel_name,
+        )
         try:
             final_script, review_report, warnings = await self._apply_script_quality_gate(
                 source_script=source_script,
                 translated_script=translated_script,
                 source_lang=source_lang,
                 target_lang=target_lang,
-                source_channel_name=source_channel_name,
-                target_channel_name=target_channel_name,
+                source_channel_name=enforced_source_channel_name,
+                target_channel_name=enforced_target_channel_name,
+                review_source_channel_name=source_channel_name or enforced_source_channel_name,
+                review_target_channel_name=target_channel_name or enforced_target_channel_name,
                 reviewer_required=reviewer_required,
                 reviewer_provider=reviewer_provider,
                 reviewer_api_key=reviewer_api_key,
