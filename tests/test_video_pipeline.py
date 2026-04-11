@@ -3176,6 +3176,90 @@ class EpisodePipelineServiceTests(unittest.TestCase):
 
                 self.assertIn("translated scripts for pt-BR", str(ctx.exception))
 
+    def test_queue_from_tts_with_reset_preserves_completed_master_tts_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                voice_profiles, translation_profiles = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    ["en", "es"],
+                    master_language="en",
+                )
+                project = service.create_niche_project(
+                    name="Preserve Master TTS",
+                    master_language="en",
+                    configured_languages=["en", "es"],
+                    language_voice_profiles=voice_profiles,
+                    language_translation_profiles=translation_profiles,
+                )
+                episode = service.submit_episode(
+                    project["project"]["id"],
+                    title="Preserve English Narration",
+                    script_text="Alpha beta gamma delta.",
+                )["episode"]
+                episode_id = episode["id"]
+                workspace = Path(episode["workspace_dir"])
+                _seed_translation_assets(service, episode_id, "es", text="Texto en español.")
+
+                master_audio = temp_path / "narration_en.wav"
+                master_audio.write_text("audio-en", encoding="utf-8")
+                master_srt = temp_path / "final_en.srt"
+                master_srt.write_text("srt-en", encoding="utf-8")
+                master_timeline = temp_path / "timeline_en.json"
+                master_timeline.write_text("[]", encoding="utf-8")
+                spoken_master = workspace / "script_original_spoken.txt"
+                spoken_master.write_text(build_spoken_script("Alpha beta gamma delta.", "en"), encoding="utf-8")
+
+                service.db.update_episode(
+                    episode_id,
+                    board_status="Failed",
+                    pipeline_status="failed",
+                    current_stage="tts",
+                )
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "en",
+                    translation_status="done",
+                    script_path=str(workspace / "script_original.txt"),
+                    spoken_script_path=str(spoken_master),
+                    tts_status="done",
+                    tts_audio_path=str(master_audio),
+                    tts_job_id="tts-job-en-done",
+                    srt_status="done",
+                    srt_path=str(master_srt),
+                    timeline_status="done",
+                    timeline_path=str(master_timeline),
+                )
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "es",
+                    translation_status="done",
+                    tts_status="done",
+                    tts_audio_path=str(temp_path / "narration_es.wav"),
+                    tts_job_id="tts-job-es-old",
+                    srt_status="done",
+                    srt_path=str(temp_path / "final_es.srt"),
+                    timeline_status="done",
+                    timeline_path=str(temp_path / "timeline_es.json"),
+                )
+
+                queue_result = service.queue_episode(episode_id, start_stage="tts", reset_outputs=True)
+
+                self.assertEqual(queue_result["start_stage"], "tts")
+                en_status = service.db.get_episode_language_status(episode_id, "en")
+                self.assertEqual(en_status["tts_status"], "done")
+                self.assertEqual(en_status["tts_audio_path"], str(master_audio))
+                self.assertEqual(en_status["srt_status"], "done")
+                self.assertEqual(en_status["timeline_status"], "done")
+                es_status = service.db.get_episode_language_status(episode_id, "es")
+                self.assertEqual(es_status["tts_status"], "pending")
+                self.assertIsNone(es_status["tts_audio_path"])
+                self.assertIsNone(es_status["tts_job_id"])
+                self.assertEqual(es_status["srt_status"], "pending")
+                self.assertEqual(es_status["timeline_status"], "pending")
+
     def test_chunking_produces_manifest(self) -> None:
         """Chunking stage parses SRT and produces manifest with chunk files."""
         with tempfile.TemporaryDirectory() as temp_dir:

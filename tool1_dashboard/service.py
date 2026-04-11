@@ -773,6 +773,7 @@ class Tool1Service:
                 script_original_spoken_path,
                 build_spoken_script(episode.get("script_text") or "", master_language),
             )
+        current_master_spoken_script = build_spoken_script(episode.get("script_text") or "", master_language).strip()
 
         def reset_languages(*, include_languages: list[str], fields: dict[str, Any]) -> None:
             for language_code in include_languages:
@@ -829,8 +830,19 @@ class Tool1Service:
                 },
             )
         elif start_stage == "tts":
+            master_status = self.db.get_episode_language_status(episode_id, master_language) or {}
+            preserve_master_tts = (
+                str(master_status.get("tts_status") or "").strip().lower() == "done"
+                and self._path_exists(master_status.get("tts_audio_path"))
+                and self._path_has_non_empty_text(script_original_spoken_path)
+                and read_text(script_original_spoken_path).strip() == current_master_spoken_script
+            )
             reset_languages(
-                include_languages=configured_languages,
+                include_languages=[
+                    language_code
+                    for language_code in configured_languages
+                    if not (preserve_master_tts and language_code == master_language)
+                ],
                 fields={
                     "tts_status": "pending",
                     "tts_audio_path": None,
