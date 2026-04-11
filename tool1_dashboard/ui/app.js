@@ -5256,6 +5256,14 @@ function renderSettings() {
     healthBadge(`ffmpeg ${state.health?.alignment?.ffmpeg ? "ready" : "missing"}`, state.health?.alignment?.ffmpeg),
     healthBadge(`MFA ${state.health?.alignment?.mfa ? "ready" : "check"}`, state.health?.alignment?.mfa ? true : "warn"),
     healthBadge(`WhisperX ${state.health?.alignment?.whisperx ? "ready" : "check"}`, state.health?.alignment?.whisperx ? true : "warn"),
+    healthBadge(
+      `faster-whisper ${state.health?.alignment?.faster_whisper ? "ready" : "check"}`,
+      state.health?.alignment?.faster_whisper ? true : "warn",
+    ),
+    healthBadge(
+      `CTranslate2 ${state.health?.alignment?.ctranslate2 ? "ready" : "check"}`,
+      state.health?.alignment?.ctranslate2 ? true : "warn",
+    ),
   ].filter(Boolean).join("");
 
   $("view").innerHTML = `

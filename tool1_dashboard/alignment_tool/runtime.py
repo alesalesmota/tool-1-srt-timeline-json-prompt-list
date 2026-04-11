@@ -221,6 +221,9 @@ def probe_health() -> dict[str, object]:
         "ffmpeg": bool(ffmpeg_path and (Path(ffmpeg_path).is_file() or ffmpeg_path == "ffmpeg")),
         "mfa": resolve_mfa_command() is not None,
         "whisperx": module_available("whisperx"),
+        "faster_whisper": module_available("faster_whisper"),
+        "ctranslate2": module_available("ctranslate2"),
+        "pyannote_audio": module_available("pyannote.audio"),
         "runtime": runtime_profile(),
     }
 

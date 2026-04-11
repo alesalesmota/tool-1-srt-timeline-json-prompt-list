@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from tool1_dashboard.alignment_tool.benchmark_segmentation import run_segmentation_benchmark
 from tool1_dashboard.alignment_tool import orchestrator
+from tool1_dashboard.alignment_tool import runtime as alignment_runtime
 from tool1_dashboard.alignment_tool.guided_chunking import (
     build_guided_chunks,
     build_script_subset,
@@ -29,6 +30,33 @@ from tool1_dashboard.translation.language_rules import build_spoken_script, comp
 
 TEST_TEMP_ROOT = Path.cwd() / "workspace" / ".tmp-test-artifacts"
 TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+class AlignmentRuntimeHealthTests(unittest.TestCase):
+
+    def test_probe_health_reports_whisperx_stack_modules(self) -> None:
+        with (
+            patch.object(alignment_runtime, "resolve_ffmpeg_path", return_value="ffmpeg"),
+            patch.object(alignment_runtime, "resolve_mfa_command", return_value="mfa"),
+            patch.object(alignment_runtime, "runtime_profile", return_value={"gpu_available": True}),
+            patch.object(alignment_runtime, "module_available") as module_available,
+        ):
+            module_availability = {
+                "whisperx": True,
+                "faster_whisper": True,
+                "ctranslate2": True,
+                "pyannote.audio": False,
+            }
+            module_available.side_effect = lambda name: module_availability.get(name, False)
+            health = alignment_runtime.probe_health()
+
+        self.assertTrue(health["ffmpeg"])
+        self.assertTrue(health["mfa"])
+        self.assertTrue(health["whisperx"])
+        self.assertTrue(health["faster_whisper"])
+        self.assertTrue(health["ctranslate2"])
+        self.assertFalse(health["pyannote_audio"])
+        self.assertEqual(health["runtime"], {"gpu_available": True})
 
 
 class AlignmentNormalizationTests(unittest.TestCase):
