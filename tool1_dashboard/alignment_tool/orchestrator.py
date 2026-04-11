@@ -318,34 +318,17 @@ def run_alignment_job(
             engine_errors.append(f"{engine_config.fallback_engine}: {detail}")
             _log(f"{engine_config.fallback_engine} failed: {detail}")
 
-    if primary_candidate is None and engine_config.primary_engine == "mfa":
-        try:
-            _progress("Running estimated chunked MFA", 70)
-            mapped_words, estimated_warnings, mapping_diagnostics, estimated_summary, chunk_count = run_estimated_chunked_mfa(
-                normalized_audio_path=normalized_audio.path,
-                script_document=script_document,
-                language_profile=language_profile,
-                temp_dir=temp_dir,
-                audio_duration_seconds=normalized_audio.duration_seconds,
-                logger=_log,
+    needs_chunked_mfa_retry = (
+        engine_config.primary_engine == "mfa"
+        and (
+            primary_candidate is None
+            or (
+                primary_candidate.engine == "mfa"
+                and _needs_guided_chunk_retry(primary_candidate, len(script_document.words))
             )
-            candidates.append(
-                _build_chunked_mfa_candidate(
-                    strategy="estimated_chunked_mfa",
-                    mapped_words=mapped_words,
-                    warnings=estimated_warnings,
-                    mapping_diagnostics=mapping_diagnostics,
-                    summary=estimated_summary,
-                    chunk_count=chunk_count,
-                    script_document=script_document,
-                    segmentation_config=segmentation_config,
-                )
-            )
-            _log(f"Estimated chunked MFA produced {chunk_count} chunks.")
-        except Exception as exc:
-            detail = str(exc).strip() or exc.__class__.__name__
-            engine_errors.append(f"estimated_chunked_mfa: {detail}")
-            _log(f"estimated_chunked_mfa failed: {detail}")
+        )
+    )
+    guided_chunked_succeeded = False
 
     if primary_candidate is not None and primary_candidate.engine == "mfa" and _needs_guided_chunk_retry(primary_candidate, len(script_document.words)):
         _log("Single-pass MFA exceeded retry thresholds. Evaluating guided chunked alignment.")
@@ -371,63 +354,65 @@ def run_alignment_job(
                 engine_errors.append(f"whisperx: {detail}")
                 _log(f"whisperx failed: {detail}")
 
-        if whisperx_candidate is not None and whisperx_candidate.raw_words:
-            try:
-                _progress("Running guided chunked MFA", 72)
-                mapped_words, guided_warnings, mapping_diagnostics, guided_summary, chunk_count = run_guided_chunked_mfa(
-                    normalized_audio_path=normalized_audio.path,
+    if needs_chunked_mfa_retry and whisperx_candidate is not None and whisperx_candidate.raw_words:
+        try:
+            _progress("Running guided chunked MFA", 72)
+            mapped_words, guided_warnings, mapping_diagnostics, guided_summary, chunk_count = run_guided_chunked_mfa(
+                normalized_audio_path=normalized_audio.path,
+                script_document=script_document,
+                language_profile=language_profile,
+                temp_dir=temp_dir,
+                audio_duration_seconds=normalized_audio.duration_seconds,
+                guidance_raw_words=whisperx_candidate.raw_words,
+                logger=_log,
+            )
+            candidates.append(
+                _build_chunked_mfa_candidate(
+                    strategy="guided_chunked_mfa",
+                    mapped_words=mapped_words,
+                    warnings=guided_warnings,
+                    mapping_diagnostics=mapping_diagnostics,
+                    summary=guided_summary,
+                    chunk_count=chunk_count,
                     script_document=script_document,
-                    language_profile=language_profile,
-                    temp_dir=temp_dir,
-                    audio_duration_seconds=normalized_audio.duration_seconds,
-                    guidance_raw_words=whisperx_candidate.raw_words,
-                    logger=_log,
+                    segmentation_config=segmentation_config,
                 )
-                candidates.append(
-                    _build_chunked_mfa_candidate(
-                        strategy="guided_chunked_mfa",
-                        mapped_words=mapped_words,
-                        warnings=guided_warnings,
-                        mapping_diagnostics=mapping_diagnostics,
-                        summary=guided_summary,
-                        chunk_count=chunk_count,
-                        script_document=script_document,
-                        segmentation_config=segmentation_config,
-                    )
-                )
-                _log(f"Guided chunked MFA produced {chunk_count} chunks.")
-            except Exception as exc:
-                detail = str(exc).strip() or exc.__class__.__name__
-                engine_errors.append(f"guided_chunked_mfa: {detail}")
-                _log(f"guided_chunked_mfa failed: {detail}")
-        else:
-            try:
-                _progress("Running estimated chunked MFA", 72)
-                mapped_words, estimated_warnings, mapping_diagnostics, estimated_summary, chunk_count = run_estimated_chunked_mfa(
-                    normalized_audio_path=normalized_audio.path,
+            )
+            guided_chunked_succeeded = True
+            _log(f"Guided chunked MFA produced {chunk_count} chunks.")
+        except Exception as exc:
+            detail = str(exc).strip() or exc.__class__.__name__
+            engine_errors.append(f"guided_chunked_mfa: {detail}")
+            _log(f"guided_chunked_mfa failed: {detail}")
+
+    if needs_chunked_mfa_retry and not guided_chunked_succeeded:
+        try:
+            _progress("Running estimated chunked MFA", 72)
+            mapped_words, estimated_warnings, mapping_diagnostics, estimated_summary, chunk_count = run_estimated_chunked_mfa(
+                normalized_audio_path=normalized_audio.path,
+                script_document=script_document,
+                language_profile=language_profile,
+                temp_dir=temp_dir,
+                audio_duration_seconds=normalized_audio.duration_seconds,
+                logger=_log,
+            )
+            candidates.append(
+                _build_chunked_mfa_candidate(
+                    strategy="estimated_chunked_mfa",
+                    mapped_words=mapped_words,
+                    warnings=estimated_warnings,
+                    mapping_diagnostics=mapping_diagnostics,
+                    summary=estimated_summary,
+                    chunk_count=chunk_count,
                     script_document=script_document,
-                    language_profile=language_profile,
-                    temp_dir=temp_dir,
-                    audio_duration_seconds=normalized_audio.duration_seconds,
-                    logger=_log,
+                    segmentation_config=segmentation_config,
                 )
-                candidates.append(
-                    _build_chunked_mfa_candidate(
-                        strategy="estimated_chunked_mfa",
-                        mapped_words=mapped_words,
-                        warnings=estimated_warnings,
-                        mapping_diagnostics=mapping_diagnostics,
-                        summary=estimated_summary,
-                        chunk_count=chunk_count,
-                        script_document=script_document,
-                        segmentation_config=segmentation_config,
-                    )
-                )
-                _log(f"Estimated chunked MFA produced {chunk_count} chunks.")
-            except Exception as exc:
-                detail = str(exc).strip() or exc.__class__.__name__
-                engine_errors.append(f"estimated_chunked_mfa: {detail}")
-                _log(f"estimated_chunked_mfa failed: {detail}")
+            )
+            _log(f"Estimated chunked MFA produced {chunk_count} chunks.")
+        except Exception as exc:
+            detail = str(exc).strip() or exc.__class__.__name__
+            engine_errors.append(f"estimated_chunked_mfa: {detail}")
+            _log(f"estimated_chunked_mfa failed: {detail}")
 
     if not candidates:
         raise RuntimeError("All alignment engines failed: " + " | ".join(engine_errors))

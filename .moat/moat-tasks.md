@@ -1,6 +1,6 @@
 # Moat Tasks
 
-**Total**: 10 | **To Do**: 0 | **Doing**: 0 | **Done**: 10
+**Total**: 11 | **To Do**: 0 | **Doing**: 0 | **Done**: 11
 
 ## Tasks
 
@@ -14,8 +14,9 @@
 8. [x] Container #episode-assembly-section – "when i scrool down here, the screen glitches a section ap..." `#episode-assembly-section`
 9. [x] Button: Bulk Upload – "the upload function is not working, for video and for images" `#episode-assembly-section > div.assembly-stats-bar:nth-child(2) > div:nth-child(2) > button:nth-of-type(1)`
 10. [x] Colored Container – "a new translation issue appeared, i believe its related t..." `div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(7)`
+11. [x] Colored Container – "so its seems we are having issues on the srt step, take a..." `div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(7)`
 
 ---
 
-_Generated: 10/04/2026, 21:24:45_
+_Generated: 11/04/2026, 14:05:43_
 _Source: moat-tasks-detail.json_

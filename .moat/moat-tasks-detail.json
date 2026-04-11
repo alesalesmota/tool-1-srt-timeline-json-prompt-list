@@ -159,5 +159,20 @@
     "screenshotPath": "./screenshots/moat-1775866370131-bsx58zj1m.png",
     "status": "done",
     "timestamp": 1775866370264
+  },
+  {
+    "id": "5ef13875-e5e8-4bf4-aa36-3d3cbe73bcad",
+    "title": "Colored Container",
+    "comment": "so its seems we are having issues on the srt step, take a deep look, this is step should happen without any erro, pls explain clearly to me what is happening and how we can fix this",
+    "selector": "div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(7)",
+    "boundingRect": {
+      "x": 395,
+      "y": 243,
+      "w": 1115,
+      "h": 456
+    },
+    "screenshotPath": "./screenshots/moat-1775924598856-wucpqi0b5.png",
+    "status": "done",
+    "timestamp": 1775924598979
   }
 ]

@@ -590,6 +590,177 @@ class AlignmentOrchestratorTests(unittest.TestCase):
         finally:
             shutil.rmtree(temp_path, ignore_errors=True)
 
+    def test_run_alignment_job_uses_guided_chunked_mfa_when_mfa_fails_and_whisperx_succeeds(self) -> None:
+        temp_path = TEST_TEMP_ROOT / f"case-{uuid.uuid4().hex}"
+        temp_path.mkdir(parents=True, exist_ok=True)
+        try:
+            audio_path = temp_path / "audio.wav"
+            script_path = temp_path / "script.txt"
+            audio_path.write_bytes(b"RIFF....WAVEfmt ")
+            script_path.write_text("Hello world.", encoding="utf-8")
+
+            fake_audio = NormalizedAudioInfo(
+                path=audio_path,
+                duration_seconds=10.0,
+                sample_rate=16000,
+                channels=1,
+            )
+            fake_words = [
+                WordTiming("Hello", 0.0, 0.4, 0, normalized="hello", text_start=0, text_end=5, render_start=0, render_end=5),
+                WordTiming("world", 0.5, 1.0, 1, normalized="world", text_start=6, text_end=11, render_start=6, render_end=12, trailing_text="."),
+            ]
+            whisperx_candidate = orchestrator._AlignmentCandidate(
+                strategy="whisperx_fallback",
+                engine="whisperx",
+                mapped_words=fake_words,
+                segments=[SubtitleSegment(1, 0.0, 1.1, "Hello world.", 1, 11, 2, 10.0)],
+                warnings=[],
+                mismatch_count=40,
+                approximate_word_count=40,
+                dropped_word_count=0,
+                mapping_diagnostics={"mismatch_blocks": 4},
+                segmentation_diagnostics=SegmentationDiagnostics(),
+                raw_words=[RawAlignedWord("hello", 0.0, 0.4), RawAlignedWord("world", 0.5, 1.0)],
+                chunk_count=1,
+            )
+            guided_segment = SubtitleSegment(1, 0.0, 1.2, "Hello world.", 1, 11, 2, 9.17)
+
+            with patch("tool1_dashboard.alignment_tool.orchestrator.ensure_mfa_language_resources"), patch(
+                "tool1_dashboard.alignment_tool.orchestrator.extract_script_text",
+                return_value="Hello world.",
+            ), patch(
+                "tool1_dashboard.alignment_tool.orchestrator.normalize_audio_file",
+                return_value=fake_audio,
+            ), patch(
+                "tool1_dashboard.alignment_tool.orchestrator._run_engine_candidate",
+                side_effect=[
+                    RuntimeError("MFA could not align this audio/script pair."),
+                    whisperx_candidate,
+                ],
+            ), patch(
+                "tool1_dashboard.alignment_tool.orchestrator.run_guided_chunked_mfa",
+                return_value=(
+                    fake_words,
+                    [],
+                    {"mismatch_blocks": 0},
+                    {"mismatch_count": 0, "approximate_word_count": 0, "dropped_word_count": 0},
+                    2,
+                ),
+            ) as guided_mock, patch(
+                "tool1_dashboard.alignment_tool.orchestrator.run_estimated_chunked_mfa"
+            ) as estimated_mock, patch(
+                "tool1_dashboard.alignment_tool.orchestrator.segment_words",
+                return_value=SimpleNamespace(
+                    segments=[guided_segment],
+                    warnings=[],
+                    diagnostics=SegmentationDiagnostics(),
+                ),
+            ):
+                result = orchestrator.run_alignment_job(
+                    audio_path=audio_path,
+                    script_path=script_path,
+                    language_code="en",
+                    output_root=temp_path / "output",
+                )
+
+            self.assertEqual(result.report.strategy, "guided_chunked_mfa")
+            self.assertEqual(result.report.chunk_count, 2)
+            guided_mock.assert_called_once()
+            estimated_mock.assert_not_called()
+        finally:
+            shutil.rmtree(temp_path, ignore_errors=True)
+
+    def test_run_alignment_job_uses_estimated_chunked_mfa_when_guided_chunked_fails(self) -> None:
+        temp_path = TEST_TEMP_ROOT / f"case-{uuid.uuid4().hex}"
+        temp_path.mkdir(parents=True, exist_ok=True)
+        try:
+            audio_path = temp_path / "audio.wav"
+            script_path = temp_path / "script.txt"
+            audio_path.write_bytes(b"RIFF....WAVEfmt ")
+            script_path.write_text("Hello world.", encoding="utf-8")
+
+            fake_audio = NormalizedAudioInfo(
+                path=audio_path,
+                duration_seconds=10.0,
+                sample_rate=16000,
+                channels=1,
+            )
+            fake_words = [
+                WordTiming("Hello", 0.0, 0.4, 0, normalized="hello", text_start=0, text_end=5, render_start=0, render_end=5),
+                WordTiming("world", 0.5, 1.0, 1, normalized="world", text_start=6, text_end=11, render_start=6, render_end=12, trailing_text="."),
+            ]
+            primary_candidate = orchestrator._AlignmentCandidate(
+                strategy="single_pass_mfa",
+                engine="mfa",
+                mapped_words=fake_words,
+                segments=[SubtitleSegment(1, 0.0, 1.0, "Hello world.", 1, 11, 2, 22.0)],
+                warnings=["mfa mismatch near script words 1-2; timings were approximated."],
+                mismatch_count=40,
+                approximate_word_count=40,
+                dropped_word_count=0,
+                mapping_diagnostics={"mismatch_blocks": 4},
+                segmentation_diagnostics=SegmentationDiagnostics(),
+                raw_words=None,
+                chunk_count=1,
+            )
+            whisperx_candidate = orchestrator._AlignmentCandidate(
+                strategy="whisperx_fallback",
+                engine="whisperx",
+                mapped_words=fake_words,
+                segments=[SubtitleSegment(1, 0.0, 1.1, "Hello world.", 1, 11, 2, 10.0)],
+                warnings=[],
+                mismatch_count=12,
+                approximate_word_count=12,
+                dropped_word_count=0,
+                mapping_diagnostics={"mismatch_blocks": 2},
+                segmentation_diagnostics=SegmentationDiagnostics(),
+                raw_words=[RawAlignedWord("hello", 0.0, 0.4), RawAlignedWord("world", 0.5, 1.0)],
+                chunk_count=1,
+            )
+            estimated_segment = SubtitleSegment(1, 0.0, 1.2, "Hello world.", 1, 11, 2, 10.0)
+
+            with patch("tool1_dashboard.alignment_tool.orchestrator.ensure_mfa_language_resources"), patch(
+                "tool1_dashboard.alignment_tool.orchestrator.extract_script_text",
+                return_value="Hello world.",
+            ), patch(
+                "tool1_dashboard.alignment_tool.orchestrator.normalize_audio_file",
+                return_value=fake_audio,
+            ), patch(
+                "tool1_dashboard.alignment_tool.orchestrator._run_engine_candidate",
+                side_effect=[primary_candidate, whisperx_candidate],
+            ), patch(
+                "tool1_dashboard.alignment_tool.orchestrator.run_guided_chunked_mfa",
+                side_effect=RuntimeError("Guided chunking could not derive coarse timings for the full script."),
+            ) as guided_mock, patch(
+                "tool1_dashboard.alignment_tool.orchestrator.run_estimated_chunked_mfa",
+                return_value=(
+                    fake_words,
+                    ["Estimated chunked MFA used proportional audio windows because WhisperX guidance was unavailable."],
+                    {"mismatch_blocks": 1},
+                    {"mismatch_count": 0, "approximate_word_count": 0, "dropped_word_count": 0},
+                    2,
+                ),
+            ) as estimated_mock, patch(
+                "tool1_dashboard.alignment_tool.orchestrator.segment_words",
+                return_value=SimpleNamespace(
+                    segments=[estimated_segment],
+                    warnings=[],
+                    diagnostics=SegmentationDiagnostics(),
+                ),
+            ):
+                result = orchestrator.run_alignment_job(
+                    audio_path=audio_path,
+                    script_path=script_path,
+                    language_code="en",
+                    output_root=temp_path / "output",
+                )
+
+            self.assertEqual(result.report.strategy, "estimated_chunked_mfa")
+            guided_mock.assert_called_once()
+            estimated_mock.assert_called_once()
+        finally:
+            shutil.rmtree(temp_path, ignore_errors=True)
+
 
 class SegmentationBenchmarkTests(unittest.TestCase):
 
