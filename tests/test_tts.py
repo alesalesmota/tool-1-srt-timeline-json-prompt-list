@@ -1200,6 +1200,8 @@ class EpisodeTtsQueueStatusTests(unittest.TestCase):
         progress: str,
         filename: str | None = None,
         worker_id: str | None = None,
+        result_path: str | None = None,
+        finished_at: float | None = None,
         created_at: float | None = None,
         updated_at: float | None = None,
     ) -> None:
@@ -1221,6 +1223,8 @@ class EpisodeTtsQueueStatusTests(unittest.TestCase):
             "queue_priority": 10,
             "filename": filename,
             "worker_id": worker_id,
+            "result_path": result_path,
+            "finished_at": finished_at,
             "created_at": created,
             "updated_at": updated,
         })
@@ -1425,6 +1429,115 @@ class EpisodeTtsQueueStatusTests(unittest.TestCase):
         self.assertEqual(es_status["tts_status"], "running")
         self.assertEqual(es_status["tts_job_status"], "processing")
         self.assertEqual(es_status["tts_job_progress"], "Generating chunk 3/8...")
+
+    def test_get_episode_detail_prefers_newer_completed_job_over_stale_queued_duplicate(self):
+        completed_path = self.workspace / "tts" / "output" / "job-es-completed.wav"
+        completed_path.parent.mkdir(parents=True, exist_ok=True)
+        completed_path.write_bytes(b"RIFF....WAVEfmt ")
+        self.service.db.update_episode_language_status(
+            "ep-1",
+            "en",
+            tts_status="done",
+        )
+        self._create_generate_job(
+            job_id="job-es-queued",
+            profile_id="voice-es",
+            status="queued",
+            progress="Queued...",
+            filename="narration_es.wav",
+            created_at=10.0,
+            updated_at=10.0,
+        )
+        self._create_generate_job(
+            job_id="job-es-completed",
+            profile_id="voice-es",
+            status="completed",
+            progress="Completed",
+            filename="narration_es_narration.wav",
+            result_path=str(completed_path),
+            finished_at=20.0,
+            created_at=5.0,
+            updated_at=20.0,
+        )
+        self.service.db.update_episode_language_status(
+            "ep-1",
+            "es",
+            tts_status="queued",
+            tts_job_id="job-es-queued",
+        )
+
+        with patch.object(
+            self.service,
+            "get_worker_health",
+            return_value={
+                "status": "idle",
+                "current_job_id": None,
+            },
+        ):
+            detail = self.service.get_episode_detail("ep-1")
+
+        es_status = next(status for status in detail["language_statuses"] if status["language_code"] == "es")
+        self.assertEqual(es_status["tts_job_id"], "job-es-completed")
+        self.assertEqual(es_status["tts_status"], "done")
+        self.assertEqual(es_status["tts_job_status"], "completed")
+        self.assertEqual(es_status["tts_audio_path"], str(completed_path))
+
+    def test_queue_episode_tts_jobs_restores_newer_completed_job_and_cancels_stale_queue(self):
+        completed_path = self.workspace / "tts" / "output" / "job-es-completed.wav"
+        completed_path.parent.mkdir(parents=True, exist_ok=True)
+        completed_path.write_bytes(b"RIFF....WAVEfmt ")
+        self.service.db.update_episode_language_status(
+            "ep-1",
+            "en",
+            tts_status="done",
+        )
+        self._create_generate_job(
+            job_id="job-es-queued",
+            profile_id="voice-es",
+            status="queued",
+            progress="Queued...",
+            filename="narration_es.wav",
+            created_at=10.0,
+            updated_at=10.0,
+        )
+        self._create_generate_job(
+            job_id="job-es-completed",
+            profile_id="voice-es",
+            status="completed",
+            progress="Completed",
+            filename="narration_es_narration.wav",
+            result_path=str(completed_path),
+            finished_at=20.0,
+            created_at=5.0,
+            updated_at=20.0,
+        )
+        self.service.db.update_episode_language_status(
+            "ep-1",
+            "es",
+            tts_status="queued",
+            tts_job_id="job-es-queued",
+        )
+
+        with patch.object(
+            self.service,
+            "get_worker_health",
+            return_value={
+                "status": "idle",
+                "current_job_id": None,
+            },
+        ), patch.object(self.service.tts_manager, "submit_tts_job") as submit_mock:
+            result = self.service._queue_episode_tts_jobs("ep-1", allow_resubmit_failed=False)
+
+        submit_mock.assert_not_called()
+        self.assertEqual(result["submitted_jobs"], 0)
+        self.assertEqual(result["active_jobs"], 0)
+        es_status = self.service.db.get_episode_language_status("ep-1", "es")
+        self.assertEqual(es_status["tts_job_id"], "job-es-completed")
+        self.assertEqual(es_status["tts_status"], "done")
+        self.assertEqual(es_status["tts_audio_path"], str(completed_path))
+        stale_job = self.service.db.get_tts_job("job-es-queued")
+        self.assertEqual(stale_job["status"], "canceled")
+        self.assertIn("Superseded by completed job job-es-completed.", stale_job["progress"])
 
     def test_retry_single_tts_marks_job_as_queued(self):
         with patch.object(self.service.tts_manager, "ensure_worker_ready") as ensure_mock, patch.object(
