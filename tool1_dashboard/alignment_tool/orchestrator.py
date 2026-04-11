@@ -11,7 +11,7 @@ from .config import OUTPUT_ROOT, TEMP_ROOT, resolve_language_profile
 from .export_json import write_json
 from .export_srt import write_srt
 from .extract_script import extract_script_text
-from .guided_chunking import run_guided_chunked_mfa
+from .guided_chunking import run_estimated_chunked_mfa, run_guided_chunked_mfa
 from .load_inputs import validate_audio_file, validate_script_file
 from .mfa_resources import ensure_mfa_language_resources
 from .models import (
@@ -180,6 +180,34 @@ def _run_engine_candidate(
     )
 
 
+def _build_chunked_mfa_candidate(
+    *,
+    strategy: str,
+    mapped_words: list[WordTiming],
+    warnings: list[str],
+    mapping_diagnostics: dict[str, int],
+    summary: dict[str, int],
+    chunk_count: int,
+    script_document,
+    segmentation_config: SegmentationConfig,
+) -> _AlignmentCandidate:
+    segmentation_result = segment_words(script_document, mapped_words, segmentation_config)
+    return _AlignmentCandidate(
+        strategy=strategy,
+        engine="mfa",
+        mapped_words=mapped_words,
+        segments=segmentation_result.segments,
+        warnings=[*warnings, *segmentation_result.warnings],
+        mismatch_count=int(summary["mismatch_count"]),
+        approximate_word_count=int(summary["approximate_word_count"]),
+        dropped_word_count=int(summary["dropped_word_count"]),
+        mapping_diagnostics=mapping_diagnostics,
+        segmentation_diagnostics=segmentation_result.diagnostics,
+        raw_words=None,
+        chunk_count=chunk_count,
+    )
+
+
 def run_alignment_job(
     audio_path: Path,
     script_path: Path,
@@ -290,6 +318,35 @@ def run_alignment_job(
             engine_errors.append(f"{engine_config.fallback_engine}: {detail}")
             _log(f"{engine_config.fallback_engine} failed: {detail}")
 
+    if primary_candidate is None and engine_config.primary_engine == "mfa":
+        try:
+            _progress("Running estimated chunked MFA", 70)
+            mapped_words, estimated_warnings, mapping_diagnostics, estimated_summary, chunk_count = run_estimated_chunked_mfa(
+                normalized_audio_path=normalized_audio.path,
+                script_document=script_document,
+                language_profile=language_profile,
+                temp_dir=temp_dir,
+                audio_duration_seconds=normalized_audio.duration_seconds,
+                logger=_log,
+            )
+            candidates.append(
+                _build_chunked_mfa_candidate(
+                    strategy="estimated_chunked_mfa",
+                    mapped_words=mapped_words,
+                    warnings=estimated_warnings,
+                    mapping_diagnostics=mapping_diagnostics,
+                    summary=estimated_summary,
+                    chunk_count=chunk_count,
+                    script_document=script_document,
+                    segmentation_config=segmentation_config,
+                )
+            )
+            _log(f"Estimated chunked MFA produced {chunk_count} chunks.")
+        except Exception as exc:
+            detail = str(exc).strip() or exc.__class__.__name__
+            engine_errors.append(f"estimated_chunked_mfa: {detail}")
+            _log(f"estimated_chunked_mfa failed: {detail}")
+
     if primary_candidate is not None and primary_candidate.engine == "mfa" and _needs_guided_chunk_retry(primary_candidate, len(script_document.words)):
         _log("Single-pass MFA exceeded retry thresholds. Evaluating guided chunked alignment.")
         if whisperx_candidate is None:
@@ -326,21 +383,16 @@ def run_alignment_job(
                     guidance_raw_words=whisperx_candidate.raw_words,
                     logger=_log,
                 )
-                segmentation_result = segment_words(script_document, mapped_words, segmentation_config)
                 candidates.append(
-                    _AlignmentCandidate(
+                    _build_chunked_mfa_candidate(
                         strategy="guided_chunked_mfa",
-                        engine="mfa",
                         mapped_words=mapped_words,
-                        segments=segmentation_result.segments,
-                        warnings=[*guided_warnings, *segmentation_result.warnings],
-                        mismatch_count=int(guided_summary["mismatch_count"]),
-                        approximate_word_count=int(guided_summary["approximate_word_count"]),
-                        dropped_word_count=int(guided_summary["dropped_word_count"]),
+                        warnings=guided_warnings,
                         mapping_diagnostics=mapping_diagnostics,
-                        segmentation_diagnostics=segmentation_result.diagnostics,
-                        raw_words=None,
+                        summary=guided_summary,
                         chunk_count=chunk_count,
+                        script_document=script_document,
+                        segmentation_config=segmentation_config,
                     )
                 )
                 _log(f"Guided chunked MFA produced {chunk_count} chunks.")
@@ -348,6 +400,34 @@ def run_alignment_job(
                 detail = str(exc).strip() or exc.__class__.__name__
                 engine_errors.append(f"guided_chunked_mfa: {detail}")
                 _log(f"guided_chunked_mfa failed: {detail}")
+        else:
+            try:
+                _progress("Running estimated chunked MFA", 72)
+                mapped_words, estimated_warnings, mapping_diagnostics, estimated_summary, chunk_count = run_estimated_chunked_mfa(
+                    normalized_audio_path=normalized_audio.path,
+                    script_document=script_document,
+                    language_profile=language_profile,
+                    temp_dir=temp_dir,
+                    audio_duration_seconds=normalized_audio.duration_seconds,
+                    logger=_log,
+                )
+                candidates.append(
+                    _build_chunked_mfa_candidate(
+                        strategy="estimated_chunked_mfa",
+                        mapped_words=mapped_words,
+                        warnings=estimated_warnings,
+                        mapping_diagnostics=mapping_diagnostics,
+                        summary=estimated_summary,
+                        chunk_count=chunk_count,
+                        script_document=script_document,
+                        segmentation_config=segmentation_config,
+                    )
+                )
+                _log(f"Estimated chunked MFA produced {chunk_count} chunks.")
+            except Exception as exc:
+                detail = str(exc).strip() or exc.__class__.__name__
+                engine_errors.append(f"estimated_chunked_mfa: {detail}")
+                _log(f"estimated_chunked_mfa failed: {detail}")
 
     if not candidates:
         raise RuntimeError("All alignment engines failed: " + " | ".join(engine_errors))
@@ -361,6 +441,10 @@ def run_alignment_job(
     if fallback_used:
         if best_candidate.strategy == "guided_chunked_mfa":
             fallback_reason = "Single-pass MFA exceeded quality thresholds."
+        elif best_candidate.strategy == "estimated_chunked_mfa":
+            fallback_reason = (
+                "Single-pass MFA could not finish cleanly, so estimated chunked MFA narrowed the audio window per script block."
+            )
         elif engine_errors:
             fallback_reason = engine_errors[-1]
         else:

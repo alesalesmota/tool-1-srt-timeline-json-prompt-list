@@ -3150,6 +3150,19 @@ function reconcileEpisodeWorkflowActionStates() {
       }
       return;
     }
+    if (["queued", "running", "paused_for_tts"].includes(status)) {
+      const liveMessage = queueActionStatusTooltip(episode);
+      const liveTone = status === "running" ? "active" : "warn";
+      if (actionState.pending || actionState.tone !== liveTone || actionState.message !== liveMessage) {
+        setEpisodeWorkflowActionState(episode.id, {
+          ...actionState,
+          pending: false,
+          tone: liveTone,
+          message: liveMessage,
+        });
+      }
+      return;
+    }
     if (actionState.pending && !["queued", "running", "paused_for_tts"].includes(status)) {
       setEpisodeWorkflowActionState(episode.id, {
         ...actionState,
@@ -4497,12 +4510,10 @@ function renderEpisodeDetail() {
     const hasTranslation = ls.translation_status === "done" && ls.language_code !== (episode.master_language || "en");
     const ttsProgressLabel = languageTtsJobCopy(ls);
     const ttsProgress = ttsProgressLabel ? ' <span class="helper" style="font-size:0.7rem;">(' + esc(ttsProgressLabel) + ')</span>' : '';
-    const translationIssueBadge = ls.translation_issue_category ? renderTranslationIssueBadge({ category: ls.translation_issue_category }) : '';
-    const translationErrorCopy = [
-      ls.translation_issue_message ? '<div class="helper">' + esc(ls.translation_issue_message) + '</div>' : '',
-      ls.translation_issue_next_action ? '<div class="helper">Next: ' + esc(ls.translation_issue_next_action) + '</div>' : '',
-      !ls.translation_issue_message && ls.error_message ? '<div class="helper">' + esc(ls.error_message || "") + '</div>' : '',
-    ].filter(Boolean).join("");
+    const translationIssueBadge = ["failed", "skipped"].includes(String(ls.translation_status || "").trim().toLowerCase()) && ls.translation_issue_category
+      ? renderTranslationIssueBadge({ category: ls.translation_issue_category })
+      : '';
+    const languageErrorCopy = languageStatusErrorHtml(ls);
 
     return '<tr>' +
       '<td><strong>' + esc(ls.language_code) + '</strong></td>' +
@@ -4521,7 +4532,7 @@ function renderEpisodeDetail() {
         (canRetryTimeline ? ' <button type="button" class="button button-ghost button-small" style="font-size:0.7rem;padding:2px 6px;" data-retry-language="' + esc(episode.id) + '" data-retry-lang="' + esc(ls.language_code) + '" data-retry-stage="timeline_mapping">Retry</button>' : '') +
       '</td>' +
       '<td>' + renderBadgeHtml + renderActionHtml + '</td>' +
-      '<td class="helper translation-error-cell" style="font-size:0.75rem;">' + translationErrorCopy + '</td>' +
+      '<td class="helper translation-error-cell" style="font-size:0.75rem;">' + languageErrorCopy + '</td>' +
     '</tr>';
   }).join("");
 
@@ -5083,6 +5094,32 @@ function renderTranslationIssueBadge(issue) {
   const category = String(issue?.category || "").trim();
   if (!category) return "";
   return '<span class="badge badge-' + translationIssueTone(category) + ' translation-issue-badge">' + esc(translationIssueLabel(category)) + '</span>';
+}
+
+function languageStatusErrorHtml(ls) {
+  const translationFailed = ["failed", "skipped"].includes(String(ls.translation_status || "").trim().toLowerCase());
+  const lines = [];
+
+  if (translationFailed) {
+    if (ls.translation_issue_category) {
+      lines.push('<div>' + renderTranslationIssueBadge({ category: ls.translation_issue_category }) + '</div>');
+    }
+    if (ls.translation_issue_message) {
+      lines.push('<div class="helper">' + esc(ls.translation_issue_message) + '</div>');
+    } else if (ls.error_summary) {
+      lines.push('<div class="helper">' + esc(ls.error_summary) + '</div>');
+    } else if (ls.error_message) {
+      lines.push('<div class="helper">' + esc(ls.error_message) + '</div>');
+    }
+    if (ls.translation_issue_next_action) {
+      lines.push('<div class="helper">Next: ' + esc(ls.translation_issue_next_action) + '</div>');
+    }
+    return lines.join("");
+  }
+
+  const genericError = String(ls.error_message || ls.error_summary || "").trim();
+  if (!genericError) return "";
+  return '<div class="helper">' + esc(genericError) + '</div>';
 }
 
 function renderTranslationDiagnosticsSection(blockers, warnings, fallbackMessage) {

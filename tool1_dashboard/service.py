@@ -2456,6 +2456,13 @@ class Tool1Service:
             payload.setdefault("review_scores", {})
             payload.setdefault("review_passed", None)
             return payload
+        translation_status = str(payload.get("translation_status") or "").strip().lower()
+        if translation_status not in {"failed", "skipped"}:
+            payload["error_summary"] = ""
+            payload["error_categories"] = []
+            payload["review_scores"] = {}
+            payload["review_passed"] = None
+            return payload
         report = cls._read_translation_report_payload(workspace=workspace, language_code=language_code)
         feedback = cls._translation_feedback_payload(
             error_message=str(payload.get("error_message") or report.get("error_message") or "").strip(),

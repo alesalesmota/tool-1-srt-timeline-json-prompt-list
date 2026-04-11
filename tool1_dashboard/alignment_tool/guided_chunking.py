@@ -197,30 +197,17 @@ def _extract_audio_window(
         raise RuntimeError(f"Chunk audio extraction failed: {detail}")
 
 
-def run_guided_chunked_mfa(
+def _run_chunked_mfa_with_windows(
     *,
     normalized_audio_path: Path,
     script_document: ScriptDocument,
     language_profile,
     temp_dir: Path,
-    audio_duration_seconds: float,
-    guidance_raw_words: list[RawAlignedWord],
+    plans: list[GuidedChunkPlan],
+    window_builder: Callable[[GuidedChunkPlan], tuple[float, float]],
     logger: Callable[[str], None] | None = None,
+    warning_message: str | None = None,
 ) -> tuple[list[WordTiming], list[str], dict[str, int], dict[str, int], int]:
-    guidance_mapped, _, _, guidance_dropped, guidance_warnings, _ = map_raw_words_to_script(
-        guidance_raw_words,
-        script_document,
-        source="whisperx_guidance",
-        audio_duration=audio_duration_seconds,
-        language_code=script_document.language_code,
-    )
-    if guidance_dropped > 0:
-        raise RuntimeError("Guided chunking could not derive coarse timings for the full script.")
-
-    plans = build_guided_chunks(script_document)
-    if not plans:
-        raise RuntimeError("Guided chunking could not build any script chunks.")
-
     chunk_root = ensure_dir(temp_dir / "guided_chunks")
     stitched: dict[int, WordTiming] = {}
     warnings: list[str] = []
@@ -240,10 +227,9 @@ def run_guided_chunked_mfa(
     }
 
     for plan in plans:
-        window_start = max(0.0, guidance_mapped[plan.align_start].start - 1.0)
-        window_end = min(audio_duration_seconds, guidance_mapped[plan.align_end - 1].end + 1.0)
+        window_start, window_end = window_builder(plan)
         if window_end <= window_start:
-            window_end = min(audio_duration_seconds, window_start + 0.5)
+            window_end = window_start + 0.5
         chunk_audio = chunk_root / f"chunk_{plan.index:03d}.wav"
         _extract_audio_window(normalized_audio_path, chunk_audio, window_start, window_end)
         chunk_document = build_script_subset(script_document, plan.align_start, plan.align_end)
@@ -272,9 +258,96 @@ def run_guided_chunked_mfa(
 
     if len(stitched) != len(script_document.words):
         missing = len(script_document.words) - len(stitched)
-        raise RuntimeError(f"Guided chunking left {missing} script words without timings.")
+        raise RuntimeError(f"Chunked MFA left {missing} script words without timings.")
 
-    if guidance_warnings:
-        warnings.append("Guided chunking used a whole-audio WhisperX pass to derive chunk windows.")
+    if warning_message:
+        warnings.append(warning_message)
     ordered = [stitched[index] for index in range(len(script_document.words))]
     return ordered, warnings, diagnostics, summary, len(plans)
+
+
+def run_guided_chunked_mfa(
+    *,
+    normalized_audio_path: Path,
+    script_document: ScriptDocument,
+    language_profile,
+    temp_dir: Path,
+    audio_duration_seconds: float,
+    guidance_raw_words: list[RawAlignedWord],
+    logger: Callable[[str], None] | None = None,
+) -> tuple[list[WordTiming], list[str], dict[str, int], dict[str, int], int]:
+    guidance_mapped, _, _, guidance_dropped, guidance_warnings, _ = map_raw_words_to_script(
+        guidance_raw_words,
+        script_document,
+        source="whisperx_guidance",
+        audio_duration=audio_duration_seconds,
+        language_code=script_document.language_code,
+    )
+    if guidance_dropped > 0:
+        raise RuntimeError("Guided chunking could not derive coarse timings for the full script.")
+
+    plans = build_guided_chunks(script_document)
+    if not plans:
+        raise RuntimeError("Guided chunking could not build any script chunks.")
+
+    def window_builder(plan: GuidedChunkPlan) -> tuple[float, float]:
+        window_start = max(0.0, guidance_mapped[plan.align_start].start - 1.0)
+        window_end = min(audio_duration_seconds, guidance_mapped[plan.align_end - 1].end + 1.0)
+        if window_end <= window_start:
+            window_end = min(audio_duration_seconds, window_start + 0.5)
+        return window_start, window_end
+
+    return _run_chunked_mfa_with_windows(
+        normalized_audio_path=normalized_audio_path,
+        script_document=script_document,
+        language_profile=language_profile,
+        temp_dir=temp_dir,
+        plans=plans,
+        window_builder=window_builder,
+        logger=logger,
+        warning_message=(
+            "Guided chunking used a whole-audio WhisperX pass to derive chunk windows."
+            if guidance_warnings
+            else None
+        ),
+    )
+
+
+def run_estimated_chunked_mfa(
+    *,
+    normalized_audio_path: Path,
+    script_document: ScriptDocument,
+    language_profile,
+    temp_dir: Path,
+    audio_duration_seconds: float,
+    logger: Callable[[str], None] | None = None,
+) -> tuple[list[WordTiming], list[str], dict[str, int], dict[str, int], int]:
+    if not script_document.words:
+        raise RuntimeError("Estimated chunked MFA needs at least one script word.")
+
+    plans = build_guided_chunks(script_document)
+    if not plans:
+        raise RuntimeError("Estimated chunked MFA could not build any script chunks.")
+
+    total_words = len(script_document.words)
+
+    def window_builder(plan: GuidedChunkPlan) -> tuple[float, float]:
+        estimated_start = audio_duration_seconds * (plan.align_start / total_words)
+        estimated_end = audio_duration_seconds * (plan.align_end / total_words)
+        estimated_span = max(1.0, estimated_end - estimated_start)
+        padding = max(8.0, estimated_span * 0.25)
+        return (
+            max(0.0, estimated_start - padding),
+            min(audio_duration_seconds, estimated_end + padding),
+        )
+
+    return _run_chunked_mfa_with_windows(
+        normalized_audio_path=normalized_audio_path,
+        script_document=script_document,
+        language_profile=language_profile,
+        temp_dir=temp_dir,
+        plans=plans,
+        window_builder=window_builder,
+        logger=logger,
+        warning_message="Estimated chunked MFA used proportional audio windows because WhisperX guidance was unavailable.",
+    )

@@ -1482,6 +1482,32 @@ class EpisodeTtsQueueStatusTests(unittest.TestCase):
         self.assertEqual(es_status["tts_job_status"], "completed")
         self.assertEqual(es_status["tts_audio_path"], str(completed_path))
 
+    def test_get_episode_detail_does_not_relabel_alignment_failure_as_translation_issue(self):
+        self.service.db.update_episode_language_status(
+            "ep-1",
+            "es",
+            srt_status="failed",
+            error_message="All alignment engines failed: mfa: MFA could not align this audio/script pair. | whisperx: WhisperX is not installed in this environment.",
+        )
+
+        with patch.object(
+            self.service,
+            "get_worker_health",
+            return_value={
+                "status": "idle",
+                "current_job_id": None,
+            },
+        ):
+            detail = self.service.get_episode_detail("ep-1")
+
+        es_status = next(status for status in detail["language_statuses"] if status["language_code"] == "es")
+        self.assertEqual(es_status["translation_status"], "done")
+        self.assertEqual(es_status["srt_status"], "failed")
+        self.assertIsNone(es_status["translation_issue_category"])
+        self.assertIsNone(es_status["translation_issue_message"])
+        self.assertEqual(es_status["error_summary"], "")
+        self.assertIn("All alignment engines failed", es_status["error_message"])
+
     def test_queue_episode_tts_jobs_restores_newer_completed_job_and_cancels_stale_queue(self):
         completed_path = self.workspace / "tts" / "output" / "job-es-completed.wav"
         completed_path.parent.mkdir(parents=True, exist_ok=True)
