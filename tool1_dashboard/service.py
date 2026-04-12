@@ -86,6 +86,7 @@ from .translation_profiles import (
 )
 from .video_assembly.asset_resolver import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, _extract_number
 from .video_assembly.dashboard_observer import DashboardRenderObserver
+from .video_assembly.exceptions import RenderCancelledError
 from .video_assembly.ffmpeg_utils import ffprobe_json
 from .video_assembly.pipeline import RenderPipeline
 from .tts.constants import STALE_PROCESSING_SECONDS
@@ -99,11 +100,11 @@ from .tts.voice_config import (
 )
 from .validators import (
     apply_default_asset_types,
+    build_scenes_from_cue_breaks,
     image_prompt_output_schema,
     merge_scene_chunks,
     normalize_and_validate_timeline,
     normalize_prompt_payloads,
-    normalize_scene_payload,
     normalize_visual_bible,
     scene_output_schema,
     validate_prompt_payloads,
@@ -124,6 +125,19 @@ _EXPLICIT_SCENE_NUMBER_UPLOAD_RE = re.compile(
     r"(?:^|[^a-z0-9])(?:scene|asset|prompt)[_\s-]*\d+|^\d+",
     re.IGNORECASE,
 )
+_BULK_UPLOAD_MATCH_MODE_SCENE_NUMBER = "scene_number"
+_BULK_UPLOAD_MATCH_MODE_TYPE_SEQUENCE = "type_sequence"
+_RENDER_TERMINAL_STATES = {"completed", "failed", "cancelled"}
+_RENDER_ACTIVE_STATES = {
+    "queued",
+    "preparing",
+    "validating",
+    "probing",
+    "rendering",
+    "concatenating",
+    "muxing",
+    "subtitling",
+}
 
 QUEUE_PROVIDER_TARGETS = (
     ("consistency_guide", "Consistency Guide", "visual_bible_provider", "visual_bible_model"),
@@ -192,6 +206,13 @@ class EpisodeStageBlockedError(RuntimeError):
         super().__init__(message)
 
 
+class StructuredStageTimeoutError(RuntimeError):
+    def __init__(self, message: str, *, stdout_path: str | None = None, stderr_path: str | None = None) -> None:
+        super().__init__(message)
+        self.stdout_path = stdout_path
+        self.stderr_path = stderr_path
+
+
 class Tool1Service:
     def __init__(self, db: Tool1Database | None = None, cli_runner: CliRunner | None = None) -> None:
         self.db = db or Tool1Database()
@@ -204,6 +225,9 @@ class Tool1Service:
         self._idle_wait_seconds = IDLE_WAIT_MIN_SECONDS
         self._provider_stage_stale_seconds = float(
             os.environ.get("TOOL1_PROVIDER_STAGE_STALE_SECONDS", "900")
+        )
+        self._provider_stage_hard_timeout_grace_seconds = float(
+            os.environ.get("TOOL1_PROVIDER_EXEC_HARD_TIMEOUT_GRACE_SECONDS", "15")
         )
         self.db.initialize()
         self.templates.ensure_defaults()
@@ -271,6 +295,60 @@ class Tool1Service:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return max(0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds())
 
+    @staticmethod
+    def _timeout_seconds_text(value: float) -> str:
+        rounded = round(float(value), 2)
+        if float(rounded).is_integer():
+            return str(int(rounded))
+        return f"{rounded:.2f}".rstrip("0").rstrip(".")
+
+    @staticmethod
+    def _provider_execution_label(provider: str) -> str:
+        normalized = str(provider or "").strip().lower()
+        if normalized in {"openai", "codex"}:
+            return "OpenAI API request"
+        if normalized == "claude":
+            return "Claude process"
+        return "provider execution"
+
+    @staticmethod
+    def _provider_transport_metadata(provider: str) -> dict[str, Any]:
+        normalized = str(provider or "").strip().lower()
+        if normalized in {"openai", "codex"}:
+            return {
+                "transport": "https",
+                "endpoint": "https://api.openai.com/v1/responses",
+            }
+        if normalized == "claude":
+            return {
+                "transport": "process",
+                "command": "claude",
+            }
+        return {"transport": "unknown"}
+
+    def _structured_stage_request_timeout_seconds(self) -> float:
+        raw = getattr(self.cli_runner, "_structured_timeout_seconds", 600.0)
+        try:
+            timeout_seconds = float(raw or 600.0)
+        except (TypeError, ValueError):
+            timeout_seconds = 600.0
+        return max(0.01, timeout_seconds)
+
+    def _structured_stage_hard_timeout_seconds(self) -> float:
+        return max(
+            0.01,
+            self._structured_stage_request_timeout_seconds()
+            + self._provider_stage_hard_timeout_grace_seconds,
+        )
+
+    def _structured_stage_timeout_message(self, provider: str, timeout_seconds: float) -> str:
+        seconds_text = self._timeout_seconds_text(timeout_seconds)
+        execution_label = self._provider_execution_label(provider)
+        return (
+            f"{execution_label} exceeded hard timeout after {seconds_text} seconds. "
+            "The worker stopped waiting to avoid a stuck pipeline."
+        )
+
     def _check_stale_provider_stage_runs(self) -> None:
         """Fail stale provider-driven stage runs so the workflow can be retried."""
         for run in self.db.list_running_stage_runs():
@@ -284,9 +362,10 @@ class Tool1Service:
                 continue
             timeout_seconds = int(self._provider_stage_stale_seconds)
             stage_label = stage.replace("_", " ").title()
+            execution_label = self._provider_execution_label(str(run.get("provider") or ""))
             error_message = (
                 f"{stage_label} timed out after {timeout_seconds} seconds. "
-                "The provider CLI did not finish, so the workflow was marked failed."
+                f"The {execution_label} did not finish, so the workflow was marked failed."
             )
             self.db.finish_stage_run(
                 int(run["id"]),
@@ -626,22 +705,66 @@ class Tool1Service:
             artifact_dir=artifact_dir,
         )
         run_structured = self.cli_runner.run_structured
-        try:
-            parameter_names = tuple(inspect.signature(run_structured).parameters)
-        except (TypeError, ValueError):
-            parameter_names = ("args",)
-        if parameter_names == ("args",):
-            return run_structured(args)
-        return run_structured(
-            provider=args.provider,
-            model=args.model,
-            api_key=args.api_key,
-            system_prompt=args.system_prompt,
-            user_prompt=args.user_prompt,
-            schema=args.schema,
-            workdir=args.workdir,
-            artifact_dir=args.artifact_dir,
+
+        def _invoke_runner() -> dict[str, Any]:
+            try:
+                parameter_names = tuple(inspect.signature(run_structured).parameters)
+            except (TypeError, ValueError):
+                parameter_names = ("args",)
+            if parameter_names == ("args",):
+                return run_structured(args)
+            return run_structured(
+                provider=args.provider,
+                model=args.model,
+                api_key=args.api_key,
+                system_prompt=args.system_prompt,
+                user_prompt=args.user_prompt,
+                schema=args.schema,
+                workdir=args.workdir,
+                artifact_dir=args.artifact_dir,
+            )
+
+        timeout_seconds = self._structured_stage_hard_timeout_seconds()
+        result_box: dict[str, Any] = {}
+        error_box: dict[str, BaseException] = {}
+        completed = threading.Event()
+
+        def _run_in_thread() -> None:
+            try:
+                result_box["result"] = _invoke_runner()
+            except BaseException as exc:  # pragma: no cover - container only
+                error_box["error"] = exc
+            finally:
+                completed.set()
+
+        runner_thread = threading.Thread(
+            target=_run_in_thread,
+            name=f"tool1-structured-{provider}",
+            daemon=True,
         )
+        runner_thread.start()
+        if not completed.wait(timeout=timeout_seconds):
+            ensure_dir(args.artifact_dir)
+            stdout_path = args.artifact_dir / "stdout.txt"
+            stderr_path = args.artifact_dir / "hard-timeout-stderr.txt"
+            if not stdout_path.exists():
+                write_text(stdout_path, "")
+            message = self._structured_stage_timeout_message(provider, timeout_seconds)
+            write_text(stderr_path, message)
+            raise StructuredStageTimeoutError(
+                message,
+                stdout_path=str(stdout_path),
+                stderr_path=str(stderr_path),
+            )
+        if "error" in error_box:
+            raise error_box["error"]
+        return result_box["result"]
+
+    @staticmethod
+    def _exception_stream_paths(exc: Exception) -> tuple[str | None, str | None]:
+        if isinstance(exc, StructuredStageTimeoutError):
+            return exc.stdout_path, exc.stderr_path
+        return None, None
 
     def _next_runnable_stage(self, stage: str) -> str | None:
         if stage not in EPISODE_RUNNABLE_STAGES:
@@ -1711,12 +1834,20 @@ class Tool1Service:
         model: str,
         schema: dict[str, Any],
     ) -> int:
+        artifact_dir = ensure_dir(artifact_dir)
+        stdout_path = artifact_dir / "stdout.txt"
+        stderr_path = artifact_dir / "stderr.txt"
+        write_text(stdout_path, "")
+        write_text(stderr_path, "")
         command_payload = {
             "provider": provider,
             "model": model,
             "stage": stage,
             "schema_keys": sorted((schema or {}).get("properties", {}).keys()),
             "artifact_dir": str(artifact_dir),
+            "request_timeout_seconds": self._structured_stage_request_timeout_seconds(),
+            "hard_timeout_seconds": self._structured_stage_hard_timeout_seconds(),
+            **self._provider_transport_metadata(provider),
         }
         return self.db.start_stage_run(
             episode_id=episode_id,
@@ -1725,8 +1856,8 @@ class Tool1Service:
             template_hash=template_hash,
             workdir=str(workdir),
             command_payload=command_payload,
-            stdout_path=None,
-            stderr_path=None,
+            stdout_path=str(stdout_path),
+            stderr_path=str(stderr_path),
         )
 
     @staticmethod
@@ -3663,6 +3794,13 @@ class Tool1Service:
             return _TYPE_SCOPED_VIDEO_UPLOAD_RE.match(stem) is not None
         return False
 
+    @staticmethod
+    def _normalize_bulk_upload_match_mode(match_mode: str | None) -> str:
+        normalized = str(match_mode or "").strip().lower()
+        if normalized == _BULK_UPLOAD_MATCH_MODE_TYPE_SEQUENCE:
+            return _BULK_UPLOAD_MATCH_MODE_TYPE_SEQUENCE
+        return _BULK_UPLOAD_MATCH_MODE_SCENE_NUMBER
+
     def _prepare_assembly_project(self, episode_id: str, language_code: str) -> Path:
         episode = self.db.get_episode(episode_id)
         if episode is None:
@@ -3758,23 +3896,35 @@ class Tool1Service:
         episode = self.db.get_episode(episode_id)
         if episode is None:
             raise FileNotFoundError("Episode not found.")
+        self._assert_no_active_render_jobs(
+            episode_id,
+            action="change scene assets",
+        )
         asset = self._store_scene_asset(
             episode=episode,
             scene_id=scene_id,
             source_file=source_file,
             original_filename=original_filename,
         )
+        self._invalidate_render_outputs_for_asset_change(episode_id)
         return {"asset": self._scene_asset_response(asset)}
 
     def bulk_upload_scene_assets(
         self,
         episode_id: str,
         uploads: list[tuple[str, BinaryIO]],
+        *,
+        match_mode: str | None = None,
     ) -> dict[str, Any]:
         episode, scenes = self._load_master_timeline_scenes(episode_id)
+        self._assert_no_active_render_jobs(
+            episode_id,
+            action="change scene assets",
+        )
         scene_lookup = self._scene_number_lookup(scenes)
         scene_type_lookup = self._scene_asset_type_lookup(scenes)
         type_sequence_lookup = self._scene_type_sequence_lookup(scenes)
+        normalized_match_mode = self._normalize_bulk_upload_match_mode(match_mode)
         matched: list[dict[str, Any]] = []
         unmatched: list[str] = []
         claimed_scenes: set[str] = set()
@@ -3791,7 +3941,10 @@ class Tool1Service:
                 unmatched.append(file_label)
                 continue
             scene_candidates: list[str] = []
-            if self._bulk_upload_uses_type_sequence(file_label, upload_asset_type):
+            if (
+                normalized_match_mode == _BULK_UPLOAD_MATCH_MODE_TYPE_SEQUENCE
+                and self._bulk_upload_uses_type_sequence(file_label, upload_asset_type)
+            ):
                 scoped_scene_id = type_sequence_lookup.get(upload_asset_type, {}).get(number)
                 if scoped_scene_id:
                     scene_candidates.append(scoped_scene_id)
@@ -3818,16 +3971,23 @@ class Tool1Service:
             matched.append({"scene_id": scene_id, "filename": file_label})
             claimed_scenes.add(scene_id)
 
+        if matched:
+            self._invalidate_render_outputs_for_asset_change(episode_id)
         return {
             "matched": matched,
             "unmatched": unmatched,
             "total_uploaded": len(matched),
+            "match_mode": normalized_match_mode,
         }
 
     def delete_scene_asset(self, episode_id: str, scene_id: str) -> dict[str, Any]:
         episode = self.db.get_episode(episode_id)
         if episode is None:
             raise FileNotFoundError("Episode not found.")
+        self._assert_no_active_render_jobs(
+            episode_id,
+            action="change scene assets",
+        )
         asset = self.db.get_scene_asset(episode_id, scene_id)
         if asset is None:
             raise FileNotFoundError("Scene asset not found.")
@@ -3838,6 +3998,7 @@ class Tool1Service:
             if candidate.exists():
                 self._safe_delete_path(candidate, self._assembly_shared_assets_dir(episode))
         self.db.delete_scene_asset(episode_id, scene_id)
+        self._invalidate_render_outputs_for_asset_change(episode_id)
         return {"deleted": True, "scene_id": scene_id}
 
     def get_scene_asset_preview_path(self, episode_id: str, scene_id: str) -> Path:
@@ -3881,6 +4042,7 @@ class Tool1Service:
             "language_code": job["language_code"],
             "state": job["state"],
             "stage": job["stage"],
+            "cancel_requested": bool(int(job.get("cancel_requested") or 0)),
             "current_scene_id": job.get("current_scene_id"),
             "total_scenes": int(job.get("total_scenes") or 0),
             "completed_scenes": int(job.get("completed_scenes") or 0),
@@ -3902,6 +4064,64 @@ class Tool1Service:
         if job is None or job["episode_id"] != episode_id:
             raise FileNotFoundError("Render job not found.")
         return episode, job
+
+    @staticmethod
+    def _render_job_state(job: dict[str, Any] | None) -> str:
+        return str((job or {}).get("state") or "").strip().lower()
+
+    @classmethod
+    def _render_job_is_active(cls, job: dict[str, Any] | None) -> bool:
+        return cls._render_job_state(job) in _RENDER_ACTIVE_STATES
+
+    def _list_active_render_jobs(self, episode_id: str) -> list[dict[str, Any]]:
+        return [
+            job
+            for job in self.db.list_render_jobs(episode_id)
+            if self._render_job_is_active(job)
+        ]
+
+    def _assert_no_active_render_jobs(self, episode_id: str, *, action: str) -> None:
+        active_jobs = self._list_active_render_jobs(episode_id)
+        if not active_jobs:
+            return
+        languages = ", ".join(sorted({str(job.get("language_code") or "").strip() for job in active_jobs if str(job.get("language_code") or "").strip()}))
+        if languages:
+            raise ValueError(f"Stop active render jobs ({languages}) before you {action}.")
+        raise ValueError(f"Stop active render jobs before you {action}.")
+
+    def _invalidate_render_outputs_for_asset_change(self, episode_id: str) -> None:
+        stale_jobs = self.db.list_render_jobs(episode_id)
+        if not stale_jobs:
+            return
+        self.db.delete_render_jobs_for_episode(episode_id)
+        try:
+            self.cleanup_assembly_temp_files(episode_id)
+        except FileNotFoundError:
+            return
+
+    def _mark_render_job_cancelled(self, render_job_id: str, *, message: str) -> None:
+        job = self.db.get_render_job(render_job_id)
+        if job is None:
+            return
+        if self._render_job_state(job) == "cancelled":
+            return
+        now = utc_now()
+        self.db.update_render_job(
+            render_job_id,
+            state="cancelled",
+            stage="cancelled",
+            cancel_requested=1,
+            error_message=message,
+            finished_at=now,
+            updated_at=now,
+        )
+        self.db.append_render_log(
+            render_job_id=render_job_id,
+            timestamp=now,
+            level="WARN",
+            stage="cancelled",
+            message=message,
+        )
 
     @staticmethod
     def _ffmpeg_tools_available() -> bool:
@@ -3984,6 +4204,7 @@ class Tool1Service:
                 "completed_scenes": 0,
                 "project_dir": None,
                 "error_message": None,
+                "cancel_requested": 0,
                 "validation_json": json.dumps(validation_result, ensure_ascii=False),
                 "outputs_json": "{}",
                 "started_at": None,
@@ -4076,11 +4297,19 @@ class Tool1Service:
             for queue_index, job_spec in enumerate(job_specs, start=1):
                 render_job_id = job_spec["render_job_id"]
                 language_code = job_spec["language_code"]
+                queued_job = self.db.get_render_job(render_job_id)
+                if queued_job and bool(int(queued_job.get("cancel_requested") or 0)):
+                    self._mark_render_job_cancelled(
+                        render_job_id,
+                        message=f"Stopped {language_code} render before it started.",
+                    )
+                    continue
                 started_at = utc_now()
                 self.db.update_render_job(
                     render_job_id,
                     state="preparing",
                     stage="preparing",
+                    cancel_requested=int(queued_job.get("cancel_requested") or 0) if queued_job else 0,
                     current_scene_id=None,
                     error_message=None,
                     outputs_json="{}",
@@ -4108,14 +4337,22 @@ class Tool1Service:
                     )
                     observer = DashboardRenderObserver(self.db, render_job_id)
                     RenderPipeline(project_dir, render_job_id, observer=observer).run()
+                except RenderCancelledError as exc:
+                    self._mark_render_job_cancelled(render_job_id, message=str(exc))
+                    continue
                 except Exception as exc:
                     job = self.db.get_render_job(render_job_id)
-                    if job is None or str(job.get("state") or "").strip().lower() != "failed":
+                    if job is None:
+                        continue
+                    if self._render_job_state(job) == "cancelled":
+                        continue
+                    if self._render_job_state(job) != "failed":
                         failed_at = utc_now()
                         self.db.update_render_job(
                             render_job_id,
                             state="failed",
                             stage="failed",
+                            cancel_requested=0,
                             error_message=str(exc),
                             finished_at=failed_at,
                             updated_at=failed_at,
@@ -4130,13 +4367,16 @@ class Tool1Service:
                     continue
                 else:
                     if self._cleanup_project_scene_dir(project_dir):
-                        self.db.append_render_log(
-                            render_job_id=render_job_id,
-                            timestamp=utc_now(),
-                            level="INFO",
-                            stage="cleanup",
-                            message=f"Removed scene temp files for {language_code}.",
-                        )
+                        try:
+                            self.db.append_render_log(
+                                render_job_id=render_job_id,
+                                timestamp=utc_now(),
+                                level="INFO",
+                                stage="cleanup",
+                                message=f"Removed scene temp files for {language_code}.",
+                            )
+                        except Exception:
+                            pass
         finally:
             if self._render_lock.locked():
                 self._render_lock.release()
@@ -4385,6 +4625,57 @@ class Tool1Service:
                 self._render_lock.release()
             raise
 
+    def stop_render(self, episode_id: str) -> dict[str, Any]:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            raise FileNotFoundError("Episode not found.")
+
+        jobs = self.db.list_render_jobs(episode_id)
+        active_jobs = [job for job in jobs if self._render_job_is_active(job)]
+        if not active_jobs:
+            raise ValueError("No active render jobs to stop.")
+
+        requested_languages: list[str] = []
+        cancelled_languages: list[str] = []
+        now = utc_now()
+        for job in active_jobs:
+            render_job_id = str(job["id"])
+            language_code = str(job.get("language_code") or "").strip()
+            state = self._render_job_state(job)
+            if state == "queued":
+                self._mark_render_job_cancelled(
+                    render_job_id,
+                    message=f"Stopped {language_code or 'queued'} render before it started.",
+                )
+                if language_code:
+                    cancelled_languages.append(language_code)
+                continue
+            if bool(int(job.get("cancel_requested") or 0)):
+                if language_code:
+                    requested_languages.append(language_code)
+                continue
+            self.db.update_render_job(
+                render_job_id,
+                cancel_requested=1,
+                updated_at=now,
+            )
+            self.db.append_render_log(
+                render_job_id=render_job_id,
+                timestamp=now,
+                level="WARN",
+                stage="cancel_requested",
+                message="Stop requested. The current scene will finish before the render exits.",
+            )
+            if language_code:
+                requested_languages.append(language_code)
+
+        return {
+            "stopped": True,
+            "requested_languages": requested_languages,
+            "cancelled_languages": cancelled_languages,
+            "active_count": len(active_jobs),
+        }
+
     def get_render_status(self, episode_id: str) -> dict[str, Any]:
         episode = self.db.get_episode(episode_id)
         if episode is None:
@@ -4445,8 +4736,8 @@ class Tool1Service:
     def delete_render_job(self, episode_id: str, render_job_id: str) -> dict[str, Any]:
         _, job = self._render_job_record(episode_id, render_job_id)
         state = str(job.get("state") or "").strip().lower()
-        if state not in {"completed", "failed"}:
-            raise ValueError("Only completed or failed render jobs can be deleted.")
+        if state not in {"completed", "failed", "cancelled"}:
+            raise ValueError("Only completed, failed, or cancelled render jobs can be deleted.")
 
         project_dir_value = str(job.get("project_dir") or "").strip()
         cleaned_temp = False
@@ -4511,18 +4802,39 @@ class Tool1Service:
             raise FileNotFoundError("Episode not found.")
 
         sequence = self._assembly_stage_sequence()
-        if target_stage not in sequence[1:]:
+        if target_stage not in sequence:
             raise ValueError(f"Invalid assembly target stage: {target_stage}")
 
         current_stage = str(episode.get("current_stage") or "").strip()
-        expected_previous = None
-        for stage_name in sequence:
-            if self._next_assembly_stage(stage_name) == target_stage:
-                expected_previous = stage_name
-                break
-        if expected_previous is None:
-            raise ValueError(f"Invalid assembly target stage: {target_stage}")
-        if current_stage != expected_previous:
+        if current_stage not in sequence:
+            raise ValueError(f"Cannot move to {target_stage} from {current_stage or 'unknown stage'}.")
+
+        current_index = sequence.index(current_stage)
+        target_index = sequence.index(target_stage)
+        if target_index == current_index:
+            return {
+                "advanced": True,
+                "current_stage": target_stage,
+            }
+        if target_index < current_index:
+            self._assert_no_active_render_jobs(
+                episode_id,
+                action="return to an earlier assembly step",
+            )
+            self.db.update_episode(
+                episode_id,
+                board_status="Paused",
+                pipeline_status="paused",
+                current_stage=target_stage,
+                queued_from_stage=target_stage,
+                last_error=None,
+                updated_at=utc_now(),
+            )
+            return {
+                "advanced": True,
+                "current_stage": target_stage,
+            }
+        if target_index != current_index + 1:
             raise ValueError(f"Cannot move to {target_stage} from {current_stage or 'unknown stage'}.")
 
         if target_stage == "assembly_validation":
@@ -5691,6 +6003,7 @@ class Tool1Service:
                 stderr_path=result.get("stderr_path"),
             )
         except Exception as exc:
+            exception_stdout_path, exception_stderr_path = self._exception_stream_paths(exc)
             self.db.finish_stage_run(
                 run_id,
                 status="failed",
@@ -5699,8 +6012,8 @@ class Tool1Service:
                 validation_path=validation_path,
                 error_text=str(exc),
                 command_payload=result.get("command_payload") if result else None,
-                stdout_path=result.get("stdout_path") if result else None,
-                stderr_path=result.get("stderr_path") if result else None,
+                stdout_path=result.get("stdout_path") if result else exception_stdout_path,
+                stderr_path=result.get("stderr_path") if result else exception_stderr_path,
             )
             raise
 
@@ -6353,22 +6666,40 @@ class Tool1Service:
         for chunk in manifest["chunks"]:
             chunk_id = int(chunk["chunk_id"])
             chunk_payload = read_json(Path(chunk["json_path"]))
+            chunk_srt_text = str(chunk_payload.get("srt") or "").strip()
+            chunk_cues_obj = parse_srt_text(chunk_srt_text) if chunk_srt_text else []
+            cues_for_prompt = [
+                {
+                    "cue_id": cue.index,
+                    "start": round(cue.start_ms / 1000.0, 3),
+                    "end": round(cue.end_ms / 1000.0, 3),
+                    "text": cue.text.replace("\n", " ").strip(),
+                }
+                for cue in chunk_cues_obj
+            ]
+            cue_id_range = (
+                f"{cues_for_prompt[0]['cue_id']}..{cues_for_prompt[-1]['cue_id']}"
+                if cues_for_prompt
+                else "(empty chunk)"
+            )
             user_prompt = (
-                "Create scene JSON for this timed subtitle chunk.\n\n"
+                "Decide where scenes break inside this ordered subtitle chunk.\n"
+                "You only choose semantic break points; the system owns scene timing, ids, and text.\n\n"
                 "Rules for this run:\n"
-                "- return ordered, non-overlapping scenes only\n"
-                "- prefer scenes around 6 to 16 seconds\n"
-                "- treat 18 seconds as a soft ceiling unless the text strongly resists splitting\n"
-                "- every start and end must be absolute episode seconds, never chunk-relative seconds\n"
-                "- every start and end must stay inside this chunk's start_seconds to end_seconds window\n"
-                "- anchor boundaries to meaningful subtitle cue ranges\n"
-                "- do not decide image versus video here\n"
-                "- make each scene one dominant cinematic beat that can become one image or one continuous shot\n"
-                "- split when the text changes location, time, subject focus, or dramatic action enough that one frame would feel crowded\n"
+                "- return only a list of cue_id values from the chunk, each one marks a cue whose end closes a scene\n"
+                "- every break id must come from the provided cue list; do not invent ids\n"
+                "- cues run in order; each scene is a contiguous run of cues from the previous break (or the first cue) up to and including the chosen break cue\n"
+                "- the last cue of the chunk always closes a scene implicitly, so do not include it\n"
+                "- prefer scene lengths around 6 to 16 seconds of narration\n"
+                "- treat roughly 18 seconds as a soft ceiling unless the text strongly resists splitting\n"
+                "- break when the text shifts location, time, subject focus, or dramatic action enough that one frame would feel crowded\n"
                 "- do not combine multiple separate events, comparisons, or before/after beats into one scene\n"
-                "- never emit placeholder, gap, or SKIP scenes; absorb tiny gaps into adjacent scenes\n"
-                "- keep boundary scenes conservative because this chunk overlaps neighboring chunks\n\n"
-                f"Chunk metadata:\n{json.dumps(chunk_payload | {'episode_id': episode_id}, ensure_ascii=False, indent=2)}"
+                "- keep the first and last cues conservative, because this chunk may overlap neighboring chunks\n"
+                "- do not output start, end, duration, text, or any other field; the builder derives them from the cues\n\n"
+                f"Chunk window: {float(chunk_payload.get('start_seconds') or 0.0):.3f}s -> "
+                f"{float(chunk_payload.get('end_seconds') or 0.0):.3f}s\n"
+                f"Cue id range: {cue_id_range}\n\n"
+                f"Cues:\n{json.dumps(cues_for_prompt, ensure_ascii=False, indent=2)}"
             )
             chunk_dir = ensure_dir(workspace / "runs" / "scene_planning" / f"chunk-{chunk_id:03d}")
             schema = scene_output_schema()
@@ -6396,10 +6727,16 @@ class Tool1Service:
                     artifact_dir=chunk_dir,
                 )
                 parsed_output_path = str(write_json(chunk_dir / "parsed.json", result["parsed"]))
-                scene_group, group_warnings = normalize_scene_payload(
-                    result["parsed"],
-                    chunk_id,
-                    chunk_window=chunk_payload,
+                parsed = result["parsed"] if isinstance(result.get("parsed"), dict) else {}
+                break_ids = parsed.get("break_after_cue_ids") or []
+                if not isinstance(break_ids, list):
+                    raise ValueError(
+                        f"Chunk {chunk_id} scene payload must provide break_after_cue_ids as a list."
+                    )
+                scene_group, group_warnings = build_scenes_from_cue_breaks(
+                    chunk_cues=chunk_cues_obj,
+                    break_after_cue_ids=[int(x) for x in break_ids if isinstance(x, (int, float, str)) and str(x).lstrip("-").isdigit()],
+                    source_chunk_id=chunk_id,
                 )
                 validation_path = str(write_json(chunk_dir / "validated.json", scene_group))
                 all_scene_groups.append(scene_group)
@@ -6415,6 +6752,7 @@ class Tool1Service:
                     stderr_path=result.get("stderr_path"),
                 )
             except Exception as exc:
+                exception_stdout_path, exception_stderr_path = self._exception_stream_paths(exc)
                 self.db.finish_stage_run(
                     run_id,
                     status="failed",
@@ -6423,8 +6761,8 @@ class Tool1Service:
                     validation_path=validation_path,
                     error_text=str(exc),
                     command_payload=result.get("command_payload") if result else None,
-                    stdout_path=result.get("stdout_path") if result else None,
-                    stderr_path=result.get("stderr_path") if result else None,
+                    stdout_path=result.get("stdout_path") if result else exception_stdout_path,
+                    stderr_path=result.get("stderr_path") if result else exception_stderr_path,
                 )
                 raise
 
@@ -6568,6 +6906,7 @@ class Tool1Service:
                     stderr_path=result.get("stderr_path"),
                 )
             except Exception as exc:
+                exception_stdout_path, exception_stderr_path = self._exception_stream_paths(exc)
                 self.db.finish_stage_run(
                     run_id,
                     status="failed",
@@ -6575,8 +6914,8 @@ class Tool1Service:
                     parsed_output_path=parsed_output_path,
                     error_text=str(exc),
                     command_payload=result.get("command_payload") if result else None,
-                    stdout_path=result.get("stdout_path") if result else None,
-                    stderr_path=result.get("stderr_path") if result else None,
+                    stdout_path=result.get("stdout_path") if result else exception_stdout_path,
+                    stderr_path=result.get("stderr_path") if result else exception_stderr_path,
                 )
                 raise
 

@@ -6,9 +6,9 @@ from tool1_dashboard.chunking import build_gap_fill_batches, build_planning_chun
 from tool1_dashboard.srt_chunker.models import SubtitleCue
 from tool1_dashboard.validators import (
     apply_default_asset_types,
+    build_scenes_from_cue_breaks,
     merge_scene_chunks,
     normalize_and_validate_timeline,
-    normalize_scene_payload,
     normalize_visual_bible,
     validate_prompt_payloads,
     validate_timeline,
@@ -139,6 +139,32 @@ class ChunkingValidationTests(unittest.TestCase):
         self.assertTrue(all(scene["duration"] <= 18.0 for scene in scenes))
         self.assertEqual(report["split_insertions"], 1)
 
+    def test_merge_scene_chunks_clamps_split_fragments_to_original_bounds(self) -> None:
+        scenes, report = merge_scene_chunks(
+            [
+                [
+                    {"start": 0.0, "end": 10.0, "duration": 10.0, "text": "Lead", "asset_type": "image"},
+                    {"start": 10.0, "end": 34.0, "duration": 24.0, "text": "Long middle", "asset_type": "image"},
+                    {"start": 34.0, "end": 40.0, "duration": 6.0, "text": "Tail", "asset_type": "image"},
+                ]
+            ],
+            cues=[
+                SubtitleCue(index=1, start_ms=8000, end_ms=12000, text="Lead."),
+                SubtitleCue(index=2, start_ms=12000, end_ms=22000, text="Middle."),
+                SubtitleCue(index=3, start_ms=22000, end_ms=36000, text="Tail."),
+            ],
+        )
+        self.assertEqual(report["status"], "valid")
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(len(scenes), 4)
+        self.assertEqual(scenes[1]["start"], 10.0)
+        self.assertEqual(scenes[1]["end"], 22.0)
+        self.assertEqual(scenes[2]["start"], 22.0)
+        self.assertEqual(scenes[2]["end"], 34.0)
+        self.assertTrue(
+            all(float(scenes[index]["end"]) <= float(scenes[index + 1]["start"]) for index in range(len(scenes) - 1))
+        )
+
     def test_prompt_validation_rejects_mismatch(self) -> None:
         scenes = [
             {"scene_id": "scene_001", "start": 0.0, "end": 4.0, "duration": 4.0, "text": "One", "asset_type": "image"},
@@ -161,6 +187,22 @@ class ChunkingValidationTests(unittest.TestCase):
         self.assertEqual(report["overlap_adjustments"], 1)
         self.assertEqual(scenes[1]["start"], 5.0)
         self.assertEqual(scenes[1]["duration"], 3.0)
+
+    def test_timeline_validation_repairs_tail_coverage_gap(self) -> None:
+        scenes, report = normalize_and_validate_timeline(
+            [
+                {"scene_id": "scene_001", "start": 0.0, "end": 5.0, "duration": 5.0, "text": "One", "asset_type": "image"},
+                {"scene_id": "scene_002", "start": 5.0, "end": 10.0, "duration": 5.0, "text": "Two", "asset_type": "video"},
+            ],
+            cues=[
+                SubtitleCue(index=1, start_ms=0, end_ms=5000, text="One."),
+                SubtitleCue(index=2, start_ms=5000, end_ms=12000, text="Two."),
+            ],
+        )
+        self.assertEqual(report["status"], "valid")
+        self.assertEqual(report["cue_edge_adjustments"], 1)
+        self.assertEqual(scenes[1]["end"], 12.0)
+        self.assertEqual(scenes[1]["duration"], 7.0)
 
     def test_timeline_validation_fails_large_overlap(self) -> None:
         report = validate_timeline(
@@ -201,68 +243,74 @@ class ChunkingValidationTests(unittest.TestCase):
         assigned = apply_default_asset_types(scenes, 2)
         self.assertEqual([scene["asset_type"] for scene in assigned], ["video", "video", "image"])
 
-    def test_normalize_scene_payload_discards_zero_length_gap_marker(self) -> None:
-        scenes, warnings = normalize_scene_payload(
-            {
-                "scenes": [
-                    {"start": 0.0, "end": 7.0, "duration": 7.0, "text": "Opening line", "notes": "real scene"},
-                    {
-                        "start": 7.0,
-                        "end": 7.0,
-                        "duration": 0.0,
-                        "text": "",
-                        "notes": "SKIP - gap absorbed into adjacent scenes",
-                    },
-                    {"start": 7.0, "end": 12.0, "duration": 5.0, "text": "Next line", "notes": "real scene"},
-                ]
-            },
-            1,
+    def test_build_scenes_from_cue_breaks_groups_cues_by_break_points(self) -> None:
+        cues = [
+            SubtitleCue(index=101, start_ms=0, end_ms=4000, text="First beat."),
+            SubtitleCue(index=102, start_ms=4000, end_ms=8000, text="Still first."),
+            SubtitleCue(index=103, start_ms=8000, end_ms=12000, text="Second beat opens."),
+            SubtitleCue(index=104, start_ms=12000, end_ms=16000, text="Second beat closes."),
+            SubtitleCue(index=105, start_ms=16000, end_ms=20000, text="Third beat."),
+        ]
+        scenes, warnings = build_scenes_from_cue_breaks(
+            chunk_cues=cues,
+            break_after_cue_ids=[102, 104],
+            source_chunk_id=1,
         )
-        self.assertEqual([scene["text"] for scene in scenes], ["Opening line", "Next line"])
-        self.assertTrue(any("gap marker" in warning for warning in warnings))
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(scenes), 3)
+        self.assertEqual(scenes[0]["_source_cue_ids"], [101, 102])
+        self.assertEqual(scenes[0]["start"], 0.0)
+        self.assertEqual(scenes[0]["end"], 8.0)
+        self.assertEqual(scenes[1]["_source_cue_ids"], [103, 104])
+        self.assertEqual(scenes[1]["end"], 16.0)
+        self.assertEqual(scenes[2]["_source_cue_ids"], [105])
+        self.assertEqual(scenes[2]["end"], 20.0)
+        self.assertTrue(all(scene["text"] for scene in scenes))
 
-    def test_normalize_scene_payload_trims_malformed_trailing_suffix(self) -> None:
-        scenes, warnings = normalize_scene_payload(
-            {
-                "scenes": [
-                    {"start": 0.0, "end": 6.0, "duration": 6.0, "text": "Opening line", "notes": "real scene"},
-                    {"start": 6.0, "end": 12.0, "duration": 6.0, "text": "Next line", "notes": "real scene"},
-                    {"start": 12.0, "end": 10.0, "duration": -2.0, "text": "Broken tail", "notes": ""},
-                    {"start": 10.0, "end": 10.0, "duration": 0.0, "text": "More broken tail", "notes": ""},
-                    {"start": 10.0, "end": 10.0, "duration": 0.0, "text": "", "notes": "gap absorbed"},
-                ]
-            },
-            5,
+    def test_build_scenes_from_cue_breaks_ignores_unknown_or_duplicate_ids(self) -> None:
+        cues = [
+            SubtitleCue(index=10, start_ms=0, end_ms=5000, text="A"),
+            SubtitleCue(index=11, start_ms=5000, end_ms=10000, text="B"),
+            SubtitleCue(index=12, start_ms=10000, end_ms=15000, text="C"),
+        ]
+        scenes, warnings = build_scenes_from_cue_breaks(
+            chunk_cues=cues,
+            break_after_cue_ids=[11, 11, 99, 12],  # duplicate, unknown, terminal
+            source_chunk_id=3,
         )
-        self.assertEqual([scene["text"] for scene in scenes], ["Opening line", "Next line"])
-        self.assertTrue(any("malformed trailing scenes" in warning for warning in warnings))
+        self.assertEqual(len(scenes), 2)
+        self.assertEqual(scenes[0]["_source_cue_ids"], [10, 11])
+        self.assertEqual(scenes[1]["_source_cue_ids"], [12])
+        self.assertTrue(any("outside the chunk cue range" in warning for warning in warnings))
 
-    def test_normalize_scene_payload_rebases_chunk_local_timestamps(self) -> None:
-        scenes, warnings = normalize_scene_payload(
-            {
-                "scenes": [
-                    {
-                        "start": 0.0,
-                        "end": 12.0,
-                        "duration": 12.0,
-                        "text": "Late section opens",
-                        "notes": "real scene",
-                    },
-                    {
-                        "start": 12.0,
-                        "end": 28.0,
-                        "duration": 16.0,
-                        "text": "Late section continues",
-                        "notes": "real scene",
-                    },
-                ]
-            },
-            10,
-            chunk_window={"chunk_id": 10, "start_seconds": 2970.0, "end_seconds": 3330.0, "duration_seconds": 360.0},
+    def test_build_scenes_from_cue_breaks_handles_no_breaks(self) -> None:
+        cues = [
+            SubtitleCue(index=1, start_ms=0, end_ms=6000, text="Single"),
+            SubtitleCue(index=2, start_ms=6000, end_ms=12000, text="beat."),
+        ]
+        scenes, warnings = build_scenes_from_cue_breaks(
+            chunk_cues=cues,
+            break_after_cue_ids=[],
+            source_chunk_id=7,
         )
-        self.assertEqual((scenes[0]["start"], scenes[0]["end"]), (2970.0, 2982.0))
-        self.assertEqual((scenes[1]["start"], scenes[1]["end"]), (2982.0, 2998.0))
-        self.assertTrue(any("rebased" in warning for warning in warnings))
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(scenes), 1)
+        self.assertEqual(scenes[0]["_source_cue_ids"], [1, 2])
+        self.assertEqual(scenes[0]["start"], 0.0)
+        self.assertEqual(scenes[0]["end"], 12.0)
+
+    def test_build_scenes_from_cue_breaks_ignores_noninteger_ids(self) -> None:
+        cues = [
+            SubtitleCue(index=1, start_ms=0, end_ms=4000, text="A"),
+            SubtitleCue(index=2, start_ms=4000, end_ms=8000, text="B"),
+        ]
+        scenes, warnings = build_scenes_from_cue_breaks(
+            chunk_cues=cues,
+            break_after_cue_ids=[1, "not-an-int"],  # type: ignore[list-item]
+            source_chunk_id=2,
+        )
+        self.assertEqual(len(scenes), 2)
+        self.assertTrue(any("not an integer" in warning for warning in warnings))
 
     def test_merge_scene_chunks_rebases_relative_late_chunk_and_reaches_last_cue(self) -> None:
         scenes, report = merge_scene_chunks(

@@ -11,6 +11,7 @@ SCENE_SOFT_MAX_DURATION_SECONDS = 18.0
 SCENE_TARGET_DURATION_SECONDS = 14.0
 SCENE_MIN_DURATION_SECONDS = 4.0
 SCENE_CUE_COVERAGE_TOLERANCE_SECONDS = 3.0
+SCENE_CUE_EDGE_AUTO_REPAIR_SECONDS = 8.0
 SCENE_OVERLAP_AUTO_REPAIR_SECONDS = 0.25
 SCENE_OVERLAP_ERROR_TOLERANCE_SECONDS = 0.05
 MANDATORY_PROMPT_RULES = (
@@ -36,27 +37,21 @@ PROMPT_BANNED_PATTERNS = (
 
 
 def scene_output_schema() -> dict[str, Any]:
+    """Cue-boundary contract: the LLM only picks where scenes break.
+
+    Scene timing, text, ids, and ordering are all derived deterministically
+    from the master SRT cues by ``build_scenes_from_cue_breaks``. This
+    removes timestamp hallucination from the LLM surface entirely.
+    """
     return {
         "type": "object",
         "properties": {
-            "scenes": {
+            "break_after_cue_ids": {
                 "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "start": {"type": "number"},
-                        "end": {"type": "number"},
-                        "duration": {"type": "number"},
-                        "text": {"type": "string"},
-                        "visual_intent": {"type": "string"},
-                        "notes": {"type": "string"},
-                    },
-                    "required": ["start", "end", "duration", "text", "visual_intent", "notes"],
-                    "additionalProperties": False,
-                },
-            }
+                "items": {"type": "integer"},
+            },
         },
-        "required": ["scenes"],
+        "required": ["break_after_cue_ids"],
         "additionalProperties": False,
     }
 
@@ -266,50 +261,6 @@ def _normalize_asset_type(value: Any) -> str:
     return normalized
 
 
-def _is_gap_placeholder(
-    *,
-    start: float,
-    end: float,
-    requested_duration: float,
-    text: str,
-    notes: str,
-) -> bool:
-    if text:
-        return False
-    if end > start and requested_duration > 0:
-        return False
-    note_lower = notes.lower()
-    return "skip" in note_lower or "gap" in note_lower or "absorbed" in note_lower
-
-
-def _remaining_scenes_form_malformed_tail(scenes: list[Any], start_index: int) -> bool:
-    for raw_scene in scenes[start_index:]:
-        if not isinstance(raw_scene, dict):
-            return False
-        try:
-            start = round(_as_float(raw_scene.get("start"), "start"), 3)
-            end = round(_as_float(raw_scene.get("end"), "end"), 3)
-            requested_duration = round(_as_float(raw_scene.get("duration", end - start), "duration"), 3)
-        except ValueError:
-            return False
-        text = _clean_text(raw_scene.get("text"))
-        notes = _clean_text(raw_scene.get("notes"))
-        if _is_gap_placeholder(
-            start=start,
-            end=end,
-            requested_duration=requested_duration,
-            text=text,
-            notes=notes,
-        ):
-            continue
-        if end <= start:
-            continue
-        if not text:
-            continue
-        return False
-    return True
-
-
 def _chunk_window_fields(chunk_window: dict[str, Any] | None) -> tuple[float, float, float]:
     if not isinstance(chunk_window, dict):
         return 0.0, 0.0, 0.0
@@ -345,79 +296,111 @@ def _maybe_rebase_chunk_local_scenes(
     return rebased, True
 
 
-def normalize_scene_payload(
-    payload: dict[str, Any],
+def build_scenes_from_cue_breaks(
+    *,
+    chunk_cues: list[SubtitleCue],
+    break_after_cue_ids: list[int],
     source_chunk_id: int,
-    chunk_window: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    scenes = payload.get("scenes")
-    if not isinstance(scenes, list):
-        raise ValueError("Scene output must contain a scenes array.")
-    normalized: list[dict[str, Any]] = []
+    """Partition a chunk's subtitle cues into scenes using cue-boundary breaks.
+
+    The LLM is only asked to decide *where* a scene ends (by cue id).
+    This function owns every deterministic output:
+
+    - scene start/end come straight from the first/last cue timestamps
+    - scene text is the joined cue text
+    - scene ordering follows cue order
+    - invalid, out-of-chunk, or duplicate break ids are ignored with warnings
+    - the final cue of the chunk is always an implicit break
+
+    Returns the per-chunk scene group plus warnings. The shape of each scene
+    matches what ``merge_scene_chunks`` expects downstream.
+    """
     warnings: list[str] = []
-    for position, scene in enumerate(scenes, start=1):
-        if not isinstance(scene, dict):
-            raise ValueError(f"Scene {position} is not an object.")
-        start = round(_as_float(scene.get("start"), "start"), 3)
-        end = round(_as_float(scene.get("end"), "end"), 3)
-        text = _clean_text(scene.get("text"))
-        notes = _clean_text(scene.get("notes"))
-        requested_duration = round(_as_float(scene.get("duration", end - start), "duration"), 3)
-        if _is_gap_placeholder(
-            start=start,
-            end=end,
-            requested_duration=requested_duration,
-            text=text,
-            notes=notes,
-        ):
+    if not chunk_cues:
+        return [], warnings
+
+    cue_ids_in_order = [cue.index for cue in chunk_cues]
+    cue_id_set = set(cue_ids_in_order)
+    last_cue_id = cue_ids_in_order[-1]
+
+    raw_breaks: list[int] = []
+    for raw_id in break_after_cue_ids or []:
+        try:
+            cue_id = int(raw_id)
+        except (TypeError, ValueError):
             warnings.append(
-                f"Chunk {source_chunk_id} scene {position} was a zero-length gap marker and was discarded."
+                f"Chunk {source_chunk_id} break id {raw_id!r} is not an integer and was ignored."
             )
             continue
-        malformed_tail = normalized and _remaining_scenes_form_malformed_tail(scenes, position - 1)
-        if end <= start:
-            if malformed_tail:
-                warnings.append(
-                    f"Chunk {source_chunk_id} emitted malformed trailing scenes starting at scene {position}; "
-                    f"trimmed {len(scenes) - position + 1} trailing scene(s)."
-                )
-                break
-            raise ValueError(f"Scene {position} ends before it starts.")
-        if not text:
-            if malformed_tail:
-                warnings.append(
-                    f"Chunk {source_chunk_id} emitted trailing empty scenes starting at scene {position}; "
-                    f"trimmed {len(scenes) - position + 1} trailing scene(s)."
-                )
-                break
-            raise ValueError(f"Scene {position} has no text.")
-        actual_duration = round(end - start, 3)
-        if math.fabs(actual_duration - requested_duration) > 0.35:
+        if cue_id not in cue_id_set:
             warnings.append(
-                f"Chunk {source_chunk_id} scene {position} had an incorrect duration and was normalized."
+                f"Chunk {source_chunk_id} break id {cue_id} is outside the chunk cue range and was ignored."
             )
-        normalized.append(
-            {
-                "start": start,
-                "end": end,
-                "duration": actual_duration,
-                "text": text,
-                "asset_type": "image",
-                "visual_intent": _clean_text(scene.get("visual_intent")) or None,
-                "notes": notes or None,
-                "_source_chunk_id": source_chunk_id,
-            }
+            continue
+        raw_breaks.append(cue_id)
+
+    seen_breaks: set[int] = set()
+    ordered_breaks: list[int] = []
+    for cue_id in raw_breaks:
+        if cue_id in seen_breaks:
+            continue
+        if cue_id == last_cue_id:
+            # Terminal break is implicit; the chunk always ends on its last cue.
+            continue
+        seen_breaks.add(cue_id)
+        ordered_breaks.append(cue_id)
+    ordered_breaks.sort(key=cue_ids_in_order.index)
+
+    scenes: list[dict[str, Any]] = []
+    current: list[SubtitleCue] = []
+    for cue in chunk_cues:
+        current.append(cue)
+        if cue.index in seen_breaks or cue.index == last_cue_id:
+            scenes.append(_scene_from_cue_group(current, source_chunk_id=source_chunk_id))
+            current = []
+
+    # Any trailing cues (should not happen because the last cue always closes a
+    # scene) are folded into the final scene defensively.
+    if current and scenes:
+        scenes[-1] = _scene_from_cue_group(
+            [*_cues_for_scene(scenes[-1], chunk_cues), *current],
+            source_chunk_id=source_chunk_id,
         )
-    normalized, rebased = _maybe_rebase_chunk_local_scenes(
-        normalized,
-        chunk_window=chunk_window,
-    )
-    if rebased:
-        chunk_start, _, _ = _chunk_window_fields(chunk_window)
-        warnings.append(
-            f"Chunk {source_chunk_id} returned chunk-local timestamps and was rebased by +{round(chunk_start, 3)}s."
-        )
-    return normalized, warnings
+
+    if not scenes:
+        scenes.append(_scene_from_cue_group(list(chunk_cues), source_chunk_id=source_chunk_id))
+
+    return scenes, warnings
+
+
+def _scene_from_cue_group(
+    cues: list[SubtitleCue],
+    *,
+    source_chunk_id: int,
+) -> dict[str, Any]:
+    start = round(cues[0].start_ms / 1000.0, 3)
+    end = round(cues[-1].end_ms / 1000.0, 3)
+    text = _clean_text(" ".join(cue.text.replace("\n", " ") for cue in cues))
+    return {
+        "start": start,
+        "end": end,
+        "duration": round(end - start, 3),
+        "text": text,
+        "asset_type": "image",
+        "visual_intent": None,
+        "notes": None,
+        "_source_chunk_id": source_chunk_id,
+        "_source_cue_ids": [cue.index for cue in cues],
+    }
+
+
+def _cues_for_scene(
+    scene: dict[str, Any],
+    chunk_cues: list[SubtitleCue],
+) -> list[SubtitleCue]:
+    wanted = set(scene.get("_source_cue_ids") or [])
+    return [cue for cue in chunk_cues if cue.index in wanted]
 
 
 def apply_default_asset_types(
@@ -595,8 +578,13 @@ def _build_scene_from_cues(
     base_scene: dict[str, Any],
     cues: list[SubtitleCue],
 ) -> dict[str, Any]:
-    start = round(cues[0].start_ms / 1000.0, 3)
-    end = round(cues[-1].end_ms / 1000.0, 3)
+    base_start = round(float(base_scene["start"]), 3)
+    base_end = round(float(base_scene["end"]), 3)
+    start = round(max(base_start, cues[0].start_ms / 1000.0), 3)
+    end = round(min(base_end, cues[-1].end_ms / 1000.0), 3)
+    if end <= start:
+        start = base_start
+        end = base_end
     return {
         "start": start,
         "end": end,
@@ -712,6 +700,35 @@ def _normalize_small_scene_overlaps(
     return resolved, adjusted
 
 
+def _normalize_scene_edge_coverage(
+    scenes: list[dict[str, Any]],
+    *,
+    cues: list[SubtitleCue] | None,
+    auto_repair_seconds: float = SCENE_CUE_EDGE_AUTO_REPAIR_SECONDS,
+) -> tuple[list[dict[str, Any]], int]:
+    if not scenes or not cues:
+        return [dict(scene) for scene in scenes], 0
+
+    resolved: list[dict[str, Any]] = [dict(scene) for scene in scenes]
+    adjustments = 0
+    first_cue_start = round(cues[0].start_ms / 1000.0, 3)
+    last_cue_end = round(cues[-1].end_ms / 1000.0, 3)
+
+    head_gap = round(float(resolved[0]["start"]) - first_cue_start, 3)
+    if 0 < head_gap <= auto_repair_seconds:
+        resolved[0]["start"] = first_cue_start
+        resolved[0]["duration"] = round(float(resolved[0]["end"]) - first_cue_start, 3)
+        adjustments += 1
+
+    tail_gap = round(last_cue_end - float(resolved[-1]["end"]), 3)
+    if 0 < tail_gap <= auto_repair_seconds:
+        resolved[-1]["end"] = last_cue_end
+        resolved[-1]["duration"] = round(last_cue_end - float(resolved[-1]["start"]), 3)
+        adjustments += 1
+
+    return resolved, adjustments
+
+
 def normalize_and_validate_timeline(
     scenes: list[dict[str, Any]],
     *,
@@ -724,6 +741,10 @@ def normalize_and_validate_timeline(
         scenes,
         auto_repair_seconds=auto_repair_seconds,
     )
+    normalized, cue_edge_adjustments = _normalize_scene_edge_coverage(
+        normalized,
+        cues=cues,
+    )
     report = validate_timeline(
         normalized,
         cues=cues,
@@ -731,6 +752,7 @@ def normalize_and_validate_timeline(
         overlap_tolerance_seconds=overlap_tolerance_seconds,
     )
     report["overlap_adjustments"] = overlap_adjustments
+    report["cue_edge_adjustments"] = cue_edge_adjustments
     return normalized, report
 
 

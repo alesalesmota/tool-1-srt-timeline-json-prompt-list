@@ -76,14 +76,9 @@ class FakeCliRunner:
                 "continuity_rules": ["Keep the same prophet face and robe silhouette."],
                 "environment_rules": ["Preserve a windblown desert atmosphere."],
             }
-        elif "scenes" in args.schema.get("properties", {}):
-            # Scene planning
-            parsed = {
-                "scenes": [
-                    {"start": 0.0, "end": 3.0, "duration": 3.0, "text": "First scene content."},
-                    {"start": 3.0, "end": 6.0, "duration": 3.0, "text": "Second scene content."},
-                ]
-            }
+        elif "break_after_cue_ids" in args.schema.get("properties", {}):
+            # Scene planning (cue-boundary contract): no breaks => one scene per chunk
+            parsed = {"break_after_cue_ids": []}
         else:
             # Prompt generation
             batch_payload = json.loads(args.user_prompt.split("Batch payload:\n", 1)[1])
@@ -844,6 +839,7 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
 
                     bulk_resp = client.post(
                         f"/api/episodes/{episode_id}/scenes/bulk-upload",
+                        data={"match_mode": "type_sequence"},
                         files=[
                             ("files", ("video (1).mp4", b"\x00\x00\x00phase3-scene-2", "video/mp4")),
                             ("files", ("img (2).jpg", b"\xff\xd8\xffphase3-scene-3", "image/jpeg")),
@@ -852,6 +848,7 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     )
                     self.assertEqual(bulk_resp.status_code, 200)
                     self.assertEqual(bulk_resp.json()["total_uploaded"], 2)
+                    self.assertEqual(bulk_resp.json()["match_mode"], "type_sequence")
                     self.assertEqual(
                         [item["scene_id"] for item in bulk_resp.json()["matched"]],
                         ["scene_002", "scene_003"],
@@ -888,6 +885,70 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     missing_scene_resp = client.get(f"/api/episodes/{episode_id}/scenes/scene_999")
                     self.assertEqual(missing_scene_resp.status_code, 404)
                     self.assertIn("Scene scene_999 not found.", missing_scene_resp.json()["detail"])
+                finally:
+                    self.app_module.service = original
+
+    def test_bulk_upload_defaults_to_overall_scene_numbers_instead_of_type_sequence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en"])
+                    episode_id = episode["id"]
+                    _write_master_timeline(
+                        service,
+                        episode_id,
+                        [
+                            {
+                                "scene_id": "scene_001",
+                                "start": 0.0,
+                                "end": 2.0,
+                                "duration": 2.0,
+                                "text": "Image opener.",
+                                "asset_type": "image",
+                            },
+                            {
+                                "scene_id": "scene_002",
+                                "start": 2.0,
+                                "end": 4.0,
+                                "duration": 2.0,
+                                "text": "Video beat.",
+                                "asset_type": "video",
+                            },
+                            {
+                                "scene_id": "scene_003",
+                                "start": 4.0,
+                                "end": 6.0,
+                                "duration": 2.0,
+                                "text": "Image closer.",
+                                "asset_type": "image",
+                            },
+                        ],
+                    )
+
+                    bulk_resp = client.post(
+                        f"/api/episodes/{episode_id}/scenes/bulk-upload",
+                        files=[
+                            ("files", ("video (1).mp4", b"\x00\x00\x00wrong-slot", "video/mp4")),
+                            ("files", ("video (2).mp4", b"\x00\x00\x00scene-2", "video/mp4")),
+                            ("files", ("img (3).jpg", b"\xff\xd8\xffscene-3", "image/jpeg")),
+                        ],
+                    )
+                    self.assertEqual(bulk_resp.status_code, 200)
+                    self.assertEqual(bulk_resp.json()["match_mode"], "scene_number")
+                    self.assertEqual(
+                        [item["scene_id"] for item in bulk_resp.json()["matched"]],
+                        ["scene_002", "scene_003"],
+                    )
+                    self.assertEqual(bulk_resp.json()["unmatched"], ["video (1).mp4"])
+
+                    list_resp = client.get(f"/api/episodes/{episode_id}/scenes")
+                    self.assertEqual(list_resp.status_code, 200)
+                    self.assertIsNone(list_resp.json()["scenes"][0]["asset"])
+                    self.assertEqual(list_resp.json()["scenes"][1]["asset"]["filename"], "video (2).mp4")
+                    self.assertEqual(list_resp.json()["scenes"][2]["asset"]["filename"], "img (3).jpg")
                 finally:
                     self.app_module.service = original
 
@@ -1153,6 +1214,177 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     episode_row = service.db.get_episode(episode_id)
                     self.assertEqual(episode_row["current_stage"], "final_review")
                     self.assertEqual(episode_row["pipeline_status"], "paused")
+                finally:
+                    self.app_module.service = original
+
+    def test_assembly_stage_can_move_back_to_asset_upload_after_render_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en"])
+                    episode_id = episode["id"]
+                    _write_master_timeline(
+                        service,
+                        episode_id,
+                        [
+                            {
+                                "scene_id": "scene_001",
+                                "start": 0.0,
+                                "end": 2.0,
+                                "duration": 2.0,
+                                "text": "Single scene.",
+                                "asset_type": "image",
+                            }
+                        ],
+                    )
+                    service.db.update_episode(
+                        episode_id,
+                        board_status="Done",
+                        pipeline_status="done",
+                        current_stage="export",
+                        updated_at=utc_now(),
+                    )
+                    self.assertEqual(client.post(f"/api/episodes/{episode_id}/assembly/start").status_code, 200)
+                    self.assertEqual(
+                        client.post(
+                            f"/api/episodes/{episode_id}/scenes/scene_001/asset",
+                            files={"file": ("prompt1.png", b"\x89PNG\r\n\x1a\nscene1", "image/png")},
+                        ).status_code,
+                        200,
+                    )
+                    self.assertEqual(
+                        client.post(
+                            f"/api/episodes/{episode_id}/assembly/advance",
+                            json={"target_stage": "assembly_validation"},
+                        ).status_code,
+                        200,
+                    )
+
+                    workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
+                    en_timeline = workspace / "timeline_en.json"
+                    en_timeline.write_text(
+                        json.dumps([{"scene_id": "scene_001", "start": 0.0, "end": 2.0, "duration": 2.0}]),
+                        encoding="utf-8",
+                    )
+                    en_audio = workspace / "narration_en.wav"
+                    en_audio.write_bytes(b"RIFF....WAVEfmt ")
+                    service.db.update_episode_language_status(
+                        episode_id,
+                        "en",
+                        timeline_status="done",
+                        timeline_path=str(en_timeline),
+                        tts_status="done",
+                        tts_audio_path=str(en_audio),
+                    )
+                    self.assertEqual(
+                        client.post(
+                            f"/api/episodes/{episode_id}/assembly/advance",
+                            json={"target_stage": "video_render"},
+                        ).status_code,
+                        200,
+                    )
+
+                    back_resp = client.post(
+                        f"/api/episodes/{episode_id}/assembly/advance",
+                        json={"target_stage": "asset_upload"},
+                    )
+                    self.assertEqual(back_resp.status_code, 200)
+                    self.assertEqual(back_resp.json()["current_stage"], "asset_upload")
+                finally:
+                    self.app_module.service = original
+
+    def test_assembly_stage_back_navigation_requires_active_renders_to_stop_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en"])
+                    episode_id = episode["id"]
+                    service.db.update_episode(
+                        episode_id,
+                        board_status="Paused",
+                        pipeline_status="paused",
+                        current_stage="video_render",
+                        queued_from_stage="video_render",
+                        updated_at=utc_now(),
+                    )
+                    now = utc_now()
+                    service.db.create_render_job(
+                        {
+                            "id": "render-active-1",
+                            "episode_id": episode_id,
+                            "language_code": "en",
+                            "state": "rendering",
+                            "stage": "rendering",
+                            "cancel_requested": 0,
+                            "outputs_json": "{}",
+                            "created_at": now,
+                            "updated_at": now,
+                        }
+                    )
+
+                    back_resp = client.post(
+                        f"/api/episodes/{episode_id}/assembly/advance",
+                        json={"target_stage": "asset_upload"},
+                    )
+                    self.assertEqual(back_resp.status_code, 400)
+                    self.assertIn("Stop active render jobs", back_resp.json()["detail"])
+                finally:
+                    self.app_module.service = original
+
+    def test_stop_render_endpoint_marks_active_jobs_and_cancels_queued_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    _, episode = self._create_niche_and_episode(client, langs=["en", "pt-BR"])
+                    episode_id = episode["id"]
+                    now = utc_now()
+                    service.db.create_render_job(
+                        {
+                            "id": "render-running-1",
+                            "episode_id": episode_id,
+                            "language_code": "en",
+                            "state": "rendering",
+                            "stage": "rendering",
+                            "cancel_requested": 0,
+                            "outputs_json": "{}",
+                            "created_at": now,
+                            "updated_at": now,
+                        }
+                    )
+                    service.db.create_render_job(
+                        {
+                            "id": "render-queued-1",
+                            "episode_id": episode_id,
+                            "language_code": "pt-BR",
+                            "state": "queued",
+                            "stage": "queued",
+                            "cancel_requested": 0,
+                            "outputs_json": "{}",
+                            "created_at": now,
+                            "updated_at": now,
+                        }
+                    )
+
+                    stop_resp = client.post(f"/api/episodes/{episode_id}/assembly/render/stop")
+                    self.assertEqual(stop_resp.status_code, 200)
+                    self.assertTrue(stop_resp.json()["stopped"])
+                    self.assertEqual(stop_resp.json()["requested_languages"], ["en"])
+                    self.assertEqual(stop_resp.json()["cancelled_languages"], ["pt-BR"])
+
+                    running_job = service.db.get_render_job("render-running-1")
+                    queued_job = service.db.get_render_job("render-queued-1")
+                    self.assertEqual(running_job["cancel_requested"], 1)
+                    self.assertEqual(queued_job["state"], "cancelled")
+                    self.assertEqual(queued_job["cancel_requested"], 1)
                 finally:
                     self.app_module.service = original
 
@@ -2688,10 +2920,10 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                     StageRunParams(
                         episode_id=episode_id,
                         stage="consistency_guide",
-                        provider="codex",
+                        provider="openai",
                         template_hash=None,
                         workdir=str(temp_path),
-                        command_payload={"provider": "codex", "model": "gpt-5.4-mini"},
+                        command_payload={"provider": "openai", "model": "gpt-4o-mini"},
                         stdout_path=None,
                         stderr_path=None,
                     )
@@ -2712,9 +2944,62 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertEqual(episode["pipeline_status"], "failed")
                 self.assertEqual(episode["board_status"], "Needs Attention")
                 self.assertIn("timed out after 60 seconds", episode["last_error"])
+                self.assertIn("OpenAI API request", episode["last_error"])
+                self.assertNotIn("CLI", episode["last_error"])
                 detail = service.get_episode_detail(episode_id)
                 self.assertEqual(detail["stage_runs"][0]["status"], "failed")
                 self.assertIn("timed out after 60 seconds", detail["stage_runs"][0]["error_message"])
+                self.assertIn("OpenAI API request", detail["stage_runs"][0]["error_message"])
+                self.assertNotIn("CLI", detail["stage_runs"][0]["error_message"])
+
+    def test_openai_structured_stage_hard_timeout_fails_fast(self) -> None:
+        class HangingCliRunner(FakeCliRunner):
+            def __init__(self) -> None:
+                super().__init__()
+                self._structured_timeout_seconds = 0.05
+                self.started = threading.Event()
+                self.release = threading.Event()
+
+            def run_structured(self, args: StructuredRunArgs):
+                args.artifact_dir.mkdir(parents=True, exist_ok=True)
+                self.started.set()
+                self.release.wait(timeout=10.0)
+                return super().run_structured(args)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                runner = HangingCliRunner()
+                service, pid, _ = self._setup(
+                    temp_path,
+                    runner=runner,
+                    visual_bible_provider="openai",
+                    visual_bible_model="gpt-4o-mini",
+                )
+                service._provider_stage_hard_timeout_grace_seconds = 0.01
+                service.db.set_setting("stage_provider_openai_api_key", "sk-stage-test")
+                episode_result = service.submit_episode(pid, title="Hung OpenAI", script_text="One paragraph.")
+                episode_id = episode_result["episode"]["id"]
+                try:
+                    with self.assertRaises(RuntimeError) as context:
+                        service._episode_run_consistency_guide(episode_id)
+                    self.assertTrue(runner.started.wait(timeout=0.5))
+                    detail = service.get_episode_detail(episode_id)
+                    stage_run = detail["stage_runs"][0]
+                    self.assertEqual(stage_run["status"], "failed")
+                    self.assertIn("hard timeout", stage_run["error_message"])
+                    self.assertIsNotNone(stage_run["stdout_path"])
+                    self.assertIsNotNone(stage_run["stderr_path"])
+                    self.assertIn(
+                        "hard timeout",
+                        Path(stage_run["stderr_path"]).read_text(encoding="utf-8"),
+                    )
+                finally:
+                    runner.release.set()
+
+                self.assertIn("hard timeout", str(context.exception))
+                self.assertIn("OpenAI API request", str(context.exception))
+                self.assertNotIn("CLI", str(context.exception))
 
     def test_translations_without_profiles_fail_stop_the_pipeline(self) -> None:
         """Translations fail-stop when required non-master profiles are missing."""
@@ -3315,7 +3600,7 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 service._episode_run_scene_planning(episode_id)
 
                 # LLM was called (at least once per chunk)
-                scene_calls = [c for c in runner.calls if "scenes" in c["schema"].get("properties", {})]
+                scene_calls = [c for c in runner.calls if "break_after_cue_ids" in c["schema"].get("properties", {})]
                 self.assertGreater(len(scene_calls), 0)
 
                 episode = service.db.get_episode(episode_id)
@@ -3324,33 +3609,29 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertIsInstance(timeline, list)
                 self.assertGreater(len(timeline), 0)
 
-    def test_scene_planning_repairs_small_overlap_and_persists_validation(self) -> None:
-        class SmallOverlapCliRunner(FakeCliRunner):
-            def run_structured(self, *, provider, model, api_key=None, system_prompt, user_prompt, schema, workdir, artifact_dir):
-                if "scenes" not in schema.get("properties", {}):
-                    return super().run_structured(
-                        provider=provider,
-                        model=model,
-                        api_key=api_key,
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        schema=schema,
-                        workdir=workdir,
-                        artifact_dir=artifact_dir,
-                    )
-                artifact_dir.mkdir(parents=True, exist_ok=True)
-                self.calls.append({"provider": provider, "model": model, "schema": schema})
-                stdout_path = artifact_dir / "stdout.txt"
-                stderr_path = artifact_dir / "stderr.txt"
-                stdout_path.write_text("small-overlap stdout", encoding="utf-8")
+    def test_scene_planning_builds_scenes_from_cue_breaks(self) -> None:
+        """Scene planning groups cues according to LLM break_after_cue_ids with cue-exact timing."""
+
+        class CueBreakCliRunner(FakeCliRunner):
+            def run_structured(self, args: StructuredRunArgs):
+                if "break_after_cue_ids" not in args.schema.get("properties", {}):
+                    return super().run_structured(args)
+                args.artifact_dir.mkdir(parents=True, exist_ok=True)
+                self.calls.append({
+                    "provider": args.provider,
+                    "model": args.model,
+                    "api_key": args.api_key,
+                    "schema": args.schema,
+                    "workdir": str(args.workdir),
+                    "artifact_dir": str(args.artifact_dir),
+                })
+                stdout_path = args.artifact_dir / "stdout.txt"
+                stderr_path = args.artifact_dir / "stderr.txt"
+                stdout_path.write_text("cue-break stdout", encoding="utf-8")
                 stderr_path.write_text("", encoding="utf-8")
+                # Break after cue 2: yields scenes [cues 1-2] and [cues 3-4]
                 return {
-                    "parsed": {
-                        "scenes": [
-                            {"start": 0.0, "end": 3.0, "duration": 3.0, "text": "First repaired scene."},
-                            {"start": 2.91, "end": 6.0, "duration": 3.09, "text": "Second repaired scene."},
-                        ]
-                    },
+                    "parsed": {"break_after_cue_ids": [2]},
                     "stdout_path": str(stdout_path),
                     "stderr_path": str(stderr_path),
                     "command_payload": {"fake": True},
@@ -3359,15 +3640,17 @@ class EpisodePipelineServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
-                service = _make_service(temp_path, cli_runner=SmallOverlapCliRunner())
-                project = service.create_niche_project(name="Repair Planning", master_language="en", configured_languages=["en"])
-                episode_result = service.submit_episode(project["project"]["id"], title="Repair Planning", script_text="Test")
+                service = _make_service(temp_path, cli_runner=CueBreakCliRunner())
+                project = service.create_niche_project(name="Cue Break", master_language="en", configured_languages=["en"])
+                episode_result = service.submit_episode(project["project"]["id"], title="Cue Break", script_text="Test")
                 episode_id = episode_result["episode"]["id"]
                 workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
 
                 srt_content = (
-                    "1\n00:00:00,000 --> 00:00:03,000\nFirst subtitle.\n\n"
-                    "2\n00:00:03,000 --> 00:00:06,000\nSecond subtitle.\n"
+                    "1\n00:00:00,000 --> 00:00:02,000\nFirst subtitle.\n\n"
+                    "2\n00:00:02,000 --> 00:00:04,000\nSecond subtitle.\n\n"
+                    "3\n00:00:04,000 --> 00:00:07,000\nThird subtitle.\n\n"
+                    "4\n00:00:07,000 --> 00:00:09,000\nFourth subtitle.\n"
                 )
                 srt_path = workspace / "final_en.srt"
                 srt_path.write_text(srt_content, encoding="utf-8")
@@ -3380,72 +3663,12 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 episode = service.db.get_episode(episode_id)
                 timeline = json.loads(Path(episode["timeline_draft_path"]).read_text(encoding="utf-8"))
                 report = json.loads(Path(episode["timeline_validation_path"]).read_text(encoding="utf-8"))
-                self.assertEqual(timeline[1]["start"], 3.0)
-                self.assertEqual(timeline[1]["duration"], 3.0)
+
+                self.assertEqual(len(timeline), 2)
+                self.assertEqual((timeline[0]["start"], timeline[0]["end"]), (0.0, 4.0))
+                self.assertEqual((timeline[1]["start"], timeline[1]["end"]), (4.0, 9.0))
                 self.assertEqual(report["status"], "valid")
-                self.assertEqual(report["overlap_adjustments"], 1)
-
-    def test_scene_planning_rejects_large_overlap_and_persists_invalid_report(self) -> None:
-        class LargeOverlapCliRunner(FakeCliRunner):
-            def run_structured(self, *, provider, model, api_key=None, system_prompt, user_prompt, schema, workdir, artifact_dir):
-                if "scenes" not in schema.get("properties", {}):
-                    return super().run_structured(
-                        provider=provider,
-                        model=model,
-                        api_key=api_key,
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        schema=schema,
-                        workdir=workdir,
-                        artifact_dir=artifact_dir,
-                    )
-                artifact_dir.mkdir(parents=True, exist_ok=True)
-                stdout_path = artifact_dir / "stdout.txt"
-                stderr_path = artifact_dir / "stderr.txt"
-                stdout_path.write_text("large-overlap stdout", encoding="utf-8")
-                stderr_path.write_text("", encoding="utf-8")
-                return {
-                    "parsed": {
-                        "scenes": [
-                            {"start": 0.0, "end": 3.0, "duration": 3.0, "text": "First invalid scene."},
-                            {"start": 2.4, "end": 6.0, "duration": 3.6, "text": "Second invalid scene."},
-                        ]
-                    },
-                    "stdout_path": str(stdout_path),
-                    "stderr_path": str(stderr_path),
-                    "command_payload": {"fake": True},
-                }
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
-                service = _make_service(temp_path, cli_runner=LargeOverlapCliRunner())
-                project = service.create_niche_project(name="Reject Planning", master_language="en", configured_languages=["en"])
-                episode_result = service.submit_episode(project["project"]["id"], title="Reject Planning", script_text="Test")
-                episode_id = episode_result["episode"]["id"]
-                workspace = Path(service.db.get_episode(episode_id)["workspace_dir"])
-
-                srt_content = (
-                    "1\n00:00:00,000 --> 00:00:03,000\nFirst subtitle.\n\n"
-                    "2\n00:00:03,000 --> 00:00:06,000\nSecond subtitle.\n"
-                )
-                srt_path = workspace / "final_en.srt"
-                srt_path.write_text(srt_content, encoding="utf-8")
-                service.db.update_episode_language_status(
-                    episode_id, "en", srt_status="done", srt_path=str(srt_path),
-                )
-                service._episode_run_chunking(episode_id)
-
-                with self.assertRaises(ValueError) as ctx:
-                    service._episode_run_scene_planning(episode_id)
-
-                self.assertIn("Timeline draft is invalid", str(ctx.exception))
-                episode = service.db.get_episode(episode_id)
-                self.assertFalse(episode["timeline_draft_path"])
-                self.assertTrue(episode["timeline_validation_path"])
-                report = json.loads(Path(episode["timeline_validation_path"]).read_text(encoding="utf-8"))
-                self.assertEqual(report["status"], "invalid")
-                self.assertTrue(report["errors"])
+                self.assertEqual(report["errors"], [])
 
     def test_save_master_scenes_copies_timeline(self) -> None:
         """Save master scenes creates a copy of the timeline draft."""
