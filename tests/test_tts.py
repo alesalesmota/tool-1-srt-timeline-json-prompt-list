@@ -252,6 +252,39 @@ class TTSJobDbTests(unittest.TestCase):
         claimed = self.db.claim_next_tts_job("w1")
         self.assertEqual(claimed["job_id"], "high")
 
+    def test_claim_next_tts_job_retries_retryable_database_lock(self):
+        self._make_job("j1")
+        real_connect = self.db._connect
+
+        class LockedConnection:
+            def execute(self, query: str, *args: Any):
+                if query == "BEGIN IMMEDIATE":
+                    raise sqlite3.OperationalError("database is locked")
+                if query == "ROLLBACK":
+                    return self
+                raise AssertionError(f"Unexpected query during lock simulation: {query}")
+
+            def close(self) -> None:
+                return None
+
+        connect_calls = {"count": 0}
+
+        def fake_connect():
+            connect_calls["count"] += 1
+            if connect_calls["count"] == 1:
+                return LockedConnection()
+            return real_connect()
+
+        with patch.object(self.db, "_connect", side_effect=fake_connect), patch(
+            "tool1_dashboard.database.time.sleep"
+        ) as sleep_mock:
+            claimed = self.db.claim_next_tts_job("worker-1")
+
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed["job_id"], "j1")
+        sleep_mock.assert_called_once_with(0.2)
+        self.assertGreaterEqual(connect_calls["count"], 2)
+
     def test_requeue_stale(self):
         now = time.time()
         self.db.create_tts_job({
@@ -718,6 +751,38 @@ class ManagerJobSubmissionTests(unittest.TestCase):
         self.assertFalse(started)
         self.assertEqual(mgr._active_worker_id, "worker-live")
 
+    def test_pid_is_alive_uses_windows_specific_probe(self):
+        from tool1_dashboard.tts.manager import TTSManager
+
+        with patch("tool1_dashboard.tts.manager.sys.platform", "win32"), patch.object(
+            TTSManager,
+            "_pid_is_alive_windows",
+            return_value=True,
+        ) as probe_mock:
+            self.assertTrue(TTSManager._pid_is_alive(1234))
+
+        probe_mock.assert_called_once_with(1234)
+
+    def test_list_live_worker_heartbeats_ignores_pid_probe_errors(self):
+        from tool1_dashboard.tts.manager import TTSManager
+
+        now = time.time()
+        self.db.record_worker_heartbeat(
+            WorkerHeartbeat(
+                worker_id="worker-live",
+                status="processing",
+                current_job_id="job-1",
+                pid=4321,
+                started_at=now,
+            )
+        )
+        mgr = TTSManager(self.db)
+
+        with patch.object(mgr, "_pid_is_alive", side_effect=SystemError("pid probe failed")):
+            live_workers = mgr._list_live_worker_heartbeats()
+
+        self.assertEqual(live_workers, [])
+
     def test_ensure_worker_ready_stops_duplicate_worker_and_requeues_its_job(self):
         from tool1_dashboard.tts.manager import TTSManager, WorkerRuntimeStatus
 
@@ -1174,6 +1239,14 @@ class EpisodeTtsQueueStatusTests(unittest.TestCase):
                 "timeline_status": "pending",
                 "updated_at": now,
             })
+        (self.workspace / "translation_report_es.json").write_text(
+            json.dumps({
+                "language_code": "es",
+                "status": "done",
+                "translated_script": "Hola mundo. Este es un guion de prueba para narracion en cola.",
+            }),
+            encoding="utf-8",
+        )
         for profile_id in ("voice-en", "voice-es"):
             self.service.db.create_voice_profile({
                 "id": profile_id,
@@ -1635,6 +1708,69 @@ class EpisodeTtsQueueStatusTests(unittest.TestCase):
         requeued = self.service.db.get_tts_job("job-en")
         self.assertEqual(requeued["status"], "queued")
         self.assertIsNone(requeued["worker_id"])
+
+    def test_recover_paused_tts_queue_ignores_transient_ensure_error_when_worker_stays_healthy(self):
+        from tool1_dashboard.tts.manager import WorkerHealth
+
+        now = time.time()
+        self.service.db.create_tts_job({
+            "job_id": "job-en-running",
+            "build_id": "ep-1",
+            "job_type": "generate",
+            "profile_id": "voice-en",
+            "status": "processing",
+            "progress": "Generating chunk 1/2...",
+            "payload_json": json.dumps({"texts": ["hello", "world"]}),
+            "meta_json": "{}",
+            "queue_priority": 10,
+            "worker_id": "healthy-worker",
+            "created_at": now,
+            "updated_at": now,
+        })
+        self.service.db.update_episode_language_status(
+            "ep-1",
+            "en",
+            tts_status="running",
+            tts_job_id="job-en-running",
+        )
+        self.service.db.record_worker_heartbeat(
+            WorkerHeartbeat(
+                worker_id="healthy-worker",
+                status="processing",
+                current_job_id="job-en-running",
+                pid=5555,
+                started_at=now,
+            )
+        )
+        healthy = WorkerHealth(
+            running=True,
+            worker_id="healthy-worker",
+            status="processing",
+            current_job_id="job-en-running",
+            last_heartbeat=now,
+            is_stale=False,
+            pid=5555,
+            startup_error=None,
+            missing_dependencies=[],
+            lifecycle_state="processing",
+        )
+
+        with patch.object(
+            self.service.tts_manager,
+            "get_worker_health",
+            side_effect=[healthy, healthy],
+        ), patch.object(
+            self.service.tts_manager,
+            "ensure_worker_ready",
+            side_effect=RuntimeError("worker recovery probe failed"),
+        ) as ensure_mock:
+            error = self.service._recover_paused_tts_queue([self.service.db.get_episode("ep-1")])
+
+        self.assertIsNone(error)
+        ensure_mock.assert_called_once_with(intent="pipeline")
+        job = self.service.db.get_tts_job("job-en-running")
+        self.assertEqual(job["status"], "processing")
+        self.assertEqual(job["worker_id"], "healthy-worker")
 
 
 class VoiceProfileUiCopyTests(unittest.TestCase):

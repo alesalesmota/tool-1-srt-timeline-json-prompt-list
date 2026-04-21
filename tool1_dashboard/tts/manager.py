@@ -5,6 +5,7 @@ Manages the TTS worker subprocess lifecycle and job submission.
 
 from __future__ import annotations
 
+import ctypes
 import importlib
 import json
 import logging
@@ -257,6 +258,44 @@ class TTSManager:
     # ── worker lifecycle ─────────────────────────────────────────────
 
     @staticmethod
+    def _pid_is_alive_windows(pid_value: int) -> bool:
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        ERROR_ACCESS_DENIED = 5
+        ERROR_INVALID_PARAMETER = 87
+
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            open_process = kernel32.OpenProcess
+            open_process.restype = ctypes.c_void_p
+            open_process.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+            get_exit_code_process = kernel32.GetExitCodeProcess
+            get_exit_code_process.restype = ctypes.c_int
+            get_exit_code_process.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32))
+            close_handle = kernel32.CloseHandle
+            close_handle.restype = ctypes.c_int
+            close_handle.argtypes = (ctypes.c_void_p,)
+        except Exception:
+            return False
+
+        handle = open_process(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid_value)
+        if not handle:
+            error_code = ctypes.get_last_error()
+            if error_code == ERROR_ACCESS_DENIED:
+                return True
+            if error_code == ERROR_INVALID_PARAMETER:
+                return False
+            return False
+
+        exit_code = ctypes.c_uint32()
+        try:
+            if not get_exit_code_process(handle, ctypes.byref(exit_code)):
+                return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            close_handle(handle)
+
+    @staticmethod
     def _pid_is_alive(pid: Any) -> bool:
         try:
             pid_value = int(pid or 0)
@@ -264,13 +303,15 @@ class TTSManager:
             return False
         if pid_value <= 0:
             return False
+        if sys.platform.startswith("win"):
+            return TTSManager._pid_is_alive_windows(pid_value)
         try:
             os.kill(pid_value, 0)
         except ProcessLookupError:
             return False
         except PermissionError:
             return True
-        except OSError:
+        except (OSError, SystemError):
             return False
         return True
 
@@ -319,7 +360,14 @@ class TTSManager:
                 continue
             if heartbeat_at <= 0 or heartbeat_at < cutoff:
                 continue
-            if pid_value <= 0 or not self._pid_is_alive(pid_value):
+            if pid_value <= 0:
+                continue
+            try:
+                is_alive = self._pid_is_alive(pid_value)
+            except Exception:
+                log.warning("Failed to probe TTS worker pid=%s", pid_value, exc_info=True)
+                continue
+            if not is_alive:
                 continue
             if pid_value in seen_pids:
                 continue

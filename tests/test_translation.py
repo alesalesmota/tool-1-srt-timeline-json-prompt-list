@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
+
+import httpx
 
 from tool1_dashboard.translation.chunker import (
     TranslationChunk,
@@ -17,10 +20,12 @@ from tool1_dashboard.translation.chunker import (
 )
 from tool1_dashboard.translation.language_rules import build_spoken_script
 from tool1_dashboard.translation.prompts import (
+    DEFAULT_TRANSLATION_PROMPT,
     build_translation_prompt,
     build_translation_repair_prompt,
     build_translation_review_prompt,
     build_translation_script_repair_prompt,
+    normalize_translation_prompt_template,
 )
 from tool1_dashboard.translation.service import TranslationService
 from tool1_dashboard.translation.adapter import TranslationAdapter, TranslationError
@@ -301,6 +306,16 @@ class PromptBuildingTests(unittest.TestCase):
         self.assertIn("Every issue must quote or paraphrase the exact translated wording", prompt)
         self.assertIn("\"passed\": true", prompt)
 
+    def test_translation_prompt_template_rejects_unknown_placeholders(self):
+        with self.assertRaises(ValueError) as ctx:
+            normalize_translation_prompt_template(
+                "Translate from {source_lang} to {target_lang}.\n{unexpected}\n{text}"
+            )
+        self.assertIn("unsupported placeholder", str(ctx.exception))
+
+    def test_translation_prompt_template_normalizes_builtin_default_to_empty(self):
+        self.assertEqual(normalize_translation_prompt_template(DEFAULT_TRANSLATION_PROMPT), "")
+
 
 class TranslationAdapterOpenAiTests(unittest.TestCase):
 
@@ -492,6 +507,33 @@ class TranslationServiceTests(unittest.TestCase):
         # Second prompt should contain context
         self.assertIn("CONTEXT from previous", prompts_seen[1])
 
+    def test_custom_translation_prompt_template_is_used(self):
+        prompts_seen: list[str] = []
+        adapter = TranslationAdapter()
+
+        async def capture_translate(provider, api_key, model, prompt):
+            prompts_seen.append(prompt)
+            return "Texto natural y fluido para narracion."
+
+        adapter.translate_chunk = capture_translate  # type: ignore
+        svc = TranslationService(adapter=adapter)
+
+        result = self._run_async(svc.translate_script(
+            source_script="Hello world.",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+            translation_prompt_template="CUSTOM TRANSLATOR\nFrom: {source_lang}\nTo: {target_lang}\n\n{text}",
+        ))
+        self.assertEqual(result.status, "done")
+        self.assertEqual(len(prompts_seen), 1)
+        self.assertIn("CUSTOM TRANSLATOR", prompts_seen[0])
+        self.assertIn("From: English", prompts_seen[0])
+        self.assertIn("To: Spanish", prompts_seen[0])
+        self.assertNotIn("STRICT RULES", prompts_seen[0])
+
     def test_chunk_error_fails_the_language(self):
         adapter = self._make_fake_adapter([
             TranslationError("Gemini", 429, "Rate limited"),
@@ -531,6 +573,44 @@ class TranslationServiceTests(unittest.TestCase):
         self.assertEqual(result.status, "error")
         self.assertEqual(result.chunk_results[0].status, "error")
         self.assertIn("empty translation", (result.chunk_results[0].error or "").lower())
+
+    def test_timeout_retries_once_and_can_still_succeed(self):
+        adapter = self._make_fake_adapter([
+            httpx.ReadTimeout("timed out"),
+            "Texto estable despues del reintento.",
+        ])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="Steady text after a transient timeout.",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-4.1-mini",
+        ))
+        self.assertEqual(result.status, "done")
+        self.assertEqual(len(result.chunk_results), 1)
+        self.assertEqual(result.chunk_results[0].status, "ok")
+        self.assertIn("reintento", result.translated_script)
+
+    def test_timeout_failure_is_reported_as_timeout_not_unexpected_error(self):
+        adapter = self._make_fake_adapter([
+            httpx.ReadTimeout("timed out"),
+            httpx.ReadTimeout("timed out"),
+        ])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script="This should surface a timeout clearly.",
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-4.1-mini",
+        ))
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.chunk_results[0].category, "network_timeout")
+        self.assertIn("timed out", (result.error_message or "").lower())
+        self.assertNotIn("unexpected error", (result.error_message or "").lower())
 
     def test_all_chunks_fail(self):
         adapter = self._make_fake_adapter([
@@ -596,6 +676,126 @@ class TranslationServiceTests(unittest.TestCase):
         self.assertEqual(result.chunk_results[0].status, "error")
         self.assertEqual(result.chunk_results[0].category, "suspicious_length")
         self.assertIn("suspiciously long", (result.error_message or "").lower())
+
+    def test_source_backed_repeated_quote_passes_deterministic_validation(self):
+        source_script = "\n\n".join([
+            "Jesus blessed the bread before the gathered disciples in the upper room that night.",
+            "Do this in remembrance of me, and receive the covenant I now give you today.",
+            "Paul later retold the same holy moment to the church with careful detail and reverence.",
+            "Do this in remembrance of me, and receive the covenant I now give you today.",
+        ])
+        translated_script = "\n\n".join([
+            "Jesús bendijo el pan ante los discípulos reunidos en el aposento alto aquella noche.",
+            "Haced esto en memoria de mí, y recibid hoy el pacto que ahora os entrego.",
+            "Pablo volvió a contar después el mismo momento santo a la iglesia con cuidado y reverencia.",
+            "Haced esto en memoria de mí, y recibid hoy el pacto que ahora os entrego.",
+        ])
+        adapter = self._make_fake_adapter([translated_script])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script=source_script,
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+        ))
+        self.assertEqual(result.status, "done")
+        self.assertIn("Haced esto en memoria de mí", result.translated_script)
+
+    def test_source_backed_repeated_stanza_with_short_separator_paragraphs_passes(self):
+        source_script = "\n\n".join([
+            "Beloved, the promise remains. I will be with you. The blessing remains. Peace. The invitation remains. Return. The gift remains. My Spirit poured out. The calling remains. Dwell on what is true and lovely and pure and worthy of praise. The shepherd remains. The fire remains. The throne remains. Christ remains.",
+            "Everything that must remain, remains.",
+            "Now take one last slow breath.",
+            "On the inhale, receive this: my God is with me.\nOn the exhale, release this: I can sleep in peace.",
+            "Again.",
+            "My God is with me.\nI can sleep in peace.",
+            "Again.",
+            "My God is with me.\nI can sleep in peace.",
+            "And one more time, soft as a lullaby over the soul.",
+            "My God is with me.\nI can sleep in peace.",
+            "Amen.",
+        ])
+        translated_script = "\n\n".join([
+            "Amado, la promesa permanece. Yo estaré contigo. La bendición permanece. Paz. La invitación permanece. Regresa. El regalo permanece. Mi Espíritu derramado. El llamado permanece. Detente en lo que es verdadero, hermoso, puro y digno de alabanza. El pastor permanece. El fuego permanece. El trono permanece. Cristo permanece.",
+            "Todo lo que debe permanecer, permanece.",
+            "Ahora toma una última respiración lenta.",
+            "Al inhalar, recibe esto: mi Dios está conmigo.\nAl exhalar, suelta esto: puedo dormir en paz.",
+            "Otra vez.",
+            "Mi Dios está conmigo.\nPuedo dormir en paz.",
+            "Otra vez.",
+            "Mi Dios está conmigo.\nPuedo dormir en paz.",
+            "Y una vez más, suave como una canción de cuna sobre el alma.",
+            "Mi Dios está conmigo.\nPuedo dormir en paz.",
+            "Amén.",
+        ])
+        adapter = self._make_fake_adapter([translated_script])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script=source_script,
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-4.1-mini",
+        ))
+        self.assertEqual(result.status, "done")
+        self.assertIn("Mi Dios está conmigo.", result.translated_script)
+
+    def test_translation_introduced_duplicate_paragraph_fails_with_debug_output(self):
+        source_script = "\n\n".join([
+            "The disciples prepared the room before the meal began in solemn silence.",
+            "Jesus blessed the bread and spoke to them with gravity and tenderness.",
+            "The room held the weight of what was about to happen in Jerusalem.",
+        ])
+        translated_script = "\n\n".join([
+            "Los discípulos prepararon la sala antes de que empezara la comida en solemne silencio.",
+            "Jesús bendijo el pan y les habló con gravedad y ternura.",
+            "Los discípulos prepararon la sala antes de que empezara la comida en solemne silencio.",
+        ])
+        adapter = self._make_fake_adapter([translated_script])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script=source_script,
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+        ))
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.chunk_results[0].category, "duplication")
+        self.assertIn("duplicated translated paragraphs", (result.error_message or "").lower())
+        self.assertEqual(result.chunk_results[0].raw_translated_text, translated_script)
+        self.assertIn("Los discípulos prepararon", result.chunk_results[0].raw_translated_text_excerpt or "")
+
+    def test_adjacent_repeated_span_fails_deterministic_validation(self):
+        source_script = "\n\n".join([
+            "The first paragraph is long enough to count in the deterministic validator safely.",
+            "The second paragraph stays unique in the original source structure for this test.",
+            "The third paragraph also stays unique in the original source structure for this test.",
+        ])
+        translated_script = "\n\n".join([
+            "El primer párrafo es lo bastante largo para contar en el validador determinista sin problema.",
+            "El segundo párrafo sigue siendo único en la estructura original de origen para esta prueba.",
+            "El tercer párrafo también sigue siendo único en la estructura original de origen para esta prueba.",
+            "El segundo párrafo sigue siendo único en la estructura original de origen para esta prueba.",
+            "El tercer párrafo también sigue siendo único en la estructura original de origen para esta prueba.",
+        ])
+        adapter = self._make_fake_adapter([translated_script])
+        svc = TranslationService(adapter=adapter)
+        result = self._run_async(svc.translate_script(
+            source_script=source_script,
+            source_lang="English",
+            target_lang="Spanish",
+            provider="openai",
+            api_key="fake",
+            model="gpt-5-nano",
+        ))
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.chunk_results[0].category, "duplication")
+        self.assertIn("adjacent paragraph span", (result.error_message or "").lower())
 
     def test_digits_in_translation_fail_deterministic_validation(self):
         adapter = self._make_fake_adapter([
@@ -983,6 +1183,25 @@ class TranslationRetryFlowTests(unittest.TestCase):
         self.assertTrue(status["spoken_script_path"])
         self.assertTrue(Path(status["spoken_script_path"]).exists())
 
+    def test_niche_project_detail_exposes_effective_translation_prompt(self):
+        project_payload = self.service.create_niche_project(name="Prompt Project")
+        project_id = project_payload["project"]["id"]
+
+        default_detail = self.service.get_niche_project_detail(project_id)
+        self.assertFalse(default_detail["project"]["translation_system_prompt_is_custom"])
+        self.assertIn(
+            "You are a professional translator",
+            default_detail["project"]["effective_translation_system_prompt"],
+        )
+
+        custom_prompt = "CUSTOM TRANSLATOR\nFrom {source_lang} to {target_lang}\n\n{text}"
+        self.service.update_niche_project(project_id, translation_system_prompt=custom_prompt)
+
+        detail = self.service.get_niche_project_detail(project_id)
+        self.assertTrue(detail["project"]["translation_system_prompt_is_custom"])
+        self.assertEqual(detail["project"]["translation_system_prompt"], custom_prompt)
+        self.assertEqual(detail["project"]["effective_translation_system_prompt"], custom_prompt)
+
     def test_translation_preview_returns_diagnostics_payload(self):
         from tool1_dashboard.runtime import utc_now
 
@@ -1054,6 +1273,110 @@ class TranslationRetryFlowTests(unittest.TestCase):
         self.assertFalse(preview["review_enabled"])
         self.assertEqual(preview["diagnostics"]["status"], "done")
         self.assertEqual(preview["translation_log"][0]["provider"], "openai")
+
+    def test_failed_chunk_output_artifact_is_persisted_and_exposed_in_preview(self):
+        from tool1_dashboard.runtime import utc_now
+
+        now = utc_now()
+        self.db.create_translation_profile({
+            "id": "tp-preview-error",
+            "name": "Preview Error Profile",
+            "provider": "openai",
+            "api_key_ref": "sk-test",
+            "model": "gpt-5-nano",
+            "is_default": 0,
+            "created_at": now,
+            "updated_at": now,
+        })
+        project_payload = self.service.create_niche_project(
+            name="Preview Error Project",
+            configured_languages=["en", "es"],
+            language_translation_profiles={"es": "tp-preview-error"},
+        )
+        episode_payload = self.service.submit_episode(
+            project_payload["project"]["id"],
+            title="Preview Error Episode",
+            script_text="Hello world.",
+        )
+        episode = episode_payload["episode"]
+        raw_output = "\n\n".join([
+            "Los discípulos prepararon la sala antes de la cena.",
+            "Los discípulos prepararon la sala antes de la cena.",
+        ])
+        result = SimpleNamespace(
+            translated_script="",
+            status="error",
+            error_message="Translation contains duplicated translated paragraphs.",
+            error_summary="Duplicated text",
+            error_categories=["duplication"],
+            chunk_results=[
+                SimpleNamespace(
+                    chunk_index=0,
+                    scene_ids=[],
+                    translated_text="",
+                    words_in=2,
+                    words_out=14,
+                    status="error",
+                    error="Translation contains duplicated translated paragraphs.",
+                    provider="openai",
+                    model="gpt-5-nano",
+                    category="duplication",
+                    offending_excerpt="Los discípulos prepararon la sala antes de la cena.",
+                    next_action="Inspect provider/model output because the translation contains duplicated passages.",
+                    diagnostics=[{
+                        "category": "duplication",
+                        "message": "Translation contains duplicated translated paragraphs.",
+                        "offending_excerpt": "Los discípulos prepararon la sala antes de la cena.",
+                        "next_action": "Inspect provider/model output because the translation contains duplicated passages.",
+                        "blocking": True,
+                        "scope": "content",
+                    }],
+                    raw_translated_text=raw_output,
+                    raw_translated_text_excerpt="Los discípulos prepararon la sala antes de la cena.",
+                    raw_translated_text_path=None,
+                )
+            ],
+            provider="openai",
+            model="gpt-5-nano",
+            review_enabled=False,
+            diagnostics={
+                "status": "error",
+                "provider": "openai",
+                "model": "gpt-5-nano",
+                "review_enabled": False,
+                "blockers": [{
+                    "category": "duplication",
+                    "message": "Translation contains duplicated translated paragraphs.",
+                    "offending_excerpt": "Los discípulos prepararon la sala antes de la cena.",
+                    "next_action": "Inspect provider/model output because the translation contains duplicated passages.",
+                    "blocking": True,
+                    "scope": "content",
+                }],
+                "warnings": [],
+                "recommended_next_action": "Inspect provider/model output because the translation contains duplicated passages.",
+                "review_report": None,
+            },
+        )
+        with patch(
+            "tool1_dashboard.translation.TranslationService.translate_script",
+            new=AsyncMock(return_value=result),
+        ):
+            self.service._episode_retry_single_translation(episode["id"], "es")
+
+        preview = self.service.get_translation_preview(episode["id"], "es")
+        self.assertEqual(preview["translation_status"], "failed")
+        self.assertEqual(preview["translation_log"][0]["category"], "duplication")
+        self.assertIn("Los discípulos prepararon", preview["translation_log"][0]["raw_translated_text_excerpt"])
+        artifact_path = Path(preview["translation_log"][0]["raw_translated_text_path"])
+        self.assertTrue(artifact_path.exists())
+        self.assertEqual(artifact_path.read_text(encoding="utf-8"), raw_output)
+        self.assertIsNotNone(preview["failed_chunk_debug"])
+        assert preview["failed_chunk_debug"] is not None
+        self.assertEqual(preview["failed_chunk_debug"]["raw_translated_text_path"], str(artifact_path))
+
+        report_path = Path(episode["workspace_dir"]) / "translation_report_es.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(report["failed_chunk_debug"]["raw_translated_text_path"], str(artifact_path))
 
 
 class TranslationProfilePresentationTests(unittest.TestCase):

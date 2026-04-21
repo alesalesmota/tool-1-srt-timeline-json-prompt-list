@@ -29,3 +29,7 @@ class CommandExecutionError(AutoVideoError):
         if stderr.strip():
             message = f"{message}\n{stderr.strip()}"
         super().__init__(message)
+
+
+class RenderCancelledError(AutoVideoError):
+    """Raised when the dashboard requests the current render job to stop."""

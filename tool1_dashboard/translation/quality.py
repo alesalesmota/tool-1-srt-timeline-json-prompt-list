@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
 import re
 from typing import Any
 
@@ -144,13 +143,68 @@ def normalize_compare_text(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip().lower())
 
 
-def significant_paragraphs(text: str) -> list[str]:
+def _normalized_paragraphs(
+    text: str,
+    *,
+    min_words: int | None = None,
+) -> list[str]:
     paragraphs: list[str] = []
     for paragraph in re.split(r"\n\s*\n+", str(text or "").strip()):
         normalized = normalize_compare_text(paragraph)
-        if len(normalized.split()) >= _MIN_PARAGRAPH_WORDS:
-            paragraphs.append(normalized)
+        if not normalized:
+            continue
+        if min_words is not None and len(normalized.split()) < min_words:
+            continue
+        paragraphs.append(normalized)
     return paragraphs
+
+
+def significant_paragraphs(text: str) -> list[str]:
+    return _normalized_paragraphs(text, min_words=_MIN_PARAGRAPH_WORDS)
+
+
+def structural_paragraphs(text: str) -> list[str]:
+    return _normalized_paragraphs(text)
+
+
+def _paragraph_positions(paragraphs: list[str]) -> dict[str, list[int]]:
+    positions: dict[str, list[int]] = {}
+    for index, paragraph in enumerate(paragraphs):
+        positions.setdefault(paragraph, []).append(index)
+    return positions
+
+
+def _repeated_paragraph_positions(
+    paragraphs: list[str],
+    *,
+    min_words: int | None = _MIN_PARAGRAPH_WORDS,
+) -> list[tuple[str, tuple[int, ...]]]:
+    return [
+        (paragraph, tuple(indices))
+        for paragraph, indices in _paragraph_positions(paragraphs).items()
+        if len(indices) > 1 and (min_words is None or len(paragraph.split()) >= min_words)
+    ]
+
+
+def _adjacent_repeated_spans(
+    paragraphs: list[str],
+    *,
+    max_span: int = 3,
+    min_total_words: int | None = _MIN_PARAGRAPH_WORDS,
+) -> list[tuple[tuple[int, int], list[str]]]:
+    spans: list[tuple[tuple[int, int], list[str]]] = []
+    total = len(paragraphs)
+    if total < 2:
+        return spans
+    max_window = min(max_span, total // 2)
+    for span_len in range(1, max_window + 1):
+        for start in range(0, total - (span_len * 2) + 1):
+            left = paragraphs[start:start + span_len]
+            right = paragraphs[start + span_len:start + (span_len * 2)]
+            total_words = sum(len(paragraph.split()) for paragraph in left)
+            if left == right and (min_total_words is None or total_words >= min_total_words):
+                spans.append(((start, span_len), left))
+    return spans
 
 
 def is_non_english_target(language_code: str) -> bool:
@@ -292,6 +346,13 @@ def _dedupe_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
+def _join_excerpt_lines(lines: list[str]) -> str | None:
+    cleaned = [str(line or "").strip() for line in lines if str(line or "").strip()]
+    if not cleaned:
+        return None
+    return _trim_excerpt(" / ".join(cleaned))
+
+
 def _find_gibberish_excerpt(translated_text: str) -> str | None:
     for raw_token in re.findall(r"\S+", str(translated_text or "")):
         token = raw_token.strip("()[]{}<>\"'.,;:!?")
@@ -350,14 +411,51 @@ def collect_translation_quality_findings(
             )
         )
 
-    translated_paragraphs = significant_paragraphs(translated_clean)
-    duplicate_counts = Counter(translated_paragraphs)
-    duplicate_excerpt = next((paragraph for paragraph, count in duplicate_counts.items() if count > 1), None)
-    if str(source_text or "").strip() and duplicate_excerpt:
+    source_paragraphs = structural_paragraphs(source_text)
+    translated_paragraphs = structural_paragraphs(translated_clean)
+    source_adjacent_spans = {
+        key
+        for key, _ in _adjacent_repeated_spans(source_paragraphs)
+    }
+    unexpected_adjacent_span = next(
+        (
+            (key, lines)
+            for key, lines in _adjacent_repeated_spans(translated_paragraphs)
+            if key not in source_adjacent_spans
+        ),
+        None,
+    )
+    if str(source_text or "").strip() and unexpected_adjacent_span:
+        (_, span_len), span_lines = unexpected_adjacent_span
         findings.append(
             _make_finding(
                 "duplication",
-                "Translation contains duplicated translated paragraphs.",
+                "Translation contains a duplicated adjacent paragraph span."
+                if span_len > 1
+                else "Translation contains a duplicated adjacent paragraph.",
+                offending_excerpt=_join_excerpt_lines(span_lines),
+            )
+        )
+
+    source_repeated_positions = {
+        positions
+        for _, positions in _repeated_paragraph_positions(source_paragraphs)
+    }
+    translated_repeated_positions = _repeated_paragraph_positions(translated_paragraphs)
+    unexpected_duplicate = next(
+        (
+            (paragraph, positions)
+            for paragraph, positions in translated_repeated_positions
+            if positions not in source_repeated_positions
+        ),
+        None,
+    )
+    if str(source_text or "").strip() and unexpected_duplicate:
+        duplicate_excerpt, _ = unexpected_duplicate
+        findings.append(
+            _make_finding(
+                "duplication",
+                "Translation contains duplicated translated paragraphs that are not repeated in the source chunk structure.",
                 offending_excerpt=duplicate_excerpt,
             )
         )

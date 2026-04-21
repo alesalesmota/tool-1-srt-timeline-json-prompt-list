@@ -26,7 +26,6 @@ from .alignment_tool.runtime import probe_health as alignment_health
 from .chunking import build_gap_fill_batches, build_planning_chunks, build_prompt_batches
 from .config import (
     AGENTS_ROOT,
-    BOARD_STATUSES,
     DEFAULT_ALIGNMENT_OPTIONS,
     DEFAULT_SETTINGS,
     EPISODE_PIPELINE_STAGES,
@@ -62,6 +61,10 @@ from .runtime import (
 from .srt_chunker.srt_io import parse_srt_text
 from .templates import TemplateStore
 from .translation.language_rules import build_spoken_script
+from .translation.prompts import (
+    effective_translation_prompt_template,
+    normalize_translation_prompt_template,
+)
 from .translation.quality import (
     apply_channel_cta_fallback,
     categorize_translation_issue_text,
@@ -111,6 +114,7 @@ from .validators import (
     video_prompt_output_schema,
     visual_bible_output_schema,
 )
+from .windows_notifications import WindowsNotificationManager
 
 
 log = logging.getLogger(__name__)
@@ -214,9 +218,15 @@ class StructuredStageTimeoutError(RuntimeError):
 
 
 class Tool1Service:
-    def __init__(self, db: Tool1Database | None = None, cli_runner: CliRunner | None = None) -> None:
+    def __init__(
+        self,
+        db: Tool1Database | None = None,
+        cli_runner: CliRunner | None = None,
+        notification_manager: WindowsNotificationManager | None = None,
+    ) -> None:
         self.db = db or Tool1Database()
         self.cli_runner = cli_runner or CliRunner()
+        self.notification_manager = notification_manager or WindowsNotificationManager()
         self.templates = TemplateStore(self.db)
         self._condition = threading.Condition()
         self._stop_event = threading.Event()
@@ -373,13 +383,10 @@ class Tool1Service:
                 exit_code=1,
                 error_text=error_message,
             )
-            self.db.update_episode(
+            self._fail_episode(
                 run["episode_id"],
-                board_status="Needs Attention",
-                pipeline_status="failed",
-                current_stage=stage,
-                last_error=error_message,
-                updated_at=utc_now(),
+                stage=stage,
+                message=error_message,
             )
 
     @staticmethod
@@ -442,6 +449,10 @@ class Tool1Service:
         payload["language_channel_names"] = self._parse_json_dict(payload.get("language_channel_names"))
         payload["channel_replace_prompt"] = bool(int(payload.get("channel_replace_prompt", 1) or 1))
         payload["channel_replace_post"] = bool(int(payload.get("channel_replace_post", 1) or 1))
+        prompt_template = str(payload.get("translation_system_prompt") or "").strip()
+        payload["translation_system_prompt"] = prompt_template
+        payload["translation_system_prompt_is_custom"] = bool(prompt_template)
+        payload["effective_translation_system_prompt"] = effective_translation_prompt_template(prompt_template)
         return payload
 
     def _hydrate_episode_record(self, episode: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -518,13 +529,46 @@ class Tool1Service:
             return text[:limit] + "…"
         return text
 
+    @staticmethod
+    def _display_stage_name(stage: Any) -> str:
+        text = str(stage or "").strip()
+        if not text:
+            return "workflow"
+        return text.replace("_", " ").strip().title()
+
+    def _notify_episode_terminal_state(
+        self,
+        episode_id: str,
+        *,
+        outcome: str,
+        stage: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        episode = self.db.get_episode(episode_id)
+        if episode is None:
+            return
+        episode_title = " ".join(str(episode.get("title") or "").split()).strip() or "Untitled episode"
+        if outcome == "success":
+            title = "Creator Studio workflow complete"
+            body = f"{episode_title} ready for review."
+            level = "info"
+        else:
+            stage_name = self._display_stage_name(stage or episode.get("current_stage"))
+            error_text = self._truncate_error_message(message, limit=160)
+            body = f"{episode_title} stopped at {stage_name}."
+            if error_text:
+                body = f"{body} {error_text}"
+            title = "Creator Studio workflow stopped"
+            level = "error"
+        self.notification_manager.notify(title=title, message=body, level=level)
+
     def _fail_episode(
         self,
         episode_id: str,
         *,
         stage: str,
         message: str,
-        board_status: str = "Needs Attention",
+        board_status: str = "Paused",
         pipeline_status: str = "failed",
     ) -> None:
         self.db.update_episode(
@@ -535,6 +579,12 @@ class Tool1Service:
             last_error=self._truncate_error_message(message),
             pause_requested=0,
             updated_at=utc_now(),
+        )
+        self._notify_episode_terminal_state(
+            episode_id,
+            outcome="error",
+            stage=stage,
+            message=message,
         )
 
     def _collect_language_stage_issues(
@@ -910,7 +960,13 @@ class Tool1Service:
             "review_ready": 0,
             "last_error": None,
             "pause_requested": 0,
+            "export_timeline_path": None,
+            "export_prompt_list_path": None,
+            "export_video_prompt_list_path": None,
+            "export_image_prompt_list_path": None,
         }
+
+        self._invalidate_render_outputs_for_asset_change(episode_id)
 
         if start_stage == "consistency_guide":
             episode_fields.update({
@@ -937,19 +993,20 @@ class Tool1Service:
                 spoken_script_path=str(script_original_spoken_path),
                 error_message=None,
             )
+            translation_reset_languages = [
+                lang for lang in configured_languages if lang != master_language
+            ]
+            self._reset_tts_dependent_language_outputs(
+                episode_id,
+                translation_reset_languages,
+                reason="Canceled because workflow was reset from translation.",
+            )
             reset_languages(
-                include_languages=[lang for lang in configured_languages if lang != master_language],
+                include_languages=translation_reset_languages,
                 fields={
                     "translation_status": "pending",
                     "script_path": None,
                     "spoken_script_path": None,
-                    "tts_status": "pending",
-                    "tts_audio_path": None,
-                    "tts_job_id": None,
-                    "srt_status": "pending",
-                    "srt_path": None,
-                    "timeline_status": "pending",
-                    "timeline_path": None,
                 },
             )
         elif start_stage == "tts":
@@ -960,21 +1017,15 @@ class Tool1Service:
                 and self._path_has_non_empty_text(script_original_spoken_path)
                 and read_text(script_original_spoken_path).strip() == current_master_spoken_script
             )
-            reset_languages(
-                include_languages=[
-                    language_code
-                    for language_code in configured_languages
-                    if not (preserve_master_tts and language_code == master_language)
-                ],
-                fields={
-                    "tts_status": "pending",
-                    "tts_audio_path": None,
-                    "tts_job_id": None,
-                    "srt_status": "pending",
-                    "srt_path": None,
-                    "timeline_status": "pending",
-                    "timeline_path": None,
-                },
+            tts_reset_languages = [
+                language_code
+                for language_code in configured_languages
+                if not (preserve_master_tts and language_code == master_language)
+            ]
+            self._reset_tts_dependent_language_outputs(
+                episode_id,
+                tts_reset_languages,
+                reason="Canceled because workflow was reset from TTS.",
             )
         elif start_stage == "alignment":
             reset_languages(
@@ -2507,24 +2558,30 @@ class Tool1Service:
         return translated_script
 
     @staticmethod
+    def _translation_chunk_payload(chunk_result: Any) -> dict[str, Any]:
+        return {
+            "chunk_index": chunk_result.chunk_index,
+            "scene_ids": chunk_result.scene_ids,
+            "words_in": chunk_result.words_in,
+            "words_out": chunk_result.words_out,
+            "status": chunk_result.status,
+            "error": chunk_result.error,
+            "provider": getattr(chunk_result, "provider", "") or "",
+            "model": getattr(chunk_result, "model", "") or "",
+            "category": getattr(chunk_result, "category", None),
+            "offending_excerpt": getattr(chunk_result, "offending_excerpt", None),
+            "next_action": getattr(chunk_result, "next_action", None),
+            "diagnostics": list(getattr(chunk_result, "diagnostics", []) or []),
+            "raw_translated_text_excerpt": getattr(chunk_result, "raw_translated_text_excerpt", None),
+            "raw_translated_text_path": getattr(chunk_result, "raw_translated_text_path", None),
+        }
+
+    @staticmethod
     def _translation_chunk_log(result: Any | None) -> list[dict[str, Any]]:
         if result is None:
             return []
         return [
-            {
-                "chunk_index": cr.chunk_index,
-                "scene_ids": cr.scene_ids,
-                "words_in": cr.words_in,
-                "words_out": cr.words_out,
-                "status": cr.status,
-                "error": cr.error,
-                "provider": getattr(cr, "provider", "") or "",
-                "model": getattr(cr, "model", "") or "",
-                "category": getattr(cr, "category", None),
-                "offending_excerpt": getattr(cr, "offending_excerpt", None),
-                "next_action": getattr(cr, "next_action", None),
-                "diagnostics": list(getattr(cr, "diagnostics", []) or []),
-            }
+            Tool1Service._translation_chunk_payload(cr)
             for cr in getattr(result, "chunk_results", []) or []
         ]
 
@@ -2573,6 +2630,19 @@ class Tool1Service:
         return report if isinstance(report, dict) else {}
 
     @classmethod
+    def _translation_report_script_text(
+        cls,
+        *,
+        workspace: Path,
+        language_code: str,
+    ) -> str:
+        report = cls._read_translation_report_payload(
+            workspace=workspace,
+            language_code=language_code,
+        )
+        return str(report.get("translated_script") or "").strip()
+
+    @classmethod
     def _enrich_language_status_with_translation_feedback(
         cls,
         *,
@@ -2614,6 +2684,11 @@ class Tool1Service:
         error_message: str = "",
         translated_script: str = "",
     ) -> None:
+        self._persist_failed_chunk_outputs(
+            workspace=workspace,
+            language_code=language_code,
+            result=result,
+        )
         chunk_log = self._translation_chunk_log(result)
         write_json(workspace / f"translation_log_{language_code}.json", chunk_log)
         review_report_raw = getattr(result, "review_report", None) if result is not None else None
@@ -2629,6 +2704,7 @@ class Tool1Service:
                 translated_script or getattr(result, "translated_script", "") or ""
             ).strip() or None,
             "chunk_log": chunk_log,
+            "failed_chunk_debug": self._primary_failed_chunk_debug(chunk_log),
             "review_report": review_report,
         }
         report.update(
@@ -2681,22 +2757,52 @@ class Tool1Service:
         return workspace / f"translation_review_{language_code}.json"
 
     @classmethod
+    def _failed_translation_output_dir(cls, workspace: Path, language_code: str) -> Path:
+        return workspace / "translation_failures" / language_code
+
+    @classmethod
+    def _persist_failed_chunk_outputs(
+        cls,
+        *,
+        workspace: Path,
+        language_code: str,
+        result: Any | None,
+    ) -> None:
+        if result is None:
+            return
+        output_dir = cls._failed_translation_output_dir(workspace, language_code)
+        for chunk_result in list(getattr(result, "chunk_results", []) or []):
+            raw_output = str(getattr(chunk_result, "raw_translated_text", "") or "").strip()
+            if not raw_output:
+                continue
+            output_dir.mkdir(parents=True, exist_ok=True)
+            chunk_index = int(getattr(chunk_result, "chunk_index", 0) or 0)
+            path = output_dir / f"chunk-{chunk_index + 1:03d}.txt"
+            write_text(path, raw_output)
+            excerpt = str(getattr(chunk_result, "raw_translated_text_excerpt", "") or "").strip()
+            if not excerpt:
+                excerpt = raw_output if len(raw_output) <= 180 else raw_output[:177].rstrip() + "..."
+            chunk_result.raw_translated_text_excerpt = excerpt
+            chunk_result.raw_translated_text_path = str(path)
+
+    @staticmethod
+    def _primary_failed_chunk_debug(chunk_log: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for chunk in chunk_log:
+            if chunk.get("raw_translated_text_excerpt") or chunk.get("raw_translated_text_path"):
+                return {
+                    "chunk_index": chunk.get("chunk_index"),
+                    "category": chunk.get("category"),
+                    "error": chunk.get("error"),
+                    "offending_excerpt": chunk.get("offending_excerpt"),
+                    "raw_translated_text_excerpt": chunk.get("raw_translated_text_excerpt"),
+                    "raw_translated_text_path": chunk.get("raw_translated_text_path"),
+                }
+        return None
+
+    @classmethod
     def _serialize_translation_chunk_log(cls, result: Any) -> list[dict[str, Any]]:
         return [
-            {
-                "chunk_index": cr.chunk_index,
-                "scene_ids": cr.scene_ids,
-                "words_in": cr.words_in,
-                "words_out": cr.words_out,
-                "status": cr.status,
-                "error": cr.error,
-                "provider": getattr(cr, "provider", "") or "",
-                "model": getattr(cr, "model", "") or "",
-                "category": getattr(cr, "category", None),
-                "offending_excerpt": getattr(cr, "offending_excerpt", None),
-                "next_action": getattr(cr, "next_action", None),
-                "diagnostics": list(getattr(cr, "diagnostics", []) or []),
-            }
+            cls._translation_chunk_payload(cr)
             for cr in list(getattr(result, "chunk_results", []) or [])
         ]
 
@@ -2756,6 +2862,11 @@ class Tool1Service:
         language_code: str,
         result: Any,
     ) -> dict[str, Any]:
+        cls._persist_failed_chunk_outputs(
+            workspace=workspace,
+            language_code=language_code,
+            result=result,
+        )
         chunk_log = cls._serialize_translation_chunk_log(result)
         diagnostics = cls._normalize_translation_diagnostics(
             result,
@@ -2800,6 +2911,7 @@ class Tool1Service:
         readable_path_value = status.get("script_path")
         readable_text = self._read_path_text(readable_path_value).strip()
         readable_path: Path | None = Path(str(readable_path_value)) if readable_path_value else None
+        recovered_from_report = False
 
         if language_code == master_language:
             readable_text = readable_text or str(episode.get("script_text") or "").strip()
@@ -2810,12 +2922,24 @@ class Tool1Service:
             if not readable_path.exists():
                 write_text(readable_path, readable_text)
         elif not readable_text:
-            return None
+            readable_text = self._translation_report_script_text(
+                workspace=workspace,
+                language_code=language_code,
+            )
+            if not readable_text:
+                return None
+            readable_path = workspace / self._language_readable_script_filename(language_code, master_language)
+            write_text(readable_path, readable_text)
+            recovered_from_report = True
 
         spoken_path = workspace / self._language_spoken_script_filename(language_code, master_language)
         write_text(spoken_path, build_spoken_script(readable_text, language_code))
         update_fields: dict[str, Any] = {"spoken_script_path": str(spoken_path)}
-        if readable_path is not None and not status.get("script_path"):
+        if readable_path is not None and (
+            recovered_from_report
+            or not status.get("script_path")
+            or not self._path_exists(status.get("script_path"))
+        ):
             update_fields["script_path"] = str(readable_path)
         self.db.update_episode_language_status(episode["id"], language_code, **update_fields)
         return spoken_path
@@ -3273,6 +3397,7 @@ class Tool1Service:
         video_prompt_model: str = "gpt-5.4",
         image_prompt_model: str = "gpt-5.4",
         leading_video_scene_count: int = 20,
+        translation_system_prompt: str = "",
     ) -> dict[str, Any]:
         now = utc_now()
         project_id = f"niche-{make_job_id(name)}"
@@ -3281,6 +3406,7 @@ class Tool1Service:
             langs = [master_language] + langs
         workspace = EPISODES_ROOT / project_id
         ensure_dir(workspace)
+        normalized_translation_prompt = normalize_translation_prompt_template(translation_system_prompt)
         self.db.create_niche_project({
             "id": project_id,
             "title": name,
@@ -3288,6 +3414,7 @@ class Tool1Service:
             "configured_languages": json.dumps(langs),
             "language_voice_profiles": json.dumps(language_voice_profiles or {}),
             "language_translation_profiles": json.dumps(language_translation_profiles or {}),
+            "translation_system_prompt": normalized_translation_prompt,
             "board_status": "Draft",
             "workspace_dir": str(workspace),
             "scene_planning_provider": scene_planning_provider,
@@ -3394,6 +3521,8 @@ class Tool1Service:
             if master_language not in normalized_languages:
                 normalized_languages.insert(0, master_language)
             fields["configured_languages"] = normalized_languages
+        if "translation_system_prompt" in fields:
+            fields["translation_system_prompt"] = normalize_translation_prompt_template(fields.get("translation_system_prompt"))
 
         # Serialize JSON fields
         for key in ("configured_languages", "language_voice_profiles", "language_translation_profiles", "language_channel_names"):
@@ -4894,8 +5023,15 @@ class Tool1Service:
         stage = start_stage or self._default_episode_start_stage(episode)
         assembly_stages = self._assembly_stage_sequence()
         current_stage = str(episode.get("current_stage") or "").strip()
-        if stage in assembly_stages or current_stage in assembly_stages:
+        if stage in assembly_stages:
             raise ValueError("Assembly stages must be advanced via /assembly/advance, not queued.")
+        if current_stage in assembly_stages:
+            if not start_stage or not reset_outputs:
+                raise ValueError("Assembly stages must be advanced via /assembly/advance, not queued.")
+            self._assert_no_active_render_jobs(
+                episode_id,
+                action="rerun an earlier workflow step",
+            )
         if stage not in EPISODE_RUNNABLE_STAGES:
             raise ValueError(f"Invalid start stage: {stage}")
         project = self._hydrate_project_record(self.db.get_niche_project(episode["niche_project_id"]))
@@ -5056,12 +5192,24 @@ class Tool1Service:
         }.get(stage, stage)
 
         if stage == "translation":
+            self._invalidate_render_outputs_for_asset_change(episode_id)
+            self._reset_tts_dependent_language_outputs(
+                episode_id,
+                [language_code],
+                reason="Canceled because translation is being retried.",
+            )
             self.db.update_episode_language_status(
                 episode_id, language_code,
                 translation_status="pending", script_path=None, spoken_script_path=None, error_message=None,
             )
             self._episode_retry_single_translation(episode_id, language_code)
         elif stage == "tts":
+            self._invalidate_render_outputs_for_asset_change(episode_id)
+            self._reset_tts_dependent_language_outputs(
+                episode_id,
+                [language_code],
+                reason="Canceled because TTS is being retried.",
+            )
             self.db.update_episode_language_status(
                 episode_id, language_code,
                 tts_status="pending", error_message=None,
@@ -5110,6 +5258,7 @@ class Tool1Service:
         language_channel_names = json.loads(project.get("language_channel_names") or "{}")
         enable_prompt = bool(int(project.get("channel_replace_prompt", 1) or 1))
         enable_post = bool(int(project.get("channel_replace_post", 1) or 1))
+        translation_prompt_template = str(project.get("translation_system_prompt") or "").strip()
         settings = self._global_settings()
         workspace = self._episode_workspace(episode)
         reviewer_api_key = self._stage_provider_openai_api_key()
@@ -5171,6 +5320,7 @@ class Tool1Service:
                 target_channel_name=target_channel if enable_prompt else "",
                 enforced_source_channel_name=source_channel_name if enable_post else "",
                 enforced_target_channel_name=target_channel if enable_post else "",
+                translation_prompt_template=translation_prompt_template,
                 reviewer_required=review_enabled,
                 reviewer_provider=reviewer_provider,
                 reviewer_api_key=reviewer_api_key,
@@ -5572,6 +5722,7 @@ class Tool1Service:
         )
         diagnostics = self._load_translation_diagnostics(workspace, language_code)
         primary = self._translation_primary_diagnostic(diagnostics)
+        failed_chunk_debug = self._primary_failed_chunk_debug(translation_log)
 
         return {
             "language_code": language_code,
@@ -5592,6 +5743,7 @@ class Tool1Service:
             "translation_issue_category": primary.get("category") if primary else None,
             "translation_issue_next_action": primary.get("next_action") if primary else None,
             "translation_issue_message": primary.get("message") if primary else None,
+            "failed_chunk_debug": failed_chunk_debug,
         }
 
     def get_worker_health(self) -> dict[str, Any]:
@@ -5911,6 +6063,11 @@ class Tool1Service:
                 pause_requested=0,
                 updated_at=utc_now(),
             )
+            self._notify_episode_terminal_state(
+                episode_id,
+                outcome="success",
+                stage="review",
+            )
         except Exception as exc:
             blocked_stage = exc.blocked_stage if isinstance(exc, EpisodeStageBlockedError) else current_stage
             self._fail_episode(
@@ -6031,6 +6188,7 @@ class Tool1Service:
         language_channel_names = json.loads(project.get("language_channel_names") or "{}")
         enable_prompt = bool(int(project.get("channel_replace_prompt", 1) or 1))
         enable_post = bool(int(project.get("channel_replace_post", 1) or 1))
+        translation_prompt_template = str(project.get("translation_system_prompt") or "").strip()
         settings = self._global_settings()
         reviewer_api_key = self._stage_provider_openai_api_key()
         review_enabled = self._translation_ai_review_enabled(settings)
@@ -6112,6 +6270,7 @@ class Tool1Service:
                     target_channel_name=target_channel if enable_prompt else "",
                     enforced_source_channel_name=source_channel_name if enable_post else "",
                     enforced_target_channel_name=target_channel if enable_post else "",
+                    translation_prompt_template=translation_prompt_template,
                     reviewer_required=review_enabled,
                     reviewer_provider=reviewer_provider,
                     reviewer_api_key=reviewer_api_key,
@@ -6238,9 +6397,6 @@ class Tool1Service:
             return read_text(script_path).strip()
         master_language = str(episode.get("master_language") or "en").strip() or "en"
         if language_code == master_language:
-            return str(episode.get("script_text") or "").strip()
-        if str((language_status or {}).get("translation_status") or "").strip().lower() == "done":
-            # Legacy rows can report translation as done before script asset paths were persisted.
             return str(episode.get("script_text") or "").strip()
         raise ValueError(f"No translated script available for {language_code}.")
 
@@ -6507,6 +6663,14 @@ class Tool1Service:
         try:
             self.tts_manager.ensure_worker_ready(intent="pipeline")
         except Exception as exc:
+            recovery_health = self.tts_manager.get_worker_health()
+            if recovery_health.running and not recovery_health.is_stale:
+                log.warning(
+                    "Ignoring transient TTS recovery error because worker %s is still healthy: %s",
+                    recovery_health.worker_id,
+                    exc,
+                )
+                return None
             return str(exc)[:500]
         return None
 
@@ -7067,6 +7231,96 @@ class Tool1Service:
             blocked_stage="timeline_mapping",
         )
 
+    def _mark_tts_jobs_canceled_for_languages(
+        self,
+        episode_id: str,
+        language_codes: list[str],
+        *,
+        reason: str,
+    ) -> None:
+        target_languages = {
+            str(language_code or "").strip()
+            for language_code in (language_codes or [])
+            if str(language_code or "").strip()
+        }
+        if not target_languages:
+            return
+
+        language_statuses = self.db.get_episode_language_statuses(episode_id)
+        configured_languages = [
+            str(status.get("language_code") or "").strip()
+            for status in language_statuses
+            if str(status.get("language_code") or "").strip()
+        ]
+        job_language_hints = {
+            str(status.get("tts_job_id") or "").strip(): str(status.get("language_code") or "").strip()
+            for status in language_statuses
+            if str(status.get("tts_job_id") or "").strip() and str(status.get("language_code") or "").strip()
+        }
+        reason_text = self._truncate_error_message(reason, limit=250)
+        canceled_at = time.time()
+
+        for job in self.db.list_tts_jobs_for_build(episode_id):
+            job_id = str(job.get("job_id") or "").strip()
+            if not job_id:
+                continue
+            language_code = self._infer_tts_job_language_code(
+                job,
+                configured_languages=configured_languages,
+                job_language_hints=job_language_hints,
+            )
+            if language_code not in target_languages:
+                continue
+            job_status = str(job.get("status") or "").strip().lower()
+            if job_status in {"canceled", "expired"}:
+                continue
+            if job_status == "processing":
+                self.tts_manager.set_job_control(job_id, "stop")
+            self.db.update_tts_job(
+                job_id,
+                status="canceled",
+                progress=reason_text,
+                worker_id=None,
+                control_action="stop" if job_status == "processing" else None,
+                error_message=reason_text,
+                finished_at=canceled_at,
+                updated_at=canceled_at,
+            )
+
+    def _reset_tts_dependent_language_outputs(
+        self,
+        episode_id: str,
+        language_codes: list[str],
+        *,
+        reason: str,
+    ) -> None:
+        target_languages = [
+            str(language_code or "").strip()
+            for language_code in (language_codes or [])
+            if str(language_code or "").strip()
+        ]
+        if not target_languages:
+            return
+
+        self._mark_tts_jobs_canceled_for_languages(
+            episode_id,
+            target_languages,
+            reason=reason,
+        )
+        for language_code in target_languages:
+            self.db.update_episode_language_status(
+                episode_id,
+                language_code,
+                tts_status="pending",
+                tts_audio_path=None,
+                tts_job_id=None,
+                srt_status="pending",
+                srt_path=None,
+                timeline_status="pending",
+                timeline_path=None,
+                error_message=None,
+            )
+
     def _cancel_tts_jobs_for_languages(
         self,
         episode_id: str,
@@ -7074,34 +7328,21 @@ class Tool1Service:
         *,
         reason: str,
     ) -> None:
-        status_map = {
-            status["language_code"]: status
-            for status in self.db.get_episode_language_statuses(episode_id)
-        }
-        reason_text = self._truncate_error_message(reason, limit=250)
+        self._mark_tts_jobs_canceled_for_languages(
+            episode_id,
+            language_codes,
+            reason=reason,
+        )
         for language_code in language_codes:
-            lang_status = status_map.get(language_code) or {}
-            job_id = str(lang_status.get("tts_job_id") or "").strip()
-            if job_id:
-                job = self.db.get_tts_job(job_id)
-                job_status = str((job or {}).get("status") or "").strip().lower()
-                if job_status == "processing":
-                    self.tts_manager.set_job_control(job_id, "stop")
-                elif job_status in {"queued", "completed", "failed", "error"}:
-                    self.db.update_tts_job(
-                        job_id,
-                        status="canceled",
-                        progress=reason_text,
-                        control_action=None,
-                        error_message=reason_text,
-                        finished_at=time.time(),
-                        updated_at=time.time(),
-                    )
+            normalized = str(language_code or "").strip()
+            if not normalized:
+                continue
             self.db.update_episode_language_status(
                 episode_id,
-                language_code,
+                normalized,
                 tts_status="failed",
                 tts_audio_path=None,
+                tts_job_id=None,
             )
 
     def _check_paused_tts_episodes(self) -> None:

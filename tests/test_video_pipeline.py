@@ -164,11 +164,24 @@ class FailingProviderCliRunner(ProbeStateCliRunner):
         return super().run_structured(args)
 
 
-def _make_service(temp_path: Path, cli_runner=None) -> Tool1Service:
+def _make_service(temp_path: Path, cli_runner=None, notification_manager=None) -> Tool1Service:
     return Tool1Service(
         db=Tool1Database(temp_path / "db.sqlite"),
         cli_runner=cli_runner,
+        notification_manager=notification_manager,
     )
+
+
+class RecordingNotificationManager:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+
+    def notify(self, *, title: str, message: str, level: str = "info") -> None:
+        self.calls.append({
+            "title": title,
+            "message": message,
+            "level": level,
+        })
 
 
 def _make_client(app_module, service: Tool1Service):
@@ -1896,6 +1909,113 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                 finally:
                     self.app_module.service = original
 
+    def test_queue_episode_allows_selected_workflow_rerun_from_assembly_with_reset_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path)
+                client, original = _make_client(self.app_module, service)
+                try:
+                    voice_profiles, translation_profiles = _build_profile_assignments(service, temp_path, ["en", "pt-BR"])
+                    _, episode = self._create_niche_and_episode(client, project_payload={
+                        "language_voice_profiles": voice_profiles,
+                        "language_translation_profiles": translation_profiles,
+                    })
+                    episode_id = episode["id"]
+
+                    manifest_path = temp_path / "manifest.json"
+                    manifest_path.write_text('{"chunks":[]}', encoding="utf-8")
+                    timeline_draft_path = temp_path / "timeline_draft.json"
+                    timeline_draft_path.write_text("[]", encoding="utf-8")
+                    prompt_list_path = temp_path / "prompt_list_draft.txt"
+                    prompt_list_path.write_text("old prompts", encoding="utf-8")
+                    prompt_blueprint_path = temp_path / "prompt_blueprint.json"
+                    prompt_blueprint_path.write_text("{}", encoding="utf-8")
+                    prompt_validation_path = temp_path / "prompt_validation.json"
+                    prompt_validation_path.write_text("{}", encoding="utf-8")
+                    master_scenes_path = temp_path / "master_scenes.json"
+                    master_scenes_path.write_text("[]", encoding="utf-8")
+                    export_prompt_list_path = temp_path / "export_prompt_list.txt"
+                    export_prompt_list_path.write_text("old export", encoding="utf-8")
+
+                    service.db.update_episode(
+                        episode_id,
+                        board_status="Paused",
+                        pipeline_status="paused",
+                        current_stage="asset_upload",
+                        queued_from_stage="asset_upload",
+                        planning_manifest_path=str(manifest_path),
+                        timeline_draft_path=str(timeline_draft_path),
+                        prompt_list_draft_path=str(prompt_list_path),
+                        prompt_blueprint_path=str(prompt_blueprint_path),
+                        prompt_validation_path=str(prompt_validation_path),
+                        master_scenes_path=str(master_scenes_path),
+                        export_prompt_list_path=str(export_prompt_list_path),
+                        updated_at=utc_now(),
+                    )
+
+                    stdout_path = temp_path / "stage-run-stdout.txt"
+                    stderr_path = temp_path / "stage-run-stderr.txt"
+                    stdout_path.write_text("ok", encoding="utf-8")
+                    stderr_path.write_text("", encoding="utf-8")
+                    keep_run = service.db.start_stage_run(
+                        episode_id,
+                        "consistency_guide",
+                        "codex",
+                        None,
+                        str(temp_path),
+                        {"command": "test-consistency-guide"},
+                        str(stdout_path),
+                        str(stderr_path),
+                    )
+                    service.db.finish_stage_run(keep_run, status="completed", exit_code=0)
+                    clear_run = service.db.start_stage_run(
+                        episode_id,
+                        "scene_planning",
+                        "codex",
+                        None,
+                        str(temp_path),
+                        {"command": "test-scene-planning"},
+                        str(stdout_path),
+                        str(stderr_path),
+                    )
+                    service.db.finish_stage_run(clear_run, status="completed", exit_code=0)
+
+                    service.db.create_render_job({
+                        "id": "render-job-assembly-rerun",
+                        "episode_id": episode_id,
+                        "language_code": "en",
+                        "state": "completed",
+                        "stage": "completed",
+                    })
+
+                    resp = client.post(f"/api/episodes/{episode_id}/queue", json={
+                        "start_stage": "scene_planning",
+                        "reset_outputs": True,
+                    })
+                    self.assertEqual(resp.status_code, 200)
+                    self.assertEqual(resp.json()["start_stage"], "scene_planning")
+                    self.assertTrue(resp.json()["reset_outputs"])
+
+                    refreshed = service.db.get_episode(episode_id)
+                    self.assertEqual(refreshed["pipeline_status"], "queued")
+                    self.assertEqual(refreshed["current_stage"], "scene_planning")
+                    self.assertEqual(refreshed["queued_from_stage"], "scene_planning")
+                    self.assertIsNone(refreshed["timeline_draft_path"])
+                    self.assertIsNone(refreshed["prompt_list_draft_path"])
+                    self.assertIsNone(refreshed["prompt_blueprint_path"])
+                    self.assertIsNone(refreshed["prompt_validation_path"])
+                    self.assertIsNone(refreshed["master_scenes_path"])
+                    self.assertIsNone(refreshed["export_prompt_list_path"])
+
+                    remaining_runs = service.db.list_stage_runs(episode_id)
+                    remaining_stages = {run["stage"] for run in remaining_runs}
+                    self.assertIn("consistency_guide", remaining_stages)
+                    self.assertNotIn("scene_planning", remaining_stages)
+                    self.assertEqual(service.db.list_render_jobs(episode_id), [])
+                finally:
+                    self.app_module.service = original
+
     def test_queue_episode_custom_stage(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -1929,7 +2049,7 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                     })
                     service.db.update_episode(
                         episode["id"],
-                        board_status="Needs Attention",
+                        board_status="Paused",
                         pipeline_status="failed",
                         current_stage="tts",
                         queued_from_stage="consistency_guide",
@@ -2297,6 +2417,43 @@ class EpisodeSubmissionApiTests(unittest.TestCase):
                 finally:
                     self.app_module.service = original
 
+    def test_retry_language_translation_endpoint_succeeds_via_api(self) -> None:
+        class FakeTTSManager:
+            def stop_worker(self) -> None:
+                return None
+
+        class FakeRetryService:
+            def __init__(self) -> None:
+                self.tts_manager = FakeTTSManager()
+
+            def start_worker(self) -> None:
+                return None
+
+            def stop_worker(self) -> None:
+                return None
+
+            def retry_episode_language(self, episode_id: str, language_code: str, stage: str) -> dict[str, object]:
+                async def _noop() -> None:
+                    return None
+
+                asyncio.run(_noop())
+                return {"retried": True, "language_code": language_code, "stage": stage}
+
+        fake_service = FakeRetryService()
+        original = self.app_module.service
+        self.app_module.service = fake_service
+        try:
+            with TestClient(self.app_module.app) as client:
+                resp = client.post(
+                    "/api/episodes/ep-retry/retry-language",
+                    json={"language_code": "it", "stage": "translation"},
+                )
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()["stage"], "translation")
+            self.assertEqual(resp.json()["language_code"], "it")
+        finally:
+            self.app_module.service = original
+
     def test_board_episodes_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -2505,6 +2662,93 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 self.assertEqual(latest_run["stage"], "consistency_guide")
                 self.assertEqual(latest_run["status"], "failed")
                 self.assertIn("Claude limit reached", latest_run["error_message"])
+
+    def test_process_episode_notifies_when_workflow_reaches_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                notifications = RecordingNotificationManager()
+                service = _make_service(
+                    temp_path,
+                    cli_runner=FakeCliRunner(),
+                    notification_manager=notifications,
+                )
+                voice_profiles, _ = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    ["en"],
+                    include_translation_for=[],
+                )
+                project = service.create_niche_project(
+                    name="Notify Success",
+                    master_language="en",
+                    configured_languages=["en"],
+                    language_voice_profiles=voice_profiles,
+                )
+                episode_id = service.submit_episode(
+                    project["project"]["id"],
+                    title="Review Ready Episode",
+                    script_text="One paragraph. Two paragraph.",
+                )["episode"]["id"]
+
+                service.queue_episode(episode_id)
+                with patch("tool1_dashboard.service.EPISODE_RUNNABLE_STAGES", ("consistency_guide",)), patch.object(
+                    service,
+                    "_episode_run_consistency_guide",
+                    return_value=None,
+                ):
+                    service._process_episode(service.db.get_episode(episode_id))
+
+                episode = service.db.get_episode(episode_id)
+                self.assertEqual(episode["pipeline_status"], "review")
+                self.assertEqual(len(notifications.calls), 1)
+                self.assertEqual(notifications.calls[0]["title"], "Creator Studio workflow complete")
+                self.assertEqual(notifications.calls[0]["level"], "info")
+                self.assertIn("Review Ready Episode ready for review.", notifications.calls[0]["message"])
+
+    def test_process_episode_notifies_when_workflow_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                notifications = RecordingNotificationManager()
+                service = _make_service(
+                    temp_path,
+                    cli_runner=FakeCliRunner(),
+                    notification_manager=notifications,
+                )
+                voice_profiles, _ = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    ["en"],
+                    include_translation_for=[],
+                )
+                project = service.create_niche_project(
+                    name="Notify Failure",
+                    master_language="en",
+                    configured_languages=["en"],
+                    language_voice_profiles=voice_profiles,
+                )
+                episode_id = service.submit_episode(
+                    project["project"]["id"],
+                    title="Broken Episode",
+                    script_text="One paragraph. Two paragraph.",
+                )["episode"]["id"]
+
+                service.queue_episode(episode_id)
+                with patch("tool1_dashboard.service.EPISODE_RUNNABLE_STAGES", ("consistency_guide",)), patch.object(
+                    service,
+                    "_episode_run_consistency_guide",
+                    side_effect=RuntimeError("Provider exploded."),
+                ):
+                    service._process_episode(service.db.get_episode(episode_id))
+
+                episode = service.db.get_episode(episode_id)
+                self.assertEqual(episode["pipeline_status"], "failed")
+                self.assertEqual(len(notifications.calls), 1)
+                self.assertEqual(notifications.calls[0]["title"], "Creator Studio workflow stopped")
+                self.assertEqual(notifications.calls[0]["level"], "error")
+                self.assertIn("Broken Episode stopped at Consistency Guide.", notifications.calls[0]["message"])
+                self.assertIn("Provider exploded.", notifications.calls[0]["message"])
 
     def test_requeue_after_provider_config_change_restarts_from_failed_stage(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2909,7 +3153,18 @@ class EpisodePipelineServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
-                service, pid, _ = self._setup(temp_path)
+                notifications = RecordingNotificationManager()
+                service = _make_service(
+                    temp_path,
+                    cli_runner=FakeCliRunner(),
+                    notification_manager=notifications,
+                )
+                project = service.create_niche_project(
+                    name="Test Niche",
+                    master_language="en",
+                    configured_languages=["en"],
+                )
+                pid = project["project"]["id"]
                 episode_result = service.submit_episode(
                     pid,
                     title="Stale Guide",
@@ -2942,10 +3197,15 @@ class EpisodePipelineServiceTests(unittest.TestCase):
 
                 episode = service.db.get_episode(episode_id)
                 self.assertEqual(episode["pipeline_status"], "failed")
-                self.assertEqual(episode["board_status"], "Needs Attention")
+                self.assertEqual(episode["board_status"], "Paused")
                 self.assertIn("timed out after 60 seconds", episode["last_error"])
                 self.assertIn("OpenAI API request", episode["last_error"])
                 self.assertNotIn("CLI", episode["last_error"])
+                self.assertEqual(len(notifications.calls), 1)
+                self.assertEqual(notifications.calls[0]["title"], "Creator Studio workflow stopped")
+                self.assertEqual(notifications.calls[0]["level"], "error")
+                self.assertIn("Stale Guide stopped at Consistency Guide.", notifications.calls[0]["message"])
+                self.assertIn("timed out after 60 seconds", notifications.calls[0]["message"])
                 detail = service.get_episode_detail(episode_id)
                 self.assertEqual(detail["stage_runs"][0]["status"], "failed")
                 self.assertIn("timed out after 60 seconds", detail["stage_runs"][0]["error_message"])
@@ -3329,6 +3589,167 @@ class EpisodePipelineServiceTests(unittest.TestCase):
                 it_status = service.db.get_episode_language_status(episode["id"], "it")
                 self.assertEqual(it_status["tts_status"], "failed")
                 self.assertIn("No translated script available", it_status["error_message"])
+
+    def test_retry_single_tts_recovers_translated_script_from_report_when_paths_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                voice_profiles, _ = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    ["en", "it"],
+                    master_language="en",
+                )
+                project = service.create_niche_project(
+                    name="Recover Translation Report",
+                    master_language="en",
+                    configured_languages=["en", "it"],
+                    language_voice_profiles=voice_profiles,
+                )
+                episode = service.submit_episode(
+                    project["project"]["id"],
+                    title="Recover Translation Report",
+                    script_text="Master text.",
+                )["episode"]
+                episode_id = episode["id"]
+                workspace = Path(episode["workspace_dir"])
+
+                service._write_translation_report_artifacts(
+                    workspace=workspace,
+                    language_code="it",
+                    status="done",
+                    translated_script="Giovanni capitolo 18 versetto 2.",
+                )
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "it",
+                    translation_status="done",
+                    script_path=None,
+                    spoken_script_path=None,
+                )
+
+                with patch("tool1_dashboard.tts.manager.TTSManager.ensure_worker_ready"), patch(
+                    "tool1_dashboard.tts.manager.TTSManager.submit_tts_job",
+                    return_value="tts-job-it",
+                ) as submit_mock:
+                    service._episode_retry_single_tts(episode_id, "it")
+
+                payload = submit_mock.call_args.kwargs["payload"]
+                combined_text = " ".join(payload["texts"])
+                self.assertIn("Giovanni capitolo 18 versetto 2.", combined_text)
+                self.assertNotIn("Master text.", combined_text)
+
+                it_status = service.db.get_episode_language_status(episode_id, "it")
+                self.assertTrue(Path(it_status["script_path"]).exists())
+                self.assertTrue(Path(it_status["spoken_script_path"]).exists())
+
+    def test_retry_translation_invalidates_old_tts_outputs_for_language(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with _patches(temp_path)[0], _patches(temp_path)[1], _patches(temp_path)[2]:
+                service = _make_service(temp_path, cli_runner=FakeCliRunner())
+                voice_profiles, translation_profiles = _build_profile_assignments(
+                    service,
+                    temp_path,
+                    ["en", "it"],
+                    master_language="en",
+                )
+                project = service.create_niche_project(
+                    name="Retry Translation Clears TTS",
+                    master_language="en",
+                    configured_languages=["en", "it"],
+                    language_voice_profiles=voice_profiles,
+                    language_translation_profiles=translation_profiles,
+                )
+                episode = service.submit_episode(
+                    project["project"]["id"],
+                    title="Retry Translation Clears TTS",
+                    script_text="Master text.",
+                )["episode"]
+                episode_id = episode["id"]
+                workspace = Path(episode["workspace_dir"])
+
+                old_audio = workspace / "narration_it_old.wav"
+                old_audio.write_text("audio-it-old", encoding="utf-8")
+                old_srt = workspace / "final_it.srt"
+                old_srt.write_text("old srt", encoding="utf-8")
+                old_timeline = workspace / "timeline_it.json"
+                old_timeline.write_text("[]", encoding="utf-8")
+
+                now = time.time()
+                service.db.create_tts_job({
+                    "job_id": "tts-job-it-old",
+                    "build_id": episode_id,
+                    "job_type": "generate",
+                    "profile_id": voice_profiles["it"],
+                    "status": "completed",
+                    "progress": "Completed",
+                    "result_path": str(old_audio),
+                    "filename": "narration_it_narration.wav",
+                    "payload_json": json.dumps({
+                        "language": "it",
+                        "original_filename": "narration_it.wav",
+                        "texts": ["Master text."],
+                    }),
+                    "meta_json": "{}",
+                    "queue_priority": 20,
+                    "worker_id": None,
+                    "control_action": None,
+                    "error_message": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "finished_at": now,
+                })
+                service.db.update_episode_language_status(
+                    episode_id,
+                    "it",
+                    translation_status="done",
+                    script_path=str(workspace / "script_it.txt"),
+                    spoken_script_path=str(workspace / "script_it_spoken.txt"),
+                    tts_status="done",
+                    tts_audio_path=str(old_audio),
+                    tts_job_id="tts-job-it-old",
+                    srt_status="done",
+                    srt_path=str(old_srt),
+                    timeline_status="done",
+                    timeline_path=str(old_timeline),
+                )
+
+                mock_result = MagicMock()
+                mock_result.translated_script = "Testo nuovo."
+                mock_result.chunk_results = []
+                mock_result.status = "done"
+                mock_result.review_report = None
+                mock_result.error_summary = ""
+                mock_result.error_categories = []
+                mock_result.provider = "deepl"
+                mock_result.model = "deepl-v2"
+                mock_result.review_enabled = False
+
+                with patch("tool1_dashboard.translation.TranslationService") as MockTS:
+                    mock_instance = MockTS.return_value
+                    mock_instance.translate_script = AsyncMock(return_value=mock_result)
+                    result = service.retry_episode_language(episode_id, "it", "translation")
+
+                self.assertEqual(result["stage"], "translation")
+                it_status = service.db.get_episode_language_status(episode_id, "it")
+                self.assertEqual(it_status["translation_status"], "done")
+                self.assertEqual(it_status["tts_status"], "pending")
+                self.assertIsNone(it_status["tts_audio_path"])
+                self.assertIsNone(it_status["tts_job_id"])
+                self.assertEqual(it_status["srt_status"], "pending")
+                self.assertIsNone(it_status["srt_path"])
+                self.assertEqual(it_status["timeline_status"], "pending")
+                self.assertIsNone(it_status["timeline_path"])
+                self.assertEqual(
+                    Path(it_status["script_path"]).read_text(encoding="utf-8"),
+                    "Testo nuovo.",
+                )
+
+                old_job = service.db.get_tts_job("tts-job-it-old")
+                self.assertIsNotNone(old_job)
+                self.assertEqual(old_job["status"], "canceled")
 
     def test_paused_tts_recovery_fails_back_to_translation_and_preserves_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

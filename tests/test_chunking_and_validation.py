@@ -115,6 +115,60 @@ class ChunkingValidationTests(unittest.TestCase):
         self.assertEqual([scene["text"] for scene in scenes], ["Edge A", "Edge B", "Core B"])
         self.assertEqual(report["ownership_dropped"], 1)
 
+    def test_merge_scene_chunks_trims_cross_boundary_cues_before_splitting(self) -> None:
+        scenes, report = merge_scene_chunks(
+            [
+                [
+                    {
+                        "start": 1300.28,
+                        "end": 1350.84,
+                        "duration": 50.56,
+                        "text": "Chunk 4 overlap scene",
+                        "asset_type": "image",
+                        "_source_chunk_id": 4,
+                        "_source_cue_ids": [257, 258, 259, 260, 261, 262, 263, 264, 265, 266],
+                    }
+                ],
+                [
+                    {
+                        "start": 1330.23,
+                        "end": 1355.76,
+                        "duration": 25.53,
+                        "text": "Chunk 5 overlap scene",
+                        "asset_type": "image",
+                        "_source_chunk_id": 5,
+                        "_source_cue_ids": [262, 263, 264, 265, 266, 267],
+                    }
+                ],
+            ],
+            chunk_metadata=[
+                {"chunk_id": 4, "start_seconds": 990.0, "end_seconds": 1350.0},
+                {"chunk_id": 5, "start_seconds": 1320.0, "end_seconds": 1431.19},
+            ],
+            overlap_seconds=30.0,
+            cues=[
+                SubtitleCue(index=257, start_ms=1300280, end_ms=1307250, text="One."),
+                SubtitleCue(index=258, start_ms=1307250, end_ms=1312290, text="Two."),
+                SubtitleCue(index=259, start_ms=1312290, end_ms=1318390, text="Three."),
+                SubtitleCue(index=260, start_ms=1318390, end_ms=1325100, text="Four."),
+                SubtitleCue(index=261, start_ms=1325100, end_ms=1330230, text="Five."),
+                SubtitleCue(index=262, start_ms=1330230, end_ms=1334290, text="Six."),
+                SubtitleCue(index=263, start_ms=1334290, end_ms=1339370, text="Seven."),
+                SubtitleCue(index=264, start_ms=1339370, end_ms=1342420, text="Eight."),
+                SubtitleCue(index=265, start_ms=1342420, end_ms=1346470, text="Nine."),
+                SubtitleCue(index=266, start_ms=1346470, end_ms=1350840, text="Ten."),
+                SubtitleCue(index=267, start_ms=1350840, end_ms=1355760, text="Eleven."),
+            ],
+        )
+        self.assertEqual(report["status"], "valid")
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["ownership_trimmed_scenes"], 2)
+        self.assertTrue(
+            all(float(scenes[index]["end"]) <= float(scenes[index + 1]["start"]) for index in range(len(scenes) - 1))
+        )
+        self.assertTrue(any(scene["end"] == 1334.29 for scene in scenes))
+        self.assertTrue(any(scene["start"] == 1334.29 for scene in scenes))
+
     def test_merge_scene_chunks_splits_long_scenes_using_cues(self) -> None:
         scenes, report = merge_scene_chunks(
             [
@@ -161,6 +215,82 @@ class ChunkingValidationTests(unittest.TestCase):
         self.assertEqual(scenes[1]["end"], 22.0)
         self.assertEqual(scenes[2]["start"], 22.0)
         self.assertEqual(scenes[2]["end"], 34.0)
+        self.assertTrue(
+            all(float(scenes[index]["end"]) <= float(scenes[index + 1]["start"]) for index in range(len(scenes) - 1))
+        )
+
+    def test_merge_scene_chunks_repairs_cue_boundary_overlap_from_adjacent_cues(self) -> None:
+        scenes, report = merge_scene_chunks(
+            [
+                [
+                    {
+                        "start": 0.0,
+                        "end": 5.5,
+                        "duration": 5.5,
+                        "text": "One",
+                        "asset_type": "image",
+                        "_source_chunk_id": 1,
+                        "_source_cue_ids": [1],
+                    },
+                    {
+                        "start": 4.5,
+                        "end": 9.0,
+                        "duration": 4.5,
+                        "text": "Two",
+                        "asset_type": "image",
+                        "_source_chunk_id": 1,
+                        "_source_cue_ids": [2],
+                    },
+                ]
+            ],
+            cues=[
+                SubtitleCue(index=1, start_ms=0, end_ms=5500, text="One."),
+                SubtitleCue(index=2, start_ms=4500, end_ms=9000, text="Two."),
+            ],
+        )
+        self.assertEqual(report["status"], "valid")
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["cue_boundary_overlap_adjustments"], 1)
+        self.assertEqual(scenes[0]["end"], 5.5)
+        self.assertEqual(scenes[1]["start"], 5.5)
+
+    def test_merge_scene_chunks_split_respects_scene_owned_cues(self) -> None:
+        scenes, report = merge_scene_chunks(
+            [
+                [
+                    {
+                        "start": 0.0,
+                        "end": 20.5,
+                        "duration": 20.5,
+                        "text": "One Two",
+                        "asset_type": "image",
+                        "_source_chunk_id": 1,
+                        "_source_cue_ids": [1, 2],
+                    },
+                    {
+                        "start": 19.5,
+                        "end": 30.0,
+                        "duration": 10.5,
+                        "text": "Three Four",
+                        "asset_type": "image",
+                        "_source_chunk_id": 1,
+                        "_source_cue_ids": [3, 4],
+                    },
+                ]
+            ],
+            cues=[
+                SubtitleCue(index=1, start_ms=0, end_ms=10000, text="One."),
+                SubtitleCue(index=2, start_ms=10000, end_ms=20500, text="Two."),
+                SubtitleCue(index=3, start_ms=19500, end_ms=25000, text="Three."),
+                SubtitleCue(index=4, start_ms=25000, end_ms=30000, text="Four."),
+            ],
+        )
+        self.assertEqual(report["status"], "valid")
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(report["split_insertions"], 1)
+        self.assertEqual(report["cue_boundary_overlap_adjustments"], 1)
+        self.assertEqual([scene["text"] for scene in scenes], ["One.", "Two.", "Three Four"])
+        self.assertEqual(scenes[2]["start"], 20.5)
         self.assertTrue(
             all(float(scenes[index]["end"]) <= float(scenes[index + 1]["start"]) for index in range(len(scenes) - 1))
         )

@@ -32,7 +32,6 @@ BOARD_STATUSES = (
     "Running",
     "Review",
     "Done",
-    "Needs Attention",
 )
 
 # -- Episode pipeline (TTS-first unified pipeline) --

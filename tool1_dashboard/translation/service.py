@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -32,6 +33,9 @@ from .quality import (
 
 log = logging.getLogger(__name__)
 
+_TRANSLATION_REQUEST_MAX_ATTEMPTS = 2
+_TRANSIENT_TRANSLATION_STATUSES = frozenset({408, 500, 502, 503, 504})
+
 
 @dataclass
 class ChunkResult:
@@ -48,6 +52,9 @@ class ChunkResult:
     offending_excerpt: str | None = None
     next_action: str | None = None
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    raw_translated_text: str = ""
+    raw_translated_text_excerpt: str | None = None
+    raw_translated_text_path: str | None = None
 
 
 @dataclass
@@ -87,6 +94,37 @@ class TranslationService:
     def __init__(self, adapter: TranslationAdapter | None = None) -> None:
         self.adapter = adapter or TranslationAdapter()
 
+    @staticmethod
+    def _provider_label(provider: str) -> str:
+        normalized = str(provider or "").strip().lower()
+        if normalized == "openai":
+            return "OpenAI"
+        if normalized == "openai_compatible":
+            return "OpenAI-compatible"
+        if normalized == "gemini":
+            return "Gemini"
+        if normalized == "anthropic":
+            return "Anthropic"
+        return normalized or "Provider"
+
+    @staticmethod
+    def _is_retryable_translation_error(exc: TranslationError) -> bool:
+        return int(getattr(exc, "status", 0) or 0) in _TRANSIENT_TRANSLATION_STATUSES
+
+    @staticmethod
+    def _retry_delay_seconds(attempt: int) -> float:
+        return float(max(0.0, attempt)) * 1.0
+
+    async def _call_adapter_translate_once(self, kwargs: dict[str, Any]) -> str:
+        call_kwargs = dict(kwargs)
+        try:
+            return await self.adapter.translate_chunk(**call_kwargs)
+        except TypeError as exc:
+            if "unexpected keyword argument 'base_url'" not in str(exc):
+                raise
+            call_kwargs.pop("base_url", None)
+            return await self.adapter.translate_chunk(**call_kwargs)
+
     async def _call_adapter_translate(
         self,
         *,
@@ -104,13 +142,44 @@ class TranslationService:
         }
         if str(base_url or "").strip():
             kwargs["base_url"] = base_url
-        try:
-            return await self.adapter.translate_chunk(**kwargs)
-        except TypeError as exc:
-            if "unexpected keyword argument 'base_url'" not in str(exc):
-                raise
-            kwargs.pop("base_url", None)
-            return await self.adapter.translate_chunk(**kwargs)
+        provider_label = self._provider_label(provider)
+        for attempt in range(1, _TRANSLATION_REQUEST_MAX_ATTEMPTS + 1):
+            try:
+                return await self._call_adapter_translate_once(kwargs)
+            except TranslationError as exc:
+                if attempt >= _TRANSLATION_REQUEST_MAX_ATTEMPTS or not self._is_retryable_translation_error(exc):
+                    raise
+                log.warning(
+                    "Transient translation error from %s model %s on attempt %d/%d: %s",
+                    provider_label,
+                    model,
+                    attempt,
+                    _TRANSLATION_REQUEST_MAX_ATTEMPTS,
+                    exc,
+                )
+            except httpx.TimeoutException as exc:
+                if attempt >= _TRANSLATION_REQUEST_MAX_ATTEMPTS:
+                    raise TranslationError(provider_label, 504, "Translation request timed out.") from exc
+                log.warning(
+                    "Translation request timed out for %s model %s on attempt %d/%d.",
+                    provider_label,
+                    model,
+                    attempt,
+                    _TRANSLATION_REQUEST_MAX_ATTEMPTS,
+                )
+            except httpx.RequestError as exc:
+                if attempt >= _TRANSLATION_REQUEST_MAX_ATTEMPTS:
+                    raise TranslationError(provider_label, 503, f"Network request failed: {exc}") from exc
+                log.warning(
+                    "Transient network error from %s model %s on attempt %d/%d: %s",
+                    provider_label,
+                    model,
+                    attempt,
+                    _TRANSLATION_REQUEST_MAX_ATTEMPTS,
+                    exc,
+                )
+            await asyncio.sleep(self._retry_delay_seconds(attempt))
+        raise TranslationError(provider_label, 500, "Translation request failed.")
 
     async def _translate_chunk(
         self,
@@ -128,6 +197,7 @@ class TranslationService:
         source_channel_name: str,
         target_channel_name: str,
         sensitive_terms: list[str],
+        translation_prompt_template: str,
     ) -> tuple[str, int]:
         prompt = build_translation_prompt(
             chunk=chunk.text,
@@ -140,6 +210,7 @@ class TranslationService:
             source_channel_name=source_channel_name,
             target_channel_name=target_channel_name,
             sensitive_terms=sensitive_terms,
+            template=translation_prompt_template,
         )
 
         translated = str(
@@ -164,6 +235,15 @@ class TranslationService:
         if not first:
             return fallback
         return str(first.get("message") or fallback).strip() or fallback
+
+    @staticmethod
+    def _excerpt_text(text: str, limit: int = 180) -> str | None:
+        collapsed = re.sub(r"\s+", " ", str(text or "").strip())
+        if not collapsed:
+            return None
+        if len(collapsed) <= limit:
+            return collapsed
+        return collapsed[: max(0, limit - 3)].rstrip() + "..."
 
     @classmethod
     def _recommended_next_action(cls, blockers: list[dict[str, Any]], warnings: list[dict[str, Any]]) -> str | None:
@@ -552,6 +632,31 @@ class TranslationService:
         scope: str = "system",
     ) -> dict[str, Any]:
         raw_message = str(exc or "").strip() or exc.__class__.__name__
+        provider_name = TranslationService._provider_label(provider)
+        if isinstance(exc, httpx.TimeoutException):
+            return {
+                "category": "network_timeout",
+                "message": f"{provider_name} timed out during translation.",
+                "offending_excerpt": None,
+                "next_action": "Retry later or inspect connectivity/provider health.",
+                "blocking": True,
+                "scope": scope,
+                "provider": provider,
+                "model": model,
+                "raw_error": raw_message,
+            }
+        if isinstance(exc, httpx.RequestError):
+            return {
+                "category": "provider_error",
+                "message": f"{provider_name} network error during translation.",
+                "offending_excerpt": None,
+                "next_action": "Inspect provider connectivity and retry.",
+                "blocking": True,
+                "scope": scope,
+                "provider": provider,
+                "model": model,
+                "raw_error": raw_message,
+            }
         return {
             "category": "system_error",
             "message": "Translation pipeline raised an unexpected error.",
@@ -705,6 +810,7 @@ class TranslationService:
         target_channel_name: str = "",
         enforced_source_channel_name: str = "",
         enforced_target_channel_name: str = "",
+        translation_prompt_template: str = "",
         reviewer_required: bool = False,
         reviewer_provider: str = "openai",
         reviewer_api_key: str = "",
@@ -740,6 +846,7 @@ class TranslationService:
         context = ""
         chunk_results: list[ChunkResult] = []
         translated_parts: list[str] = []
+        translation_prompt_template = str(translation_prompt_template or "").strip()
         effective_source_channel_name = str(source_channel_name or enforced_source_channel_name or "").strip()
         effective_target_channel_name = str(target_channel_name or enforced_target_channel_name or "").strip()
         sensitive_terms = extract_sensitive_terms(
@@ -765,6 +872,7 @@ class TranslationService:
                     source_channel_name=source_channel_name,
                     target_channel_name=target_channel_name,
                     sensitive_terms=sensitive_terms,
+                    translation_prompt_template=translation_prompt_template,
                 )
                 translated = self._apply_channel_fallbacks(
                     translated,
@@ -800,6 +908,7 @@ class TranslationService:
             except TranslationValidationError as exc:
                 diagnostics = list(exc.diagnostics or [])
                 first = self._first_diagnostic(diagnostics)
+                raw_translated_text = str(translated or "").strip()
                 log.warning(
                     "Translation chunk %d/%d failed deterministic validation: %s",
                     chunk.index + 1,
@@ -812,7 +921,7 @@ class TranslationService:
                         scene_ids=chunk.scene_ids,
                         translated_text="",
                         words_in=chunk.word_count,
-                        words_out=0,
+                        words_out=words_out,
                         status="error",
                         error=self._summary_message(diagnostics, str(exc)),
                         provider=provider,
@@ -821,6 +930,8 @@ class TranslationService:
                         offending_excerpt=first.get("offending_excerpt") if first else None,
                         next_action=first.get("next_action") if first else None,
                         diagnostics=diagnostics,
+                        raw_translated_text=raw_translated_text,
+                        raw_translated_text_excerpt=self._excerpt_text(raw_translated_text),
                     )
                 )
                 return self._error_result(

@@ -101,6 +101,7 @@ class NicheProjectRequest(BaseModel):
     configured_languages: list[str] = []
     language_voice_profiles: dict[str, str] = {}
     language_translation_profiles: dict[str, str] = {}
+    translation_system_prompt: str = ""
     scene_planning_provider: str = "claude"
     visual_bible_provider: str = "claude"
     video_prompt_provider: str = "codex"
@@ -117,6 +118,7 @@ class NicheProjectUpdateRequest(BaseModel):
     configured_languages: list[str] | None = None
     language_voice_profiles: dict[str, str] | None = None
     language_translation_profiles: dict[str, str] | None = None
+    translation_system_prompt: str | None = None
     scene_planning_provider: str | None = None
     visual_bible_provider: str | None = None
     video_prompt_provider: str | None = None
@@ -391,6 +393,7 @@ async def create_niche_project(payload: NicheProjectRequest) -> dict[str, Any]:
             configured_languages=payload.configured_languages,
             language_voice_profiles=payload.language_voice_profiles,
             language_translation_profiles=payload.language_translation_profiles,
+            translation_system_prompt=payload.translation_system_prompt,
             scene_planning_provider=payload.scene_planning_provider,
             visual_bible_provider=payload.visual_bible_provider,
             video_prompt_provider=payload.video_prompt_provider,
@@ -516,13 +519,14 @@ async def upload_scene_asset(
 async def bulk_upload_scene_assets(
     episode_id: str,
     files: list[UploadFile] = File(...),
+    match_mode: str = Form("scene_number"),
 ) -> dict[str, Any]:
     uploads: list[tuple[str, Any]] = []
     try:
         for upload in files:
             await upload.seek(0)
             uploads.append((upload.filename or "asset", upload.file))
-        return service.bulk_upload_scene_assets(episode_id, uploads)
+        return service.bulk_upload_scene_assets(episode_id, uploads, match_mode=match_mode)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -603,6 +607,16 @@ async def start_episode_render(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/episodes/{episode_id}/assembly/render/stop")
+async def stop_episode_render(episode_id: str) -> dict[str, Any]:
+    try:
+        return service.stop_render(episode_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/episodes/{episode_id}/assembly/render-status")
 async def episode_render_status(episode_id: str) -> dict[str, Any]:
     try:
@@ -672,6 +686,7 @@ async def render_job_events(episode_id: str, render_job_id: str) -> StreamingRes
                         "id": job["id"],
                         "state": job["state"],
                         "stage": job["stage"],
+                        "cancel_requested": bool(int(job.get("cancel_requested") or 0)),
                         "current_scene_id": job["current_scene_id"],
                         "total_scenes": job["total_scenes"],
                         "completed_scenes": job["completed_scenes"],
@@ -849,7 +864,7 @@ async def download_episode_file(episode_id: str, path: str) -> FileResponse:
 
 
 @app.post("/api/episodes/{episode_id}/retry-language")
-async def retry_episode_language(episode_id: str, payload: LanguageRetryRequest) -> dict[str, Any]:
+def retry_episode_language(episode_id: str, payload: LanguageRetryRequest) -> dict[str, Any]:
     try:
         return service.retry_episode_language(episode_id, payload.language_code, payload.stage)
     except FileNotFoundError as exc:

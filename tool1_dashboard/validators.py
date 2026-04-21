@@ -12,6 +12,7 @@ SCENE_TARGET_DURATION_SECONDS = 14.0
 SCENE_MIN_DURATION_SECONDS = 4.0
 SCENE_CUE_COVERAGE_TOLERANCE_SECONDS = 3.0
 SCENE_CUE_EDGE_AUTO_REPAIR_SECONDS = 8.0
+SCENE_CUE_BOUNDARY_OVERLAP_AUTO_REPAIR_SECONDS = 5.0
 SCENE_OVERLAP_AUTO_REPAIR_SECONDS = 0.25
 SCENE_OVERLAP_ERROR_TOLERANCE_SECONDS = 0.05
 MANDATORY_PROMPT_RULES = (
@@ -546,6 +547,114 @@ def _select_owned_scenes(
     return selected, dropped
 
 
+def _cue_midpoint_seconds(cue: SubtitleCue) -> float:
+    return (cue.start_ms + cue.end_ms) / 2000.0
+
+
+def _ordered_scene_cue_ids(scene: dict[str, Any]) -> list[int]:
+    raw_cue_ids = scene.get("_source_cue_ids")
+    if not isinstance(raw_cue_ids, list):
+        return []
+    ordered: list[int] = []
+    seen: set[int] = set()
+    for raw_cue_id in raw_cue_ids:
+        try:
+            cue_id = int(raw_cue_id)
+        except (TypeError, ValueError):
+            continue
+        if cue_id in seen:
+            continue
+        seen.add(cue_id)
+        ordered.append(cue_id)
+    return ordered
+
+
+def _trim_selected_scenes_to_ownership_windows(
+    scenes: list[dict[str, Any]],
+    *,
+    chunk_metadata: list[dict[str, Any]] | None,
+    cues: list[SubtitleCue] | None,
+    overlap_seconds: float,
+) -> tuple[list[dict[str, Any]], int]:
+    if not scenes or not chunk_metadata or not cues or overlap_seconds <= 0:
+        return scenes, 0
+
+    cue_lookup = {cue.index: cue for cue in cues}
+    chunk_lookup: dict[int, tuple[int, dict[str, Any]]] = {}
+    for position, chunk in enumerate(chunk_metadata):
+        try:
+            chunk_id = int(chunk["chunk_id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        chunk_lookup[chunk_id] = (position, chunk)
+
+    total_chunks = len(chunk_metadata)
+    trimmed_scenes: list[dict[str, Any]] = []
+    trimmed_count = 0
+
+    for scene in scenes:
+        try:
+            source_chunk_id = int(scene.get("_source_chunk_id"))
+        except (TypeError, ValueError):
+            trimmed_scenes.append(scene)
+            continue
+
+        chunk_entry = chunk_lookup.get(source_chunk_id)
+        raw_cue_ids = scene.get("_source_cue_ids")
+        if chunk_entry is None or not isinstance(raw_cue_ids, list):
+            trimmed_scenes.append(scene)
+            continue
+
+        source_cues: list[SubtitleCue] = []
+        for raw_cue_id in raw_cue_ids:
+            try:
+                cue_id = int(raw_cue_id)
+            except (TypeError, ValueError):
+                continue
+            cue = cue_lookup.get(cue_id)
+            if cue is not None:
+                source_cues.append(cue)
+        if len(source_cues) < 2:
+            trimmed_scenes.append(scene)
+            continue
+
+        position, chunk = chunk_entry
+        window_start, window_end = _chunk_ownership_window(
+            chunk,
+            position=position,
+            total_chunks=total_chunks,
+            overlap_seconds=overlap_seconds,
+        )
+        owned_cues = [
+            cue
+            for cue in source_cues
+            if _cue_midpoint_seconds(cue) >= window_start
+            and (
+                _cue_midpoint_seconds(cue) < window_end
+                or position == total_chunks - 1
+            )
+        ]
+        if not owned_cues:
+            center = (window_start + window_end) / 2.0
+            owned_cues = [
+                min(
+                    source_cues,
+                    key=lambda cue: abs(_cue_midpoint_seconds(cue) - center),
+                )
+            ]
+
+        if len(owned_cues) == len(source_cues):
+            trimmed_scenes.append(scene)
+            continue
+
+        trimmed_scene = _build_scene_from_cues(scene, owned_cues)
+        trimmed_scene["_source_cue_ids"] = [cue.index for cue in owned_cues]
+        trimmed_scenes.append(trimmed_scene)
+        trimmed_count += 1
+
+    return trimmed_scenes, trimmed_count
+
+
 def _dedupe_scenes(scenes: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     merged: list[dict[str, Any]] = []
     deduped = 0
@@ -561,6 +670,13 @@ def _dedupe_scenes(scenes: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
 
 
 def _scene_cues(scene: dict[str, Any], cues: list[SubtitleCue]) -> list[SubtitleCue]:
+    ordered_cue_ids = _ordered_scene_cue_ids(scene)
+    if ordered_cue_ids:
+        wanted = set(ordered_cue_ids)
+        owned = [cue for cue in cues if cue.index in wanted]
+        if owned:
+            return owned
+
     start_ms = int(round(float(scene["start"]) * 1000))
     end_ms = int(round(float(scene["end"]) * 1000))
     return [
@@ -594,6 +710,7 @@ def _build_scene_from_cues(
         "visual_intent": base_scene.get("visual_intent"),
         "notes": base_scene.get("notes"),
         "_source_chunk_id": base_scene.get("_source_chunk_id"),
+        "_source_cue_ids": [cue.index for cue in cues],
     }
 
 
@@ -700,6 +817,67 @@ def _normalize_small_scene_overlaps(
     return resolved, adjusted
 
 
+def _normalize_cue_boundary_overlaps(
+    scenes: list[dict[str, Any]],
+    *,
+    cues: list[SubtitleCue] | None,
+    auto_repair_seconds: float = SCENE_CUE_BOUNDARY_OVERLAP_AUTO_REPAIR_SECONDS,
+    overlap_tolerance_seconds: float = SCENE_OVERLAP_ERROR_TOLERANCE_SECONDS,
+) -> tuple[list[dict[str, Any]], int]:
+    if not scenes or not cues:
+        return [dict(scene) for scene in scenes], 0
+
+    cue_lookup = {cue.index: cue for cue in cues}
+    resolved: list[dict[str, Any]] = [dict(scene) for scene in scenes]
+    adjusted = 0
+
+    previous_scene = resolved[0]
+    for scene in resolved[1:]:
+        previous_end = float(previous_scene["end"])
+        start = float(scene["start"])
+        end = float(scene["end"])
+        overlap = round(previous_end - start, 3)
+        if overlap <= 0 or overlap > auto_repair_seconds:
+            previous_scene = scene
+            continue
+
+        previous_cue_ids = _ordered_scene_cue_ids(previous_scene)
+        current_cue_ids = _ordered_scene_cue_ids(scene)
+        if not previous_cue_ids or not current_cue_ids:
+            previous_scene = scene
+            continue
+
+        previous_last_cue = previous_cue_ids[-1]
+        current_first_cue = current_cue_ids[0]
+        if current_first_cue < previous_last_cue:
+            previous_scene = scene
+            continue
+
+        previous_cue = cue_lookup.get(previous_last_cue)
+        current_cue = cue_lookup.get(current_first_cue)
+        if previous_cue is None or current_cue is None:
+            previous_scene = scene
+            continue
+
+        cue_boundary_overlap = round((previous_cue.end_ms - current_cue.start_ms) / 1000.0, 3)
+        if cue_boundary_overlap <= 0:
+            previous_scene = scene
+            continue
+        if overlap > cue_boundary_overlap + overlap_tolerance_seconds:
+            previous_scene = scene
+            continue
+        if end <= previous_end:
+            previous_scene = scene
+            continue
+
+        scene["start"] = round(previous_end, 3)
+        scene["duration"] = round(end - float(scene["start"]), 3)
+        adjusted += 1
+        previous_scene = scene
+
+    return resolved, adjusted
+
+
 def _normalize_scene_edge_coverage(
     scenes: list[dict[str, Any]],
     *,
@@ -737,8 +915,13 @@ def normalize_and_validate_timeline(
     auto_repair_seconds: float = SCENE_OVERLAP_AUTO_REPAIR_SECONDS,
     overlap_tolerance_seconds: float = SCENE_OVERLAP_ERROR_TOLERANCE_SECONDS,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    normalized, overlap_adjustments = _normalize_small_scene_overlaps(
+    normalized, cue_boundary_overlap_adjustments = _normalize_cue_boundary_overlaps(
         scenes,
+        cues=cues,
+        overlap_tolerance_seconds=overlap_tolerance_seconds,
+    )
+    normalized, overlap_adjustments = _normalize_small_scene_overlaps(
+        normalized,
         auto_repair_seconds=auto_repair_seconds,
     )
     normalized, cue_edge_adjustments = _normalize_scene_edge_coverage(
@@ -751,6 +934,7 @@ def normalize_and_validate_timeline(
         coverage_tolerance_seconds=coverage_tolerance_seconds,
         overlap_tolerance_seconds=overlap_tolerance_seconds,
     )
+    report["cue_boundary_overlap_adjustments"] = cue_boundary_overlap_adjustments
     report["overlap_adjustments"] = overlap_adjustments
     report["cue_edge_adjustments"] = cue_edge_adjustments
     return normalized, report
@@ -767,6 +951,7 @@ def merge_scene_chunks(
     min_duration: float = SCENE_MIN_DURATION_SECONDS,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     rebased_groups = 0
+    ownership_trimmed = 0
     if chunk_metadata and len(chunk_metadata) == len(scene_groups):
         normalized_groups: list[list[dict[str, Any]]] = []
         for group, chunk_window in zip(scene_groups, chunk_metadata):
@@ -782,6 +967,12 @@ def merge_scene_chunks(
     selected, ownership_dropped = _select_owned_scenes(
         scene_groups,
         chunk_metadata,
+        overlap_seconds=overlap_seconds,
+    )
+    selected, ownership_trimmed = _trim_selected_scenes_to_ownership_windows(
+        selected,
+        chunk_metadata=chunk_metadata,
+        cues=cues,
         overlap_seconds=overlap_seconds,
     )
     selected.sort(key=lambda item: (float(item["start"]), float(item["end"]), _clean_text(item["text"]).lower()))
@@ -805,11 +996,18 @@ def merge_scene_chunks(
                 "asset_type": scene.get("asset_type") if scene.get("asset_type") in ALLOWED_ASSET_TYPES else "image",
                 **({"visual_intent": scene["visual_intent"]} if scene.get("visual_intent") else {}),
                 **({"notes": scene["notes"]} if scene.get("notes") else {}),
+                **({"_source_chunk_id": scene["_source_chunk_id"]} if scene.get("_source_chunk_id") is not None else {}),
+                **({"_source_cue_ids": list(scene["_source_cue_ids"])} if isinstance(scene.get("_source_cue_ids"), list) else {}),
             }
         )
     finalized, report = normalize_and_validate_timeline(finalized, cues=cues)
+    finalized = [
+        {key: value for key, value in scene.items() if not key.startswith("_source_")}
+        for scene in finalized
+    ]
     report["deduped_duplicates"] = deduped
     report["ownership_dropped"] = ownership_dropped
+    report["ownership_trimmed_scenes"] = ownership_trimmed
     report["split_insertions"] = split_insertions
     report["chunk_timestamp_rebases"] = rebased_groups
     return finalized, report

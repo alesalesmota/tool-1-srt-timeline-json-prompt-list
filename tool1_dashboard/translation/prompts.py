@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from string import Formatter
 
 from .language_rules import display_language_name, prompt_guidance_lines, resolve_language_rulepack
 
@@ -124,6 +125,65 @@ DEFAULT_TRANSLATION_REVIEW_PROMPT = (
     "[TRANSLATED SCRIPT — {target_lang}]:\n"
     "{translated_text}"
 )
+
+TRANSLATION_PROMPT_REQUIRED_FIELDS = frozenset({"source_lang", "target_lang", "text"})
+TRANSLATION_PROMPT_OPTIONAL_FIELDS = frozenset({
+    "channel_name",
+    "language_guidance",
+    "sensitive_terms_block",
+    "channel_name_instruction",
+    "chunk_note",
+    "context_section",
+})
+TRANSLATION_PROMPT_ALLOWED_FIELDS = TRANSLATION_PROMPT_REQUIRED_FIELDS | TRANSLATION_PROMPT_OPTIONAL_FIELDS
+
+
+def _translation_template_field_names(template: str) -> set[str]:
+    fields: set[str] = set()
+    try:
+        for _, field_name, _, _ in Formatter().parse(template):
+            if not field_name:
+                continue
+            normalized = str(field_name).split("!", 1)[0].split(":", 1)[0].strip()
+            if not normalized:
+                continue
+            normalized = normalized.split(".", 1)[0].split("[", 1)[0].strip()
+            if normalized:
+                fields.add(normalized)
+    except ValueError as exc:
+        raise ValueError("Translation prompt has invalid braces. Escape literal braces as '{{' and '}}'.") from exc
+    return fields
+
+
+def validate_translation_prompt_template(template: str) -> None:
+    candidate = str(template or "").strip()
+    if not candidate:
+        return
+    fields = _translation_template_field_names(candidate)
+    unknown_fields = sorted(fields - TRANSLATION_PROMPT_ALLOWED_FIELDS)
+    if unknown_fields:
+        allowed = ", ".join(f"{{{name}}}" for name in sorted(TRANSLATION_PROMPT_ALLOWED_FIELDS))
+        unknown = ", ".join(f"{{{name}}}" for name in unknown_fields)
+        raise ValueError(f"Translation prompt uses unsupported placeholder(s): {unknown}. Allowed placeholders: {allowed}.")
+    missing_fields = [name for name in ("source_lang", "target_lang", "text") if name not in fields]
+    if missing_fields:
+        missing = ", ".join(f"{{{name}}}" for name in missing_fields)
+        raise ValueError(f"Translation prompt must include placeholder(s): {missing}.")
+
+
+def normalize_translation_prompt_template(template: str | None) -> str:
+    candidate = str(template or "").strip()
+    if not candidate:
+        return ""
+    validate_translation_prompt_template(candidate)
+    if candidate == DEFAULT_TRANSLATION_PROMPT.strip():
+        return ""
+    return candidate
+
+
+def effective_translation_prompt_template(template: str | None) -> str:
+    candidate = str(template or "").strip()
+    return candidate or DEFAULT_TRANSLATION_PROMPT
 
 
 def _guidance_block(target_lang: str, target_channel_name: str = "") -> str:

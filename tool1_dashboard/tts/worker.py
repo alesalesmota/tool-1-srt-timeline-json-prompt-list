@@ -12,6 +12,7 @@ import glob
 import json
 import os
 import shutil
+import sqlite3
 import threading
 import time
 import traceback
@@ -134,6 +135,11 @@ class JobPausedByUser(Exception):
 
 class JobStoppedByUser(Exception):
     pass
+
+
+def _is_retryable_sqlite_lock_error(exc: Exception) -> bool:
+    message = str(exc).strip().lower()
+    return "database is locked" in message or "database is busy" in message or "locked" in message
 
 
 def _set_heartbeat_state(
@@ -596,7 +602,16 @@ def run() -> None:
 
     try:
         while True:
-            job = db.claim_next_job(WORKER_ID)
+            try:
+                job = db.claim_next_job(WORKER_ID)
+            except sqlite3.OperationalError as err:
+                if _is_retryable_sqlite_lock_error(err):
+                    msg = str(err)[:500]
+                    print(f"[Worker] Claim-next-job retry deferred: {msg}")
+                    _set_heartbeat_state("idle", last_error=msg)
+                    time.sleep(WORKER_POLL_INTERVAL)
+                    continue
+                raise
             if job is None:
                 _set_heartbeat_state("idle")
                 time.sleep(WORKER_POLL_INTERVAL)

@@ -174,5 +174,35 @@
     "screenshotPath": "./screenshots/moat-1775924598856-wucpqi0b5.png",
     "status": "done",
     "timestamp": 1775924598979
+  },
+  {
+    "id": "39649857-1e16-4031-87d9-5a3f0e5ce6b0",
+    "title": "Colored Container",
+    "comment": "we got a new error, on 206 on scene step, this is not the first time this error occur, try to discover why this is happening, and come with solution to solve this and not happen again on future episodes",
+    "selector": "section.kanban-column.project-kanban-column:nth-child(17) > div.kanban-card-list:nth-child(2) > div.episode-card.surface",
+    "boundingRect": {
+      "x": 1496,
+      "y": 166,
+      "w": 298,
+      "h": 223
+    },
+    "screenshotPath": "./screenshots/moat-1775941125328-94bpl6eev.png",
+    "status": "done",
+    "timestamp": 1775941125461
+  },
+  {
+    "id": "21640e44-7148-47d7-a91b-8181c2ca1e2a",
+    "title": "Colored Container",
+    "comment": "all translations had an error",
+    "selector": "div.board-modal-layout:nth-child(2) > div.board-modal-main > div.board-modal-section:nth-child(7)",
+    "boundingRect": {
+      "x": 395,
+      "y": 343,
+      "w": 1115,
+      "h": 351
+    },
+    "screenshotPath": "./screenshots/moat-1776522069411-bqxv3nkyt.png",
+    "status": "done",
+    "timestamp": 1776522069526
   }
 ]

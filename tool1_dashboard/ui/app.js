@@ -16,14 +16,13 @@ const EPISODE_PIPELINE_COLUMNS = [
   { id: "assembly_validation", label: "Assembly Validation", short: "Validate", copy: "Validate per-language assembly requirements." },
   { id: "video_render", label: "Video Render", short: "Render", copy: "Render final videos for each language." },
   { id: "final_review", label: "Final Review", short: "Final", copy: "Review final assembled videos." },
-  { id: "needs_attention", label: "Needs Attention", short: "Attention", copy: "Failed or blocked episodes." },
 ];
 const EPISODE_STAGE_LABELS = Object.fromEntries(EPISODE_PIPELINE_COLUMNS.map((c) => [c.id, c.label]));
 const EPISODE_PER_LANG_STAGES = ["translation", "tts", "alignment", "timeline_mapping"];
 const ASSEMBLY_STAGE_IDS = ["asset_upload", "assembly_validation", "video_render", "final_review"];
 const EPISODE_RUNNABLE_STAGE_IDS = EPISODE_PIPELINE_COLUMNS
   .map((column) => column.id)
-  .filter((columnId) => !["draft", "review", "export", "asset_upload", "assembly_validation", "video_render", "final_review", "needs_attention"].includes(columnId));
+  .filter((columnId) => !["draft", "review", "export", "asset_upload", "assembly_validation", "video_render", "final_review"].includes(columnId));
 
 const PROVIDERS = ["claude", "codex", "openai"];
 const DEFAULT_MODEL_CATALOG = {
@@ -48,6 +47,30 @@ const DEFAULT_MODEL_CATALOG = {
 const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const LM_STUDIO_DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1";
 const LM_STUDIO_DEFAULT_MODEL = "gemma-4-e2b-uncensored-hauhaucs-aggressive";
+// Keep this fallback in sync with tool1_dashboard/translation/prompts.py.
+const DEFAULT_TRANSLATION_SYSTEM_PROMPT = [
+  "You are a professional translator specializing in natural, fluent translations that preserve the original author's voice, tone, rhythm, and style.",
+  "",
+  "Your task: Translate the following text from {source_lang} to {target_lang}.",
+  "",
+  "STRICT RULES:",
+  "1. Preserve the EXACT tone, rhythm, and style of the original (formal, casual, dramatic, humorous, etc.)",
+  "2. Sound completely NATURAL in {target_lang} — never literal or robotic",
+  "3. Keep the same paragraph structure and line breaks as the original",
+  "4. Do NOT add, remove, or summarize any content",
+  "5. Aim to keep the translated text approximately the same length as the original",
+  "6. If the text contains names, brands, or technical terms, keep them as-is",
+  "7. Output ONLY the translated text — no explanations, no headers, and no markup",
+  "8. Translate EVERYTHING into {target_lang}; do not leave any sentence, paragraph, or CTA in the source language",
+  "9. Do NOT output both the original text and the translation; never duplicate source paragraphs",
+  "10. If the text contains calls to action like subscribe, share, or tell someone, translate those calls to action fully into {target_lang}",
+  "11. Always write numbers in plain text words (e.g., \"one, two, three\") rather than digits (\"1, 2, 3\").",
+  "12. Keep the output as plain readable narration that can be sent directly to text-to-speech without cleanup.",
+  "{language_guidance}{sensitive_terms_block}{channel_name_instruction}{chunk_note}{context_section}",
+  "",
+  "[TEXT TO TRANSLATE]:",
+  "{text}",
+].join("\n");
 const TRANSLATION_ERROR_CATEGORY_LABELS = {
   wrong_name: "Wrong names",
   leftover_source_language: "Leftover English",
@@ -174,6 +197,7 @@ const state = {
   lastEpisodeFilesLoadedFor: null,
   lastEpisodeReviewLoadedFor: null,
   episodeAssemblyActiveRenderLanguage: {},
+  episodeAssemblyBulkMatchMode: {},
   episodeAssemblyCache: new Map(),
   episodeAssemblyVisibleCounts: {},
   episodeAssemblyInteractionHoldUntil: 0,
@@ -366,6 +390,20 @@ function shortText(value, max = 140) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (text.length <= max) return text;
   return `${text.slice(0, max).trimEnd()}...`;
+}
+
+function effectiveTranslationSystemPrompt(project) {
+  const customPrompt = String(project?.translation_system_prompt || "").trim();
+  if (customPrompt) return customPrompt;
+  const effectivePrompt = String(project?.effective_translation_system_prompt || "").trim();
+  return effectivePrompt || DEFAULT_TRANSLATION_SYSTEM_PROMPT;
+}
+
+function hasCustomTranslationSystemPrompt(project) {
+  if (project?.translation_system_prompt_is_custom !== undefined && project?.translation_system_prompt_is_custom !== null) {
+    return !!project.translation_system_prompt_is_custom;
+  }
+  return !!String(project?.translation_system_prompt || "").trim();
 }
 
 function formatBytes(value) {
@@ -676,6 +714,23 @@ function getEpisodeAssemblyVisibleCount(episodeId) {
   return ASSEMBLY_PAGE_SIZE;
 }
 
+function setEpisodeAssemblyBulkMatchMode(episodeId, nextMode) {
+  if (!episodeId) return;
+  const normalizedMode = nextMode === "type_sequence" ? "type_sequence" : "scene_number";
+  state.episodeAssemblyBulkMatchMode = {
+    ...state.episodeAssemblyBulkMatchMode,
+    [episodeId]: normalizedMode,
+  };
+}
+
+function getEpisodeAssemblyBulkMatchMode(episodeId) {
+  const storedMode = String(state.episodeAssemblyBulkMatchMode?.[episodeId] || "").trim();
+  if (storedMode === "type_sequence") {
+    return "type_sequence";
+  }
+  return "scene_number";
+}
+
 function episodeAssemblyStageIsReadOnly(stage) {
   return stage === "assembly_validation";
 }
@@ -875,6 +930,16 @@ function episodeAssemblyCompletedRenderCount(episode) {
   return normalizeAssemblyRenderJobs(episode?.render_jobs)
     .filter((job) => String(job?.state || "").toLowerCase() === "completed")
     .length;
+}
+
+function isActiveRenderJobState(state) {
+  return ["queued", "preparing", "validating", "probing", "rendering", "concatenating", "muxing", "subtitling"].includes(
+    String(state || "").toLowerCase(),
+  );
+}
+
+function episodeAssemblyHasActiveRenderJobs(episode) {
+  return normalizeAssemblyRenderJobs(episode?.render_jobs).some((job) => isActiveRenderJobState(job?.state));
 }
 
 function episodeAssemblyContinueState(episode) {
@@ -3009,15 +3074,15 @@ function renderTranslationProfiles() {
 
 function episodeColumnForCard(ep) {
   if (!ep) return "draft";
-  if (ep.board_status === "Needs Attention" || ep.pipeline_status === "failed") return "needs_attention";
   if (ep.board_status === "Done" || ep.current_stage === "export" || ep.pipeline_status === "done") return "export";
   if (ep.board_status === "Review" || ep.current_stage === "review" || ep.pipeline_status === "review") return "review";
   return episodeDisplayStage(ep);
 }
 
 function episodeColumnTone(colId, episodes) {
-  const count = episodes.filter((ep) => episodeColumnForCard(ep) === colId).length;
-  if (colId === "needs_attention") return count ? "error" : "neutral";
+  const colEpisodes = episodes.filter((ep) => episodeColumnForCard(ep) === colId);
+  const count = colEpisodes.length;
+  if (colEpisodes.some((ep) => String(ep?.pipeline_status || "").toLowerCase() === "failed")) return "error";
   if (colId === "export") return count ? "success" : "neutral";
   if (colId === "review") return count ? "active" : "neutral";
   return count ? "info" : "neutral";
@@ -3319,7 +3384,17 @@ function workflowStageSelectId(episodeId, surface = "detail") {
 function selectedWorkflowStage(episode) {
   const episodeId = episode?.id;
   if (episodeId && state.episodeWorkflowStageSelections?.[episodeId]) {
-    return state.episodeWorkflowStageSelections[episodeId];
+    const explicitStage = String(state.episodeWorkflowStageSelections[episodeId] || "").trim();
+    if (EPISODE_RUNNABLE_STAGE_IDS.includes(explicitStage)) {
+      return explicitStage;
+    }
+  }
+  if (isEpisodeInAssemblyStage(episode)) {
+    const queuedStage = String(episode?.queued_from_stage || "").trim();
+    if (EPISODE_RUNNABLE_STAGE_IDS.includes(queuedStage)) {
+      return queuedStage;
+    }
+    return "timeline_mapping";
   }
   return episodeQueueStartStage(episode);
 }
@@ -3665,6 +3740,8 @@ function renderLanguageConfigSection(project, voiceProfiles, translationProfiles
   const cns = project.language_channel_names || {};
   const sourceChannel = project.source_channel_name || "";
   const replacePrompt = project.channel_replace_prompt !== false && project.channel_replace_prompt !== 0;
+  const translationSystemPrompt = effectiveTranslationSystemPrompt(project);
+  const translationPromptIsCustom = hasCustomTranslationSystemPrompt(project);
   const allLangs = state.targetLanguages || [];
   const usedSet = new Set(langs);
 
@@ -3714,6 +3791,16 @@ function renderLanguageConfigSection(project, voiceProfiles, translationProfiles
           </label>
         </div>
         <div class="helper" style="margin-top:8px;max-width:60ch;">The translator now handles channel renaming in the prompt. The app validates the result after translation, but it no longer rewrites the script in code.</div>
+      </div>
+      <div class="translation-system-prompt-block">
+        <div class="translation-system-prompt-meta">
+          <span class="field-label">Translation System Prompt</span>
+          ${statusBadge(translationPromptIsCustom ? "Custom prompt" : "Built-in default", translationPromptIsCustom ? "active" : "neutral")}
+        </div>
+        <textarea id="translation-system-prompt" class="translation-system-prompt-textarea" spellcheck="false" placeholder="Leave blank to use the built-in default prompt.">${esc(translationSystemPrompt)}</textarea>
+        <div class="helper translation-system-prompt-hint">
+          Project-wide translation instruction for all target languages. Leave blank to use the built-in default. Required placeholders when custom: <code>{source_lang}</code>, <code>{target_lang}</code>, <code>{text}</code>. Optional: <code>{language_guidance}</code>, <code>{sensitive_terms_block}</code>, <code>{channel_name_instruction}</code>, <code>{chunk_note}</code>, <code>{context_section}</code>.
+        </div>
       </div>
       <table class="lang-config-table">
         <thead><tr><th>Language</th><th>Voice Profile</th><th>Translation Profile</th><th>Channel Name</th><th></th></tr></thead>
@@ -4311,7 +4398,7 @@ function renderEpisodeDetailOverlay() {
   const readiness = episode.queue_readiness || { ok: true, blockers: [], warnings: [] };
   const liveTtsJob = activeTtsJob(episode);
   const activeTtsMarkup = renderActiveTtsProgress(episode);
-  const allStages = EPISODE_PIPELINE_COLUMNS.filter((c) => c.id !== "needs_attention");
+  const allStages = EPISODE_PIPELINE_COLUMNS;
   const currentIdx = allStages.findIndex((c) => c.id === currentStage);
   const isAssembly = ["asset_upload", "assembly_validation", "video_render", "final_review"].includes(currentStage);
   const doneCount = allStages.filter((s, i) => {
@@ -4470,7 +4557,7 @@ function renderEpisodeDetail() {
   const activeTtsMarkup = renderActiveTtsProgress(episode);
 
   // Pipeline progress bar
-  const allStages = EPISODE_PIPELINE_COLUMNS.filter((c) => c.id !== "needs_attention");
+  const allStages = EPISODE_PIPELINE_COLUMNS;
   const currentIdx = allStages.findIndex((c) => c.id === currentStage);
   const isAssembly = ["asset_upload", "assembly_validation", "video_render", "final_review"].includes(currentStage);
   const doneCount = allStages.filter((s, i) => {
@@ -5018,10 +5105,11 @@ function renderTranslationPreviewModal() {
         '<span class="badge badge-' + (c.status === "ok" ? "success" : "error") + '" style="font-size:0.65rem;">' + esc(c.status) + '</span>' +
         (c.category ? renderTranslationIssueBadge({ category: c.category }) : '') +
       '</div>' +
-      ((c.error || c.next_action || c.offending_excerpt)
+      ((c.error || c.next_action || c.offending_excerpt || c.raw_translated_text_excerpt)
         ? '<div class="translation-log-row-copy">' +
             (c.error ? '<div class="helper" style="color:var(--error);">' + esc(c.error) + '</div>' : '') +
             (c.offending_excerpt ? '<div class="helper">Excerpt: ' + esc(c.offending_excerpt) + '</div>' : '') +
+            (c.raw_translated_text_excerpt ? '<div class="helper">Output: ' + esc(c.raw_translated_text_excerpt) + '</div>' : '') +
             (c.next_action ? '<div class="helper">Next: ' + esc(c.next_action) + '</div>' : '') +
           '</div>'
         : '') +
@@ -5501,6 +5589,8 @@ function renderEpisodeAssemblyControlPanel(episode, { surface = "detail" } = {})
   const status = String(episode?.pipeline_status || "idle").toLowerCase();
   const activeWorkflow = isWorkflowActiveStatus(status);
   const currentStage = String(episode?.current_stage || "").trim();
+  const readiness = episode.queue_readiness || { ok: true, blockers: [], warnings: [] };
+  const hasActiveRenderJobs = episodeAssemblyHasActiveRenderJobs(episode);
   const progress = episode?.assembly_progress && typeof episode.assembly_progress === "object"
     ? episode.assembly_progress
     : {};
@@ -5516,6 +5606,23 @@ function renderEpisodeAssemblyControlPanel(episode, { surface = "detail" } = {})
         data-pause-episode="${esc(episode.id)}"
         ${episode.pause_requested ? "disabled" : ""}
       >${esc(episode.pause_requested ? "Pause requested" : "Pause after current step")}</button>`
+    : "";
+  const stopRenderButton = currentStage === "video_render" && hasActiveRenderJobs
+    ? `<button
+        type="button"
+        class="button button-ghost button-small"
+        data-stop-render="${esc(episode.id)}"
+      >Stop render after current scene</button>`
+    : "";
+  const backToAssetsDisabled = hasActiveRenderJobs;
+  const backToAssetsButton = currentStage !== "asset_upload"
+    ? `<button
+        type="button"
+        class="button button-ghost button-small"
+        data-advance-assembly="${esc(episode.id)}"
+        data-target-stage="asset_upload"
+        ${backToAssetsDisabled ? "disabled" : ""}
+      >Back to Asset Upload</button>`
     : "";
 
   let progressCopy = "Continue through the assembly stages from here.";
@@ -5545,9 +5652,11 @@ function renderEpisodeAssemblyControlPanel(episode, { surface = "detail" } = {})
     progressCopy = completedRenderCount > 0
       ? `${completedRenderCount} localized final video${completedRenderCount === 1 ? "" : "s"} already rendered.`
       : "Render one localized final video first, then render the rest.";
-    nextActionCopy = continueState.disabled
-      ? "Choose a language below and render one localized final video, or queue all valid languages."
-      : "At least one localized final video is ready. Continue to Final Review when you are ready.";
+    nextActionCopy = hasActiveRenderJobs
+      ? "A render is active. Stop it after the current scene before going back to Asset Upload."
+      : continueState.disabled
+        ? "Choose a language below and render one localized final video, or queue all valid languages."
+        : "At least one localized final video is ready. Continue to Final Review when you are ready.";
     statusBadge = completedRenderCount > 0
       ? `<span class="badge" data-tone="success">${completedRenderCount} rendered</span>`
       : '<span class="badge" data-tone="warn">No renders yet</span>';
@@ -5571,6 +5680,20 @@ function renderEpisodeAssemblyControlPanel(episode, { surface = "detail" } = {})
 
   const reassurance = currentStage === "asset_upload"
     ? `<div class="assembly-control-note">Uploaded assets stay saved across refreshes and stage changes.</div>`
+    : "";
+  const rerunSelectId = workflowStageSelectId(episode.id, `${surface}-assembly-rerun`);
+  const rerunSelectedStage = selectedWorkflowStage(episode);
+  const rerunDisabled = activeWorkflow || hasActiveRenderJobs || readiness?.ok === false;
+  const rerunHelperCopy = activeWorkflow
+    ? "Pause or finish current workflow activity before restarting an earlier step."
+    : hasActiveRenderJobs
+      ? "Stop active render jobs before rebuilding an earlier workflow step."
+      : "Need new scene previews, prompts, or timelines? Pick earlier workflow step and rerun from there.";
+  const rerunReadinessHtml = !activeWorkflow && !hasActiveRenderJobs
+    ? [
+      renderReadinessNotice(readiness, { limit: 2, compact: true }),
+      renderReadinessWarning(readiness),
+    ].filter(Boolean).join("")
     : "";
 
   return `
@@ -5599,12 +5722,39 @@ function renderEpisodeAssemblyControlPanel(episode, { surface = "detail" } = {})
       ${reassurance}
       <div class="workflow-control-actions">
         ${primaryAction}
+        ${backToAssetsButton}
         <button
           type="button"
           class="button button-ghost button-small"
           data-open-assembly="${esc(episode.id)}"
         >Open assembly workspace</button>
+        ${stopRenderButton}
         ${pauseButton}
+      </div>
+      <div class="assembly-rerun-workflow">
+        <div class="eyebrow">Redo workflow prep</div>
+        <div class="helper assembly-rerun-copy">${esc(rerunHelperCopy)}</div>
+        ${rerunReadinessHtml}
+        <div class="workflow-control-grid assembly-rerun-grid">
+          <label class="field workflow-stage-field">
+            <span class="field-label">Restart from step</span>
+            <select
+              id="${esc(rerunSelectId)}"
+              data-workflow-stage-select="${esc(episode.id)}"
+              ${rerunDisabled ? "disabled" : ""}
+            >${workflowStageOptions(rerunSelectedStage)}</select>
+          </label>
+          <div class="workflow-control-actions">
+            <button
+              type="button"
+              class="button button-ghost button-small"
+              data-queue-episode="${esc(episode.id)}"
+              data-stage-select="${esc(rerunSelectId)}"
+              data-reset-outputs="true"
+              ${rerunDisabled ? "disabled" : ""}
+            >Run selected step</button>
+          </div>
+        </div>
       </div>
     </section>
   `;
@@ -6505,11 +6655,11 @@ document.addEventListener("click", async (event) => {
     closeEpisodeOverlay();
     return;
   }
-  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-stage-provider-openai-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-advance-assembly], [data-open-assembly], [data-pause-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-open-episode-file], [data-download-episode-file], [data-save-review], [data-finalize-export], [data-download-export], [data-project-config-toggle]");
+  const target = event.target.closest("[data-nav], [data-sidebar-toggle], [data-refresh], [data-theme-toggle], [data-prepare-language], [data-close-modal], [data-close-episode-overlay], [data-delete-voice-profile], [data-create-voice-profile], [data-open-voice-tuning], [data-test-voice], [data-create-translation-profile], [data-edit-translation-profile], [data-delete-translation-profile], [data-translation-provider-tab], [data-translation-discover], [data-stage-provider-openai-discover], [data-select-translation-model], [data-open-niche-project], [data-open-create-niche], [data-delete-niche-project], [data-open-episode], [data-open-submit-episode], [data-queue-episode], [data-advance-assembly], [data-open-assembly], [data-stop-render], [data-pause-episode], [data-delete-episode], [data-save-lang-config], [data-save-provider-config], [data-add-language], [data-remove-language], [data-add-niche-language], [data-remove-niche-language], [data-batch-queue-drafts], [data-batch-queue-failed], [data-retry-language], [data-preview-translation], [data-open-episode-file], [data-download-episode-file], [data-save-review], [data-finalize-export], [data-download-export], [data-project-config-toggle]");
   if (!target) return;
   event.preventDefault();
   try {
-    if (target.dataset.advanceAssembly || target.dataset.openAssembly) {
+    if (target.dataset.advanceAssembly || target.dataset.openAssembly || target.dataset.stopRender) {
       return;
     }
     if (target.dataset.closeModal) {
@@ -6724,6 +6874,11 @@ document.addEventListener("click", async (event) => {
       });
       const sourceChannelName = ($("source-channel-name") || {}).value || "";
       const channelReplacePrompt = !!($("channel-replace-prompt") || {}).checked;
+      const translationSystemPromptInput = ($("translation-system-prompt") || {}).value || "";
+      const translationSystemPrompt =
+        translationSystemPromptInput.trim() === DEFAULT_TRANSLATION_SYSTEM_PROMPT.trim()
+          ? ""
+          : translationSystemPromptInput;
       await api('/api/niche-projects/' + encodeURIComponent(projectId), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -6733,6 +6888,7 @@ document.addEventListener("click", async (event) => {
           language_channel_names: langChannelNames,
           source_channel_name: sourceChannelName,
           channel_replace_prompt: channelReplacePrompt,
+          translation_system_prompt: translationSystemPrompt,
           channel_replace_post: false,
         }),
       });
@@ -7082,6 +7238,7 @@ function normalizeAssemblyRenderJob(job) {
     job_id: job.job_id || job.id,
     id: job.id || job.job_id,
     language_code: job.language_code || job.lang,
+    cancel_requested: Boolean(job.cancel_requested),
     outputs: job.outputs || {},
     validation: job.validation || {},
   };
@@ -7226,6 +7383,10 @@ function renderSceneCardHtml(scene, episodeId, readOnly) {
   const isUploaded = !!scene.asset;
   const previewUrl = `/api/episodes/${encodeURIComponent(episodeId)}/scenes/${encodeURIComponent(scene.scene_id)}/asset/preview`;
   const uploadedAssetType = scene.asset?.asset_type || scene.asset_type || "image";
+  const assetFilename = isUploaded ? String(scene.asset?.filename || "").trim() : "";
+  const assetFilenameMarkup = assetFilename
+    ? `<div class="scene-card-filename" title="${esc(assetFilename)}">${esc(assetFilename)}</div>`
+    : "";
   const assetMarkup = isUploaded
     ? `<div style="position:relative">
          ${uploadedAssetType === "video"
@@ -7233,7 +7394,7 @@ function renderSceneCardHtml(scene, episodeId, readOnly) {
                 <div class="scene-card-video-play-overlay">
                   <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
                 </div>
-                <div class="helper" style="font-size:0.75rem;">video &middot; ${esc(scene.asset?.filename || "")}</div>
+                <div class="helper" style="font-size:0.75rem;">Click to preview video</div>
               </div>`
            : `<img src="${esc(previewUrl)}" class="scene-card-thumbnail" loading="lazy" />`
          }
@@ -7256,9 +7417,10 @@ function renderSceneCardHtml(scene, episodeId, readOnly) {
   return `
     <div class="scene-card" data-scene-id="${esc(scene.scene_id)}" data-has-asset="${isUploaded ? "true" : "false"}">
       <div class="scene-card-header">
-        <div>
+        <div class="scene-card-heading">
           <div class="scene-card-title">Scene ${esc(scene.scene_id)}</div>
           <div class="scene-card-time">${esc(timeRange)}</div>
+          ${assetFilenameMarkup}
         </div>
         <div class="asset-badge">${esc(scene.asset_type || "image")}</div>
       </div>
@@ -7300,6 +7462,7 @@ function renderAssemblyAssetsPanel(episodeId, sceneData, { readOnly = false } = 
   const scenes = sceneData?.scenes || [];
   const totalScenes = sceneData?.total_scenes || 0;
   const uploadedCount = sceneData?.uploaded_count || 0;
+  const bulkMatchMode = getEpisodeAssemblyBulkMatchMode(episodeId);
   const visibleCount = getEpisodeAssemblyVisibleCount(episodeId);
   const visibleScenes = scenes.slice(0, visibleCount);
   const shownCount = Math.min(visibleCount, scenes.length);
@@ -7323,11 +7486,18 @@ function renderAssemblyAssetsPanel(episodeId, sceneData, { readOnly = false } = 
       </div>
       <div>
         ${readOnly ? '<span class="helper">Read-only in this step</span>' : `
+        <label class="field" style="display:inline-flex; align-items:center; gap:8px; margin-right:12px;">
+          <span class="helper">Bulk upload mode</span>
+          <select data-bulk-match-mode-select="${esc(episodeId)}">
+            <option value="scene_number" ${bulkMatchMode === "scene_number" ? "selected" : ""}>Scene Number</option>
+            <option value="type_sequence" ${bulkMatchMode === "type_sequence" ? "selected" : ""}>Type Sequence</option>
+          </select>
+        </label>
         <button type="button" class="button button-inline" data-bulk-upload="${esc(episodeId)}">
           ${iconContent("add", "Bulk Upload")}
         </button>
         <input type="file" id="bulk-upload-input-${esc(episodeId)}" multiple accept="image/*,video/*" style="display:none;" data-bulk-upload-input="${esc(episodeId)}" />
-        <span class="helper hint-text">Tip: Rename image batches to "img" and video batches to "video" in Windows. <code>img (1)</code> maps to the first image scene; <code>video (1)</code> maps to the first video scene.</span>
+        <span class="helper hint-text">Default and recommended: <code>video (12)</code> maps to scene 12. Use <strong>Type Sequence</strong> only when image/video files are numbered separately, such as <code>video (1)</code> for the first video scene.</span>
         `}
       </div>
     </div>
@@ -7406,6 +7576,12 @@ function handleSingleUploadInputChange(event) {
   });
 }
 
+function handleBulkMatchModeChange(event) {
+  const select = event.currentTarget;
+  const epId = select.dataset.bulkMatchModeSelect;
+  setEpisodeAssemblyBulkMatchMode(epId, select.value);
+}
+
 function bindEpisodeAssemblyUploadInputs(root = document) {
   root.querySelectorAll("[data-bulk-upload-input]").forEach((input) => {
     input.removeEventListener("change", handleBulkUploadInputChange);
@@ -7416,6 +7592,10 @@ function bindEpisodeAssemblyUploadInputs(root = document) {
     input.removeEventListener("change", handleSingleUploadInputChange);
     input.addEventListener("change", handleSingleUploadInputChange);
     input.dataset.changeBound = "true";
+  });
+  root.querySelectorAll("[data-bulk-match-mode-select]").forEach((select) => {
+    select.removeEventListener("change", handleBulkMatchModeChange);
+    select.addEventListener("change", handleBulkMatchModeChange);
   });
 }
 
@@ -7441,6 +7621,7 @@ async function handleAssetUpload(episodeId, sceneId, file) {
 
 async function handleBulkUpload(episodeId, files) {
   if (!files || files.length === 0) return;
+  const bulkMatchMode = getEpisodeAssemblyBulkMatchMode(episodeId);
   const chunkSize = 5;
   const chunks = [];
   for (let index = 0; index < files.length; index += chunkSize) {
@@ -7454,6 +7635,7 @@ async function handleBulkUpload(episodeId, files) {
     holdEpisodeAssemblyInteraction(120000);
     setNotice(`Uploading batch ${index + 1}/${chunks.length} (${totalMatched} matched so far)…`, "neutral");
     const formData = new FormData();
+    formData.append("match_mode", bulkMatchMode);
     for (const file of chunks[index]) {
       formData.append("files", file);
     }
@@ -7759,11 +7941,11 @@ function startRenderSSE(episodeId, jobId, lang) {
         let pct = 0;
         if (data.job.total_scenes > 0) pct = Math.round((data.job.completed_scenes / data.job.total_scenes) * 100);
         bar.style.width = pct + "%";
-        if (statusBadge) statusBadge.textContent = data.job.stage || data.job.state;
+        if (statusBadge) statusBadge.textContent = data.job.cancel_requested ? "Stopping" : (data.job.stage || data.job.state);
         if (currSceneNode) currSceneNode.textContent = data.job.current_scene_id || "-";
       }
       appendRenderLogMessages(logOut, data.new_logs);
-      if (data.job && (data.job.state === "completed" || data.job.state === "failed")) {
+      if (data.job && (data.job.state === "completed" || data.job.state === "failed" || data.job.state === "cancelled")) {
         closeRenderSSE(jobId);
         loadAssemblyUI(episodeId, { activeRenderLanguage: lang }).catch((error) => console.error(error));
       }
@@ -7811,6 +7993,8 @@ function renderAssemblyRenderPanel(episodeId, renderJobs = [], validationData = 
     let badgeText = "Ready";
     if (job?.state === "completed") badgeText = "Done";
     else if (job?.state === "failed") badgeText = "Failed";
+    else if (job?.state === "cancelled") badgeText = "Stopped";
+    else if (job?.cancel_requested) badgeText = "Stopping";
     else if (job?.state === "rendering" || job?.state === "queued") badgeText = titleCase(job.stage || job.state || "Rendering");
 
     return `<button type="button" class="language-tab ${isActive ? "language-tab-active" : ""}" data-render-tab="${esc(languageCode)}" data-render-episode="${esc(episodeId)}">
@@ -7830,6 +8014,14 @@ function renderAssemblyRenderPanel(episodeId, renderJobs = [], validationData = 
           <button type="button" class="button button-small button-ghost" data-render-lang="${esc(episodeId)}" data-lang="${esc(activeJob.language_code)}">Re-render ${esc(activeJob.language_code)}</button>
         </div>
       `;
+    } else if (activeJob.state === "cancelled") {
+      jobContent = `
+        <div class="notice" data-tone="warn">Render stopped. Asset edits are safe now.</div>
+        <div class="button-row" style="margin-top:12px;">
+          <button type="button" class="button button-small button-ghost" data-advance-assembly="${esc(episodeId)}" data-target-stage="asset_upload">Back to Asset Upload</button>
+          <button type="button" class="button button-small" data-render-lang="${esc(episodeId)}" data-lang="${esc(activeJob.language_code)}">Render ${esc(activeJob.language_code)} again</button>
+        </div>
+      `;
     } else if (activeJob.state === "failed") {
       jobContent = `
         <div class="notice" data-tone="error">Render failed: ${esc(activeJob.error_message || "Unknown error")}</div>
@@ -7842,17 +8034,28 @@ function renderAssemblyRenderPanel(episodeId, renderJobs = [], validationData = 
         <div style="display:flex; justify-content:space-between; align-items:center;">
           <div>
             <strong>Rendering: ${pct}%</strong>
-            <span class="render-stage-badge" id="render-status-badge-${esc(activeJob.language_code)}">${esc(activeJob.stage || activeJob.state || "Waiting")}</span>
+            <span class="render-stage-badge" id="render-status-badge-${esc(activeJob.language_code)}">${esc(activeJob.cancel_requested ? "Stopping" : (activeJob.stage || activeJob.state || "Waiting"))}</span>
           </div>
           <div class="helper">Scene <span id="render-current-scene-${esc(activeJob.language_code)}">${esc(activeJob.current_scene_id || "-")}</span></div>
         </div>
         <div class="render-progress-bar">
           <div class="render-progress-fill" id="render-progress-fill-${esc(activeJob.language_code)}" style="width:${pct}%"></div>
         </div>
+        ${activeJob.cancel_requested
+          ? '<div class="notice" data-tone="warn" style="margin-top:12px;">Stop requested. The current scene will finish, then the render will exit.</div>'
+          : ""}
+        <div class="button-row" style="margin-top:12px;">
+          <button type="button" class="button button-ghost button-small" data-stop-render="${esc(episodeId)}" ${activeJob.cancel_requested ? "disabled" : ""}>
+            ${activeJob.cancel_requested ? "Stop requested" : "Stop after current scene"}
+          </button>
+          <button type="button" class="button button-ghost button-small" data-advance-assembly="${esc(episodeId)}" data-target-stage="asset_upload" disabled>
+            Back to Asset Upload
+          </button>
+        </div>
         <div class="render-log-output" id="render-log-output-${esc(activeJob.language_code)}">Waiting for logs...</div>
       `;
       // Initiate SSE automatically
-      if (!["completed", "failed"].includes(activeJob.state || "")) {
+      if (!["completed", "failed", "cancelled"].includes(activeJob.state || "")) {
         setTimeout(() => startRenderSSE(episodeId, activeJob.job_id, activeJob.language_code), 500);
       }
     }
@@ -7861,6 +8064,7 @@ function renderAssemblyRenderPanel(episodeId, renderJobs = [], validationData = 
       <div class="notice" data-tone="active">This language passed validation and is ready to render.</div>
       <p class="helper">Start one localized final video here, or queue every validated language at once.</p>
       <div class="button-row" style="margin-top:12px;">
+        <button type="button" class="button button-ghost" data-advance-assembly="${esc(episodeId)}" data-target-stage="asset_upload">Back to Asset Upload</button>
         <button type="button" class="button button-primary" data-render-lang="${esc(episodeId)}" data-lang="${esc(activeTab)}">Render ${esc(activeTab)} final video</button>
         ${validLanguages.length > 1 ? `<button type="button" class="button button-ghost" data-render-all="${esc(episodeId)}">Render all valid</button>` : ""}
       </div>
@@ -8009,6 +8213,28 @@ document.addEventListener("click", async (event) => {
       syncEpisodeAssemblyControlPanels(epId);
       setNotice("Validation complete", "success");
     } catch (err) {
+      setNotice(err.message, "error");
+    }
+    return;
+  }
+
+  const stopRenderBtn = event.target.closest("[data-stop-render]");
+  if (stopRenderBtn) {
+    const epId = stopRenderBtn.dataset.stopRender;
+    stopRenderBtn.disabled = true;
+    setNotice("Stopping render after the current scene...", "warn");
+    try {
+      const res = await fetch(`/api/episodes/${encodeURIComponent(epId)}/assembly/render/stop`, {
+        method: "POST",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to stop render");
+      await loadAssemblyUI(epId, {
+        activeRenderLanguage: state.episodeAssemblyActiveRenderLanguage[epId] || null,
+      });
+      setNotice("Render stop requested. Wait for the current scene to finish, then go back to Asset Upload.", "warn");
+    } catch (err) {
+      stopRenderBtn.disabled = false;
       setNotice(err.message, "error");
     }
     return;

@@ -87,6 +87,12 @@ class DashboardRenderObserver:
             updated_at=utc_now(),
         )
 
+    def should_stop(self) -> bool:
+        job = self._db.get_render_job(self._job_id)
+        if not job:
+            return False
+        return bool(int(job.get("cancel_requested") or 0))
+
     def complete(self, summary: RenderSummary) -> None:
         now = utc_now()
         outputs = {
@@ -100,6 +106,7 @@ class DashboardRenderObserver:
             self._job_id,
             state="completed",
             stage="completed",
+            cancel_requested=0,
             outputs_json=json.dumps(outputs, ensure_ascii=False),
             finished_at=now,
             updated_at=now,
@@ -118,6 +125,7 @@ class DashboardRenderObserver:
             self._job_id,
             state="failed",
             stage="failed",
+            cancel_requested=0,
             error_message=message,
             finished_at=now,
             updated_at=now,

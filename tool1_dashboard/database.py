@@ -90,6 +90,7 @@ class Tool1Database:
                 configured_languages TEXT NOT NULL DEFAULT '[]',
                 language_voice_profiles TEXT NOT NULL DEFAULT '{}',
                 language_translation_profiles TEXT NOT NULL DEFAULT '{}',
+                translation_system_prompt TEXT NOT NULL DEFAULT '',
                 board_status TEXT NOT NULL DEFAULT 'Draft',
                 workspace_dir TEXT NOT NULL,
                 scene_planning_provider TEXT NOT NULL DEFAULT 'claude',
@@ -331,8 +332,14 @@ class Tool1Database:
             )
             self._ensure_columns(
                 connection,
+                "render_jobs",
+                {"cancel_requested": "INTEGER NOT NULL DEFAULT 0"},
+            )
+            self._ensure_columns(
+                connection,
                 "niche_projects",
                 {
+                    "translation_system_prompt": "TEXT NOT NULL DEFAULT ''",
                     "source_channel_name": "TEXT NOT NULL DEFAULT ''",
                     "language_channel_names": "TEXT NOT NULL DEFAULT '{}'",
                     "channel_replace_prompt": "INTEGER NOT NULL DEFAULT 1",
@@ -383,6 +390,11 @@ class Tool1Database:
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA busy_timeout = 5000")
         return connection
+
+    @staticmethod
+    def _is_retryable_sqlite_lock_error(exc: Exception) -> bool:
+        message = str(exc).strip().lower()
+        return "database is locked" in message or "database is busy" in message or "locked" in message
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -1087,55 +1099,66 @@ class Tool1Database:
 
         Uses BEGIN IMMEDIATE for cross-process safety with WAL mode.
         """
-        conn = self._connect()
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                """
-                SELECT * FROM tts_jobs
-                WHERE status = 'queued'
-                ORDER BY queue_priority ASC, created_at ASC
-                LIMIT 1
-                """
-            ).fetchone()
-
-            if row is None:
-                conn.execute("COMMIT")
-                return None
-
-            job_id = row["job_id"]
-            now = time.time()
-            updated = conn.execute(
-                """
-                UPDATE tts_jobs
-                SET status = 'processing',
-                    updated_at = ?,
-                    worker_id = ?,
-                    progress = CASE
-                        WHEN progress IS NULL OR progress = '' THEN 'Processing...'
-                        ELSE progress
-                    END
-                WHERE job_id = ?
-                AND status = 'queued'
-                """,
-                (now, worker_id, job_id),
-            ).rowcount
-
-            if updated != 1:
-                conn.execute("ROLLBACK")
-                return None
-
-            conn.execute("COMMIT")
-        except Exception:
+        attempt = 0
+        while True:
+            conn = self._connect()
             try:
-                conn.execute("ROLLBACK")
-            except Exception:
-                pass
-            raise
-        finally:
-            conn.close()
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    """
+                    SELECT * FROM tts_jobs
+                    WHERE status = 'queued'
+                    ORDER BY queue_priority ASC, created_at ASC
+                    LIMIT 1
+                    """
+                ).fetchone()
 
-        return self.get_tts_job(job_id)
+                if row is None:
+                    conn.execute("COMMIT")
+                    return None
+
+                job_id = row["job_id"]
+                now = time.time()
+                updated = conn.execute(
+                    """
+                    UPDATE tts_jobs
+                    SET status = 'processing',
+                        updated_at = ?,
+                        worker_id = ?,
+                        progress = CASE
+                            WHEN progress IS NULL OR progress = '' THEN 'Processing...'
+                            ELSE progress
+                        END
+                    WHERE job_id = ?
+                    AND status = 'queued'
+                    """,
+                    (now, worker_id, job_id),
+                ).rowcount
+
+                if updated != 1:
+                    conn.execute("ROLLBACK")
+                    return None
+
+                conn.execute("COMMIT")
+                return self.get_tts_job(job_id)
+            except sqlite3.OperationalError as exc:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                if self._is_retryable_sqlite_lock_error(exc) and attempt < 3:
+                    attempt += 1
+                    time.sleep(0.2 * attempt)
+                    continue
+                raise
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            finally:
+                conn.close()
 
     def requeue_stale_tts_jobs(self, stale_seconds: int) -> int:
         """Reset TTS jobs stuck in 'processing' beyond *stale_seconds* to 'queued'."""

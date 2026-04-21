@@ -3406,6 +3406,33 @@ details.editor-card summary::-webkit-details-marker {
   min-width: 120px;
 }
 
+.translation-system-prompt-block {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.translation-system-prompt-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.translation-system-prompt-textarea {
+  min-height: 280px;
+}
+
+.translation-system-prompt-hint {
+  max-width: 92ch;
+  line-height: 1.55;
+}
+
+.translation-system-prompt-hint code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
 .lang-dots {
   display: inline-flex;
   gap: 4px;
@@ -3619,6 +3646,25 @@ details.editor-card summary::-webkit-details-marker {
   margin: 0;
   color: var(--muted);
   line-height: 1.45;
+}
+
+.assembly-rerun-workflow {
+  display: grid;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.assembly-rerun-workflow .eyebrow {
+  margin: 0;
+}
+
+.assembly-rerun-copy {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.assembly-rerun-grid {
+  align-items: end;
 }
 
 .workflow-control-grid {
@@ -3947,6 +3993,11 @@ details.editor-card summary::-webkit-details-marker {
   justify-content: space-between;
   align-items: flex-start;
 }
+.scene-card-heading {
+  flex: 1;
+  min-width: 0;
+  padding-right: 12px;
+}
 .scene-card-title {
   font-weight: 600;
   font-size: 14px;
@@ -3954,6 +4005,16 @@ details.editor-card summary::-webkit-details-marker {
 .scene-card-time {
   font-size: 11px;
   color: var(--muted);
+}
+.scene-card-filename {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .scene-card-body {
   padding: 12px;
@@ -4009,6 +4070,7 @@ details.editor-card summary::-webkit-details-marker {
   background: var(--panel-soft);
   color: var(--ink);
   border: 1px solid var(--line);
+  flex-shrink: 0;
 }
 .assembly-stats-bar {
   display: flex;

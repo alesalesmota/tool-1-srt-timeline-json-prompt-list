@@ -17,6 +17,7 @@ JobState = Literal[
     "subtitling",
     "completed",
     "failed",
+    "cancelled",
 ]
 
 

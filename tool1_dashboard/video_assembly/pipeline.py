@@ -5,6 +5,7 @@ from typing import Protocol
 
 from .burn_subtitles import burn_subtitles
 from .concat_scenes import concatenate_scenes
+from .exceptions import RenderCancelledError
 from .models import (
     AssetProbe,
     RenderSummary,
@@ -27,6 +28,7 @@ class PipelineObserver(Protocol):
     def set_validation(self, report: ValidationReport) -> None: ...
     def set_asset_probes(self, probes: dict[str, AssetProbe]) -> None: ...
     def add_scene_result(self, result: SceneRenderResult) -> None: ...
+    def should_stop(self) -> bool: ...
     def complete(self, summary: RenderSummary) -> None: ...
     def fail(self, message: str) -> None: ...
 
@@ -46,6 +48,9 @@ class NullObserver:
 
     def add_scene_result(self, result: SceneRenderResult) -> None:
         return None
+
+    def should_stop(self) -> bool:
+        return False
 
     def complete(self, summary: RenderSummary) -> None:
         return None
@@ -67,6 +72,7 @@ class RenderPipeline:
 
             self.observer.set_state("validating", "Loading and validating timeline")
             config, scenes = load_timeline(self.project_dir)
+            self._raise_if_stop_requested("Render stop requested before validation completed.")
             validation = validate_or_raise(config, scenes)
             self.observer.set_validation(validation)
             self.observer.log(
@@ -79,10 +85,12 @@ class RenderPipeline:
             probes = probe_assets(config, scenes)
             self.observer.set_asset_probes(probes)
             self.observer.log("INFO", "probing", f"Probed {len(probes)} unique asset(s).")
+            self._raise_if_stop_requested("Render stop requested before scene rendering started.")
 
             self.observer.set_state("rendering", "Rendering scene clips")
             scene_results = self._render_scenes(config, scenes, probes)
 
+            self._raise_if_stop_requested("Render stop requested before concatenation.")
             self.observer.set_state("concatenating", "Concatenating rendered scenes")
             concat_list_path, visual_master_path = concatenate_scenes(
                 config,
@@ -99,11 +107,13 @@ class RenderPipeline:
                 f"Visual master written to {visual_master_path}",
             )
 
+            self._raise_if_stop_requested("Render stop requested before muxing.")
             self.observer.set_state("muxing", "Muxing voiceover")
             final_video_path = mux_voiceover(config, visual_master_path, self.job_id)
             self.observer.log("INFO", "muxing", f"Final video written to {final_video_path}")
 
             if config.subtitle_path and config.subtitle_path.exists():
+                self._raise_if_stop_requested("Render stop requested before subtitle burn.")
                 self.observer.set_state("subtitling", "Burning subtitles")
                 subtitled_path = burn_subtitles(config, final_video_path, self.job_id)
                 self.observer.log("INFO", "subtitling", f"Subtitled video written to {subtitled_path}")
@@ -127,9 +137,15 @@ class RenderPipeline:
             write_json(manifest_path, summary)
             self.observer.complete(summary)
             return summary
+        except RenderCancelledError:
+            raise
         except Exception as exc:
             self.observer.fail(str(exc))
             raise
+
+    def _raise_if_stop_requested(self, message: str) -> None:
+        if self.observer.should_stop():
+            raise RenderCancelledError(message)
 
     def _render_scenes(
         self,
@@ -139,6 +155,7 @@ class RenderPipeline:
     ) -> list[SceneRenderResult]:
         results: list[SceneRenderResult] = []
         for scene in scenes:
+            self._raise_if_stop_requested("Render stop requested before the next scene.")
             self.observer.set_state("rendering", f"Rendering {scene.scene_id}", scene.scene_id)
             probe = probes[scene.asset_id]
             self.observer.log(
@@ -160,4 +177,5 @@ class RenderPipeline:
                 f"{scene.scene_id} complete using {result.adjustment_summary}",
                 scene.scene_id,
             )
+            self._raise_if_stop_requested("Render stop requested after the current scene.")
         return results
